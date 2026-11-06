@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MemoryLens · 记忆眼镜</title>
+<link rel="stylesheet" href="style.css?v=10" />
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <div class="brand">
+      <span class="dot"></span>
+      <h1>MemoryLens</h1>
+      <span class="sub">看见一个人，想起所有事</span>
+    </div>
+    <div class="stats">
+      <span id="latency" class="badge">— ms</span>
+      <span id="count" class="badge">库中 0 人</span>
+    </div>
+  </header>
+
+  <main class="stage">
+
+    <section class="lens" id="lens">
+      <video id="video" playsinline muted></video>
+      <canvas id="overlay"></canvas>
+      <div class="scanline"></div>
+      <div class="corner tl"></div><div class="corner tr"></div>
+      <div class="corner bl"></div><div class="corner br"></div>
+      <div id="results" class="results"></div>
+      <div id="hint" class="hint">点「开启摄像头」，把脸放进画面</div>
+      <div class="lensbar">
+        <span class="live" id="liveState">● 待机</span>
+        <span id="lensMsg">先预览，按「抓拍」才识别</span>
+      </div>
+    </section>
+
+    <aside class="side">
+      <div class="row">
+        <button id="btnCam" class="primary">开启摄像头</button>
+        <button id="btnStop" class="ghost" disabled>停止</button>
+      </div>
+
+      <div class="row">
+        <button id="btnShot" class="shot" disabled>◉ 抓拍（空格）</button>
+        <button id="btnRetake" class="ghost" hidden>重拍</button>
+      </div>
+
+      <div class="row">
+        <label for="fileIn" class="ghost file">用照片测试</label>
+        <input id="fileIn" type="file" accept="image/*" hidden />
+      </div>
+
+      <div class="panel console">
+        <div class="panel-title">
+          控制台 <span id="thresholdTag" class="tag">阈值 0.40</span>
+          <button id="btnAdd" class="mini">+ 新增</button>
+        </div>
+        <input id="search" class="search" placeholder="搜索名字 / 身份" />
+        <ul id="people" class="people"></ul>
+      </div>
+
+      <p class="foot">数据只存在这台机器上（data/people.json）。所有录入都经过本人同意。
+        <span id="build" class="build">build …</span>
+      </p>
+    </aside>
+  </main>
+</div>
+
+<!-- 新增 / 编辑：一张脸 + 三行字 -->
+<div id="editor" class="modal" hidden>
+  <div class="sheet">
+    <div class="sheet-hd">
+      <b id="edTitle">新增人物</b>
+      <span class="grow"></span>
+      <button id="edClose" class="mini ghost">关闭</button>
+    </div>
+
+    <div class="ed-body">
+      <div class="photo-col">
+        <img id="edPhoto" class="ed-photo" alt="" />
+        <label for="edFile" class="ghost file">上传照片</label>
+        <input id="edFile" type="file" accept="image/*" hidden />
+        <div class="muted tiny" id="edPhotoHint">正脸、光线均匀、别戴帽子</div>
+      </div>
+
+      <div class="fields">
+        <label class="fld"><span>名字</span><input id="edName" placeholder="王姐" /></label>
+        <label class="fld"><span>身份 / 关系</span><input id="edRole" placeholder="产品经理 · 前同事" /></label>
+        <label class="fld"><span>信息 1</span><input id="ed1" placeholder="答应下周给报价单" /></label>
+        <label class="fld"><span>信息 2</span><input id="ed2" placeholder="养了一只叫豆豆的猫" /></label>
+        <label class="fld"><span>信息 3</span><input id="ed3" placeholder="（可选）" /></label>
+      </div>
+    </div>
+
+    <div class="sheet-ft">
+      <button id="edDelete" class="ghost danger" hidden>删除这个人</button>
+      <span class="grow"></span>
+      <button id="edCancel" class="ghost">取消</button>
+      <button id="edSave" class="primary">保存</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js?v=10"></script>
+</body>
+</html>

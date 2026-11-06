@@ -1,0 +1,13 @@
+{
+  "dependencies": {},
+  "devDependencies": {},
+  "engines": {
+    "node": "24.13.0",
+    "npm": "11.6.2"
+  },
+  "name": "demo.memorylens",
+  "packageManager": "npm@11.6.2",
+  "private": true,
+  "type": "commonjs",
+  "version": "1.0.0"
+}

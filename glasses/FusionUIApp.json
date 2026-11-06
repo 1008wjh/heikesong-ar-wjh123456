@@ -1,0 +1,16 @@
+{
+  "capabilities": [
+    "display.keep-awake"
+  ],
+  "controlProfile": "generic",
+  "displayName": {
+    "en": "MemoryLens",
+    "zh-CN": "记忆眼镜"
+  },
+  "id": "demo.memorylens",
+  "minimumHostVersion": 1,
+  "role": "ordinary",
+  "schemaVersion": 1,
+  "version": "1.0.0",
+  "versionCode": 1
+}
