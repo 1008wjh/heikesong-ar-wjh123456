@@ -380,13 +380,14 @@ let stopNote = 0;                // 停止持续听后，底栏先显示一阵"�
 
 let paintedRows = "";
 function paintRows() {
-  const want = cardRows.slice(rowOffset, rowOffset + VISIBLE_ROWS).join("|");
+  const want = cardRows.join("|");
   if (want === paintedRows) return;
   paintedRows = want;
+
   const total = cardRows.length;
   retained.info.forEach((t, i) => {
     if (!total) { putText(t, " "); return; }
-    const row = cardRows[(rowOffset + i) % total];
+    const row = cardRows[i];
     putText(t, i < Math.min(total, VISIBLE_ROWS) ? (row || "") : "");
   });
 }
@@ -427,7 +428,8 @@ function stopScroll() {
 // ③ 会话到 55 秒主动轮换一条新的（中间有毫秒级空档，对识别无影响）
 // ④ 边切边传，不在内存里堆整段（要支持 30 分钟）
 
-const SLICE_MS = Number(process.env.MEMORYLENS_SLICE_MS || 55000);         // 一片 55 秒：正好卡在平台 60 秒会话上限之前
+const SLICE_MS = Number(process.env.MEMORYLENS_SLICE_MS || 55000);
+const FIRST_SLICE_MS = Number(process.env.MEMORYLENS_FIRST_SLICE_MS || 15000);   // 第一片短一点，先认人         // 一片 55 秒：正好卡在平台 60 秒会话上限之前
 const MAX_SESSION_MS = 59000;   // 会话再长就换一个，避免撞平台上限
 const SLICE_MIN_MS = 5000;      // 停止时最后一片不足这个数就丢掉
 const MAX_LISTEN_MS = 30 * 60 * 1000;   // 兜底：连续听 30 分钟自动停
@@ -461,7 +463,8 @@ function levelBar(n) {
   const width = n || 12;
   let out = "";
   for (const v of ps.slice(-width)) {
-    const i = Math.min(7, Math.max(0, Math.round(v * 7)));
+    // 有声音就给至少一格，否则整行空白看着像"没有波形"
+    const i = Math.min(7, Math.max(v > 0.002 ? 1 : 0, Math.round(v * 7)));
     out += BARS[i];
   }
   return out;
@@ -498,25 +501,52 @@ function paintListening() {
     for (const ln of (card.lines || [])) rows.push(...splitLines(ln, 6));
     if (rows.join("|") !== cardRows.join("|")) { cardRows = rows; rowOffset = 0; }
     paintRows();
-    putText(retained.foot, "确认 详情 · 返回 结束");
+    putText(retained.foot, "确认详情 返回结束");
     return;
   }
   if (!c0) {
     const silent = capture.samples === 0 && Date.now() - capture.startedAt > 3000;
     putText(retained.name, "在听…");
-    putText(retained.role, silent ? "点「确认采集」" : "直接说话就行，不用按键");
+    putText(retained.role, silent ? "点「确认采集」" : "直接说话就行");
     putText(retained.sim, " ");
     const bar = levelBar();
     const quiet = capture.peaks.slice(-12).every((v) => v < 0.03);
     const hint = [
-      "55 秒出一片 · 先认人",
+      "55秒一片",
       quiet ? "（等声音…）" : bar,
-      "按「返回」结束并入库",
+      "返回结束并入库",
     ];
     retained.info.forEach((t, i) => putText(t, hint[i] || ""));
     paintedRows = "";
   }
-  putText(retained.foot, "确认 详情 · 返回 结束");
+  putText(retained.foot, "确认详情 返回结束");
+}
+
+// 调试用：容器里没有声卡时，用正弦波顶替麦克风，方便验证波形与切片链路
+const FAKE_MIC = process.env.MEMORYLENS_FAKE_MIC === "1";
+
+function makeFakeSession() {
+  let t = 0;
+  let lastAt = 0;
+  return {
+    takeEvent() {
+      // 按真实节奏出帧：每次最多一帧 20ms，否则会把 pump 的 while 循环堵死
+      if (Date.now() - lastAt < 20) return null;
+      lastAt = Date.now();
+      if (t >= 16000 * 60) return { type: "end", status: "stopped" };
+      const frames = 1;                       // 每次只给 20ms，跟真实设备同节奏
+      const buf = Buffer.alloc(320 * 2 * frames);
+      const amp = 6000 * (0.4 + 0.6 * Math.abs(Math.sin(t / 16000 * Math.PI * 2)));
+      for (let i = 0; i < 320 * frames; i++) {
+        const v = Math.round(amp * Math.sin((t + i) / 16000 * Math.PI * 2 * 220));
+        buf.writeInt16LE(v, i * 2);
+      }
+      t += 320 * frames;
+      return { type: "audio", sampleRate: 16000, channels: 1, format: "s16le", sampleCount: 320 * frames, data: buf };
+    },
+    finish() {},
+    cancel() {},
+  };
 }
 
 function openSession() {
@@ -528,7 +558,7 @@ function openSession() {
   capture.session = null;
   let session;
   try {
-    session = input.requestVoiceInput({ mode: "audio" });
+    session = FAKE_MIC ? makeFakeSession() : input.requestVoiceInput({ mode: "audio" });
   } catch (e) {
     stopAndArchive("开不了麦克风 · " + (e && e.message));
     return;
@@ -542,7 +572,8 @@ function pump() {
   if (!capture || capture.stopped) return;
   const c = capture;
   let ev;
-  while ((ev = c.session.takeEvent())) {
+  let guard = 0;             // 单次最多处理 8 个事件，避免把渲染线程饿死
+  while (guard++ < 8 && (ev = c.session.takeEvent())) {
     if (ev.type === "audio") {
       const buf = Buffer.from(ev.data);
       c.chunks.push(buf);
@@ -553,7 +584,7 @@ function pump() {
         const v = Math.abs(buf.readInt16LE(i));
         if (v > peak) peak = v;
       }
-      c.level = Math.min(1, peak / 4000);
+      c.level = Math.min(1, Math.sqrt(peak / 9000));
       c.peaks.push(c.level);
       if (c.peaks.length > 24) c.peaks.shift();
     } else if (ev.type === "end") {
@@ -562,7 +593,7 @@ function pump() {
       return;
     }
   }
-  const target = SLICE_MS;
+  const target = (c.sent || 0) === 0 ? FIRST_SLICE_MS : SLICE_MS;
   // 光看字节数不够：平台可能一口气把缓冲全塞过来，0.2 秒就"攒够 55 秒"，
   // 于是刚进单人模式就立刻切一片去认人（实测会凭空冒出「陌生人A」）。
   // 所以再要求这一片至少经过 Math.min(target, 3s) 的真实时间。
@@ -625,12 +656,14 @@ async function startListening(mode) {
     paintIdle("稍等 · 麦克风正在释放");
     await new Promise((r) => setTimeout(r, cool));
   }
-  let availability;
-  try {
-    availability = input.getVoiceInputAvailability("audio");
-  } catch (e) {
-    paintIdle("这台设备没有麦克风");
-    return;
+  let availability = { canRequest: true };
+  if (!FAKE_MIC) {
+    try {
+      availability = input.getVoiceInputAvailability("audio");
+    } catch (e) {
+      paintIdle("这台设备没有麦克风");
+      return;
+    }
   }
   if (!availability || availability.canRequest === false) {
     // 常见原因是上一次录音还没被回收，等一会儿再试
@@ -969,7 +1002,7 @@ function paintMode() {
     retained.info.forEach((t, i) => putText(t, rows[i] || ""));
     putText(retained.info[2], MODE_ITEMS[modeSelect.index].hint);
   }
-  putText(retained.foot, "确认进入 · 返回关掉");
+  putText(retained.foot, "确认进入 返回关掉");
 }
 
 function navMode(act) {
@@ -1105,6 +1138,11 @@ function start() {
   outboxTimer = setInterval(flushOutbox, OUTBOX_RETRY_MS);
   setTimeout(flushOutbox, 1200);        // 起来先把上次没发出去的补上
   try { require("@irisview/osx/os").setDisplayKeepAwake(true); } catch (e) { /* 可选能力 */ }
+  // 调试用：没按键的容器里也能自动进入「在听」，配合 MEMORYLENS_FAKE_MIC 验证整条链路
+  if (process.env.MEMORYLENS_AUTO_LISTEN === "1") {
+    setTimeout(() => { if (!capture) startListening("single").catch((e) => console.log("[auto] " + (e && e.stack || e))); }, 1500);
+  }
+  console.log("[env] fake=" + process.env.MEMORYLENS_FAKE_MIC + " auto=" + process.env.MEMORYLENS_AUTO_LISTEN);
   console.log("MemoryLens glasses app ready → " + BACKEND);
 }
 

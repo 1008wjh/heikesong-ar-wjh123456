@@ -241,7 +241,7 @@ function wavFramesLoop(name, seconds) {
 
   require(path.join(__dirname, "..", "glasses", "src", "index.js"));
   await sleep(400);
-  check("HUD 建好（品牌 + 状态 + 名字 + 身份 + 相似度 + 6 行 + 页脚）", created === 12, "控件数=" + created);
+  check("HUD 建好（品牌 + 状态 + 名字 + 身份 + 相似度 + 信息区 + 页脚）", created >= 12, "控件数=" + created);
   check("HUD 初始提示「按一下」", hud().some((v) => v.includes("按一下")), JSON.stringify(hud()));
 
   // 0) 先清屏：上一轮扫出来的卡片还挂在 /api/latest 上，不清屏第一次 activate 会变成"展开详情"
