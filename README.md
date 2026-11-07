@@ -101,7 +101,7 @@ set AR_LLM_PRESET=deepseek
 真实模拟器 mono 输出，单色绿，640×480。镜片上一个 `Text` 只画得出约 110px，
 所以 HUD 是窄列、每行 6 个汉字以内，超一屏自动轮播。
 
-![眼镜卡片](test/glasses_card.png)
+![眼镜卡片](test/agent_card.png)
 
 按「确认」翻详情（复杂数据）：
 
