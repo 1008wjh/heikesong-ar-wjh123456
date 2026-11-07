@@ -26,7 +26,7 @@ const API_TOKEN = (process.env.MEMORYLENS_TOKEN || "").trim();
 const POLL_MS = 700;        // 拉结果
 const NAV_MS = 120;         // 读按键/手势
 const HTTP_TIMEOUT_MS = 1500;
-const MAX_SAMPLES = 16000 * 30;
+const MAX_SAMPLES = 16000 * 60;   // 平台单会话上限 60 秒；切片最大 55 秒，别再用 30 秒截断
 const OUTBOX_RETRY_MS = 8000;   // 离线录音的重发间隔
 
 // 宿主注入的私有数据目录；没有（单测 / 无沙箱环境）就不落盘。
@@ -68,8 +68,11 @@ const CHUNK_PX = 124;             // 每块占的横向宽度
 const CHUNK_TEXT_PX = 112;        // 每块能画出的文字宽度
 
 const putText = (t, s) => {
-  t.setText(s);
-  t.setSize([t.__w, t.__h, 0]);
+  const v = s == null ? "" : String(s);
+  if (t.__text === v) return;       // 值没变就别碰控件：否则每 400ms 全量 setText 会闪
+  t.__text = v;
+  // Text 的默认占位是 "Text"；空串在实机上不可靠，用空格明确画空
+  t.setText(v === "" ? " " : v);
 };
 
 function makeText(board, x, y, w, h, size, color, align) {
@@ -148,9 +151,13 @@ function buildHud() {
   retained.name = makeText(retained.board, 8, 96, 200, 46, 28, COL.white);
   retained.role = makeText(retained.board, 8, 150, 200, 26, 16, COL.cyan);
   retained.sim = makeText(retained.board, 8, 180, 200, 22, 13, COL.dim);
+  putText(retained.name, "");
+  putText(retained.role, "");
+  putText(retained.sim, "");
 
   retained.info = [0, 1, 2, 3, 4, 5].map((i) =>
     makeText(retained.board, 8, 216 + i * 30, 200, 28, 16, COL.white));
+  retained.info.forEach((t) => putText(t, ""));
 
   retained.foot = makeText(retained.board, 8, H - 40, 200, 22, 13, COL.dim);
   putText(retained.foot, "按一下就说");
@@ -224,7 +231,9 @@ function postJson(path, body) {
 // ---------- WAV 封装：16kHz / 单声道 / 16bit ----------
 
 function toWav(chunks, totalBytes) {
-  const n = Math.min(totalBytes, MAX_SAMPLES * 2);
+  const actual = chunks.reduce((n, c) => n + c.length, 0);
+  let n = Math.min(totalBytes || actual, actual, MAX_SAMPLES * 2);
+  n -= n % 2;                       // 16-bit PCM：data 长度必须是偶数
   const buf = Buffer.alloc(44 + n);
   buf.write("RIFF", 0, "ascii");
   buf.writeUInt32LE(36 + n, 4);
@@ -448,7 +457,7 @@ function listenLine() {
 // 只刷"状态行 + 底栏"；卡片内容由切片结果负责画，避免每 400ms 把卡片冲掉
 function paintListening() {
   if (!capture) return;
-  retained.status.setText(listenLine());
+  putText(retained.status, listenLine());
   if (capture.lastCard && !complexRows) {
     // 认出来之后：名字/身份/信息行保持卡片内容，别被"在听"的提示冲掉
     const card = capture.lastCard;
@@ -478,39 +487,88 @@ function paintListening() {
 }
 
 function openSession() {
-  if (!capture) return;
+  const c = capture;
+  if (!c || c.stopped) return;
   let session;
   try {
     session = input.requestVoiceInput({ mode: "audio" });
   } catch (e) {
-    stopAndArchive("开不了麦克风 · " + (e && e.message));
+    // 官方契约：旧会话的 end 没消费前，新请求会 busy。等一拍再试，别把录音停掉。
+    if (e && e.code === "busy") {
+      c.openRetries = (c.openRetries || 0) + 1;
+      if (c.openRetries > 20) {
+        stopAndArchive("麦克风会话卡住了 · busy");
+        return;
+      }
+      c.pumpTimer = setTimeout(() => { if (capture && !capture.stopped) openSession(); }, 80);
+      return;
+    }
+    stopAndArchive("开不了麦克风 · " + (e && (e.message || e.code || e)));
     return;
   }
-  capture.session = session;
-  capture.sessionStartedAt = Date.now();
+  if (!capture || capture !== c || c.stopped) {
+    try { session.cancel(); } catch (e) { /* 已结束 */ }
+    return;
+  }
+  c.openRetries = 0;
+  c.session = session;
+  c.sessionStartedAt = Date.now();
+  c.phase = "recording";
+  c.lastSeq = undefined;
   pump();
 }
 
-function pump() {
-  if (!capture || capture.stopped) return;
-  const c = capture;
-  let ev;
-  while ((ev = c.session.takeEvent())) {
-    if (ev.type === "audio") {
-      const buf = Buffer.from(ev.data);
-      c.chunks.push(buf);
-      c.samples += ev.sampleCount;
-    } else if (ev.type === "end") {
-      // 平台把这条会话关了：换一条接着听（保留已累积的缓冲）
-      if (!c.stopped) { openSession(); return; }
-      return;
-    }
+// 会话到 55 秒：先 finish()，继续抽到平台给的 end，再开下一条（不能提前 openSession）
+function beginDrain(c) {
+  if (!c || c.stopped || c.phase !== "recording") return;
+  c.phase = "draining";
+  try { c.session.finish(); } catch (e) { /* 已经结束 */ }
+}
+
+function onSessionEnd(c, ev) {
+  if (!c || c.stopped) return;
+  if (ev && ev.status && ev.status !== "completed") {
+    stopAndArchive("麦克风结束 · " + (ev.reason || ev.status));
+    return;
   }
-  const target = (c.sent || 0) === 0 ? FIRST_SLICE_MS : NEXT_SLICE_MS;
-  if (c.samples >= 16000 * (target / 1000)) cutSlice(c);
-  if (Date.now() - c.sessionStartedAt >= MAX_SESSION_MS) {
-    try { c.session.finish(); } catch (e) { /* 已经结束 */ }
-    if (!c.stopped) { openSession(); return; }
+  // 轮换会话时不切片：缓冲区跨会话连续，切片仍按 15s / 55s 目标触发
+  c.phase = "recording";
+  openSession();
+}
+
+function pump() {
+  const c = capture;
+  if (!c || c.stopped) return;
+  if (c.pumpTimer) { clearTimeout(c.pumpTimer); c.pumpTimer = null; }
+  if (!c.session) return;
+
+  let ev;
+  try {
+    while ((ev = c.session.takeEvent())) {
+      if (ev.type === "audio") {
+        const buf = Buffer.from(ev.data);
+        if (typeof ev.sequence === "number") {
+          if (typeof c.lastSeq === "number" && ev.sequence !== c.lastSeq + 1) c.dropped += 1;
+          c.lastSeq = ev.sequence;
+        }
+        c.chunks.push(buf);
+        c.samples += ev.sampleCount;
+        c.bytes += buf.length;
+      } else if (ev.type === "end") {
+        onSessionEnd(c, ev);
+        return;
+      }
+      // state 事件不阻塞；权限/错误统一由 end.status/reason 处理
+    }
+  } catch (e) {
+    stopAndArchive("麦克风异常 · " + (e && (e.message || e.code || e)));
+    return;
+  }
+
+  if (c.phase === "recording") {
+    const target = (c.sent || 0) === 0 ? FIRST_SLICE_MS : NEXT_SLICE_MS;
+    if (c.bytes >= 32000 * (target / 1000)) cutSlice(c);
+    if (Date.now() - c.sessionStartedAt >= MAX_SESSION_MS) beginDrain(c);
   }
   if (Date.now() - c.startedAt >= MAX_LISTEN_MS) {
     stopAndArchive("听满 30 分钟 · 自动停了");
@@ -520,11 +578,12 @@ function pump() {
 }
 
 function cutSlice(c) {
-  const bytes = c.samples * 2;
   const chunks = c.chunks;
+  const bytes = c.bytes || chunks.reduce((n, b) => n + b.length, 0);
   c.chunks = [];
   c.samples = 0;
-  if (bytes < 16000 * 2 * (SLICE_MIN_MS / 1000)) return;
+  c.bytes = 0;
+  if (bytes < 32000 * (SLICE_MIN_MS / 1000)) return;
   c.queue.push(toWav(chunks, bytes));
   drain(c);
 }
@@ -568,7 +627,7 @@ function startListening(mode) {
     return;
   }
   capture = {
-    session: null, chunks: [], samples: 0,
+    session: null, chunks: [], samples: 0, bytes: 0,
     startedAt: Date.now(), sessionStartedAt: 0,
     slices: 0, sent: 0, queue: [], busy: false,
     mode: mode === "meeting" ? "meeting" : "single",
@@ -576,6 +635,7 @@ function startListening(mode) {
     personId: "", personName: "", sessionId: null,
     isMeeting: mode === "meeting",
     lastCard: null, stopped: false, dropped: 0, pumpTimer: null,
+    phase: "recording", lastSeq: undefined, openRetries: 0,
   };
   viewMode = "idle";
   complexRows = null;
@@ -658,21 +718,43 @@ async function pushChunk(c, wav) {
 }
 
 async function stopAndArchive(msg) {
-  if (capture) {
-    capture.stopped = true;
-    retained.status.setText("收尾 · 传剩余录音…");
-  }
   const c = capture;
-  if (!c) return;
+  if (!c || c.stopped) return;
   c.stopped = true;
-  if (c.pumpTimer) clearTimeout(c.pumpTimer);
+  c.phase = "stopped";
+  if (c.pumpTimer) { clearTimeout(c.pumpTimer); c.pumpTimer = null; }
+  putText(retained.status, "收尾 · 传剩余录音…");
   try { if (c.session) c.session.finish(); } catch (e) { /* 已经结束 */ }
-  const bytes = c.samples * 2;
-  if (bytes >= 16000 * 2 * (SLICE_MIN_MS / 1000)) {
+
+  // finish() 会把排队音频发完再给 end；这里必须继续抽，否则最后 1~2 秒会丢
+  const deadline = Date.now() + 1500;
+  while (Date.now() < deadline && c.session) {
+    let sawEnd = false;
+    try {
+      let ev;
+      while ((ev = c.session.takeEvent())) {
+        if (ev.type === "audio") {
+          const buf = Buffer.from(ev.data);
+          c.chunks.push(buf);
+          c.samples += ev.sampleCount;
+          c.bytes += buf.length;
+        } else if (ev.type === "end") {
+          sawEnd = true;
+          break;
+        }
+      }
+    } catch (e) { break; }
+    if (sawEnd) break;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+
+  const bytes = c.bytes || c.chunks.reduce((n, b) => n + b.length, 0);
+  if (bytes >= 32000 * (SLICE_MIN_MS / 1000)) {
     c.queue.push(toWav(c.chunks, bytes));
   }
   c.samples = 0;
   c.chunks = [];
+  c.bytes = 0;
   capture = null;
   const revAtStop = shownRev;
   endedAt = Date.now();
@@ -967,7 +1049,7 @@ function tick() {
     // 在听的时候：详情页照常显示，但状态行继续走计时
     if (complexRows) {
       paintComplex(lastScene && lastScene.name ? lastScene.name : capture.personName);
-      retained.status.setText(listenLine());
+      putText(retained.status, listenLine());
       putText(retained.foot, "确认 收起 · 返回 结束");
     } else {
       paintListening();
@@ -983,6 +1065,7 @@ function tick() {
 function start() {
   if (retained.window) return;
   buildHud();
+  paintIdle("按一下开始听…");       // 先把空字段画成空格，别让默认 "Text" 上屏
   poll();
   pollTimer = setInterval(poll, POLL_MS);
   lastPaintAt = 0;
