@@ -245,6 +245,29 @@ function wavFrames(name) {
   check("人脸结果也能上屏（里奥）", lines.includes("里奥"), JSON.stringify(lines));
   check("状态是「看到」", lines.some((v) => v.includes("看到")), JSON.stringify(lines));
 
+  // 6) 会议模式：空屏按「上」建会 → 确认录一段 → 返回分离
+  navQueue.push("back");            // 先清掉人脸卡片，回到 idle
+  await sleep(600);
+  navQueue.push("up");
+  await sleep(900);
+  lines = hud();
+  check("上键进入会议模式", lines.some((v) => v.includes("会议录制")), JSON.stringify(lines));
+
+  pendingPcm = wavFrames("huihui_a");
+  navQueue.push("activate");
+  await sleep(900);
+  navQueue.push("activate");        // 手动结束这一段
+  await sleep(1500);
+  lines = hud();
+  check("会议已有上传段", lines.some((v) => v.includes("已传") || v.includes("上传")),
+    JSON.stringify(lines));
+
+  navQueue.push("back");            // 结束会议 → finalize
+  await sleep(5000);
+  lines = hud();
+  check("会议分离结果上屏", lines.some((v) => v.includes("会议") && v.includes("人")),
+    JSON.stringify(lines));
+
   console.log(failures ? `\n${failures} 项失败` : "\n全部通过");
   process.exit(failures ? 1 : 0);
 })().catch((e) => {

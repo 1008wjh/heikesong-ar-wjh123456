@@ -751,6 +751,37 @@ code {
   .conv-pick { grid-row: auto; max-height: 300px; }
 }
 
+/* ---------- 模块 03：多人会议 ---------- */
+
+.meet .conv-main { grid-template-rows: auto minmax(0, 1fr) auto; }
+.meet-grid {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: var(--gap);
+  min-height: 0;
+}
+.meet-col { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.meet-col h3 { margin: 0; font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+.meet-list {
+  list-style: none; margin: 0; padding: 0; overflow-y: auto; min-height: 0;
+  border-top: 6px solid var(--line);
+}
+.meet-list li {
+  display: flex; gap: 8px; align-items: center; justify-content: space-between;
+  padding: 8px 4px; border-bottom: 2px solid var(--line); font-size: 12px;
+}
+.meet-list li.muted { color: var(--muted); justify-content: flex-start; }
+.meet-spk { font-weight: 600; font-size: 12px; }
+.meet-segs li { display: grid; grid-template-columns: 78px 90px minmax(0, 1fr) auto; gap: 8px; }
+.meet-time { font-size: 10px; color: var(--muted); letter-spacing: .04em; white-space: nowrap; }
+.meet-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meet-bind { max-width: 130px; padding: 4px 6px; font-size: 12px; }
+.meet-sessions li { cursor: pointer; }
+
+@media (max-width: 1080px) {
+  .meet-grid { grid-template-columns: 1fr; }
+}
+
 /* ---------- 动效开关 ---------- */
 
 @media (prefers-reduced-motion: reduce) {

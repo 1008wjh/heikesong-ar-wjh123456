@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Archivo:wght@400;600&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="style.css?v=15" />
+<link rel="stylesheet" href="style.css?v=16" />
 </head>
 <body>
 
@@ -59,9 +59,9 @@
       <span class="mod-n">02</span>
       <span class="mod-t">对话分析</span>
     </button>
-    <button class="mod" disabled title="待开发">
+    <button class="mod" id="modMeet" data-mod="meeting">
       <span class="mod-n">03</span>
-      <span class="mod-t">识别日志</span>
+      <span class="mod-t">多人会议</span>
     </button>
     <button class="mod" disabled title="待开发">
       <span class="mod-n">04</span>
@@ -210,10 +210,53 @@
       </div>
     </div>
   </section>
+
+  <!-- 模块 03：多人会议（轮流说话，重叠段当垃圾丢弃） -->
+  <section class="conv meet" id="meeting" hidden>
+    <div class="cell conv-pick">
+      <p class="kicker">模块 03</p>
+      <h2 class="conv-h2">多人会议</h2>
+      <p class="hint">上传一段会议音频（wav，16k 单声道最佳），自动分人。只处理轮流说话，重叠段会被丢弃。</p>
+      <label class="fld"><span>会议名</span><input id="meetTitle" class="field" placeholder="周会" /></label>
+      <button id="meetCreate" class="btn btn-save">＋ 新建会议</button>
+      <p class="kicker">历史会议</p>
+      <ul id="meetSessions" class="conv-list meet-sessions"></ul>
+    </div>
+
+    <div class="cell conv-head">
+      <div class="conv-who">
+        <p class="kicker">当前会议</p>
+        <h2 id="meetName">还没有会议</h2>
+        <p id="meetMeta" class="meta">先新建，或从左边选一场历史会议</p>
+      </div>
+      <div class="conv-acts">
+        <label class="btn" for="meetFile">选择音频</label>
+        <input id="meetFile" type="file" accept=".wav,audio/wav" multiple hidden />
+        <button id="meetUpload" class="btn" disabled>上传</button>
+        <button id="meetFinalize" class="btn btn-save" disabled>生成分离</button>
+        <button id="meetDelete" class="btn" disabled>删除</button>
+      </div>
+    </div>
+
+    <div class="cell conv-main">
+      <div id="meetBanner" class="conv-banner" hidden></div>
+      <div class="meet-grid">
+        <div class="meet-col">
+          <h3>说话人</h3>
+          <ul id="meetSpeakers" class="meet-list"></ul>
+        </div>
+        <div class="meet-col">
+          <h3>分段 / 转写</h3>
+          <ul id="meetSegments" class="meet-list meet-segs"></ul>
+        </div>
+      </div>
+      <p id="meetState" class="hint">新建会议 → 上传音频 → 生成分离 → 给 spk 绑实名</p>
+    </div>
+  </section>
 </div>
 
 <div id="toast" class="toast" hidden></div>
 
-<script src="app.js?v=15"></script>
+<script src="app.js?v=16"></script>
 </body>
 </html>

@@ -29,6 +29,7 @@ import numpy as np
 
 import asr
 import diarize
+import llm
 import voice
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -258,18 +259,43 @@ class MeetingStore:
             with open(self._centroid_path(sid), "w", encoding="utf-8") as f:
                 json.dump(centroid_map, f)
 
-            provider = asr.get_provider()
-            meta["asr"] = {"provider": provider.name, "state": provider.state,
-                           "detail": provider.detail}
-            if with_asr and provider.available:
-                try:
-                    text_segments = provider.transcribe(
-                        os.path.join(self._dir(sid), "meeting.wav"))
-                    meta["segments"] = asr.attach_text(meta["segments"], text_segments)
-                    meta["asr"]["state"] = "ok"
-                except Exception as error:  # 云端失败绝不能把离线结果弄丢
-                    meta["asr"]["state"] = "error"
-                    meta["asr"]["detail"] = f"{type(error).__name__}: {error}"
+            # 转写优先用 llm.py 的统一 ASR（本地 paraformer / OpenAI 兼容），
+            # 它的可用性不会"假装成功"；没配时退回 asr.py 的云端适配层。
+            meta["asr"] = {"provider": "off", "state": "not-configured", "detail": ""}
+            if with_asr:
+                if llm.asr_available():
+                    status = llm.status()
+                    meta["asr"] = {"provider": status.get("asrProvider", "llm"),
+                                   "state": "ok", "detail": ""}
+                    ok_count = failed = 0
+                    for seg in meta["segments"]:
+                        a = int(seg["start"] * voice.SAMPLE_RATE)
+                        b = int(seg["end"] * voice.SAMPLE_RATE)
+                        if b - a < int(0.2 * voice.SAMPLE_RATE):
+                            continue
+                        try:
+                            seg["text"] = llm.transcribe(wav_bytes(samples[a:b]))
+                            ok_count += 1
+                        except Exception as error:
+                            failed += 1
+                            meta["asr"]["detail"] = f"{type(error).__name__}: {error}"
+                    if failed and not ok_count:
+                        meta["asr"]["state"] = "error"
+                    elif failed:
+                        meta["asr"]["state"] = "partial"
+                else:
+                    provider = asr.get_provider()
+                    meta["asr"] = {"provider": provider.name, "state": provider.state,
+                                   "detail": provider.detail}
+                    if provider.available:
+                        try:
+                            text_segments = provider.transcribe(
+                                os.path.join(self._dir(sid), "meeting.wav"))
+                            meta["segments"] = asr.attach_text(meta["segments"], text_segments)
+                            meta["asr"]["state"] = "ok"
+                        except Exception as error:  # 云端失败绝不能把离线结果弄丢
+                            meta["asr"]["state"] = "error"
+                            meta["asr"]["detail"] = f"{type(error).__name__}: {error}"
 
             meta["status"] = "finalized"
             self._save(meta)

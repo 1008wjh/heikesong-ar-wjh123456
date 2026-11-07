@@ -11,7 +11,7 @@
 
 ```powershell
 docker build -f deploy/Dockerfile.backend -t memorylens .
-docker run -d --name memorylens -p 8765:8765 -v ml-data:/data memorylens
+docker run -d --name memorylens -p 127.0.0.1:8765:8765 -v ml-data:/data memorylens
 ```
 
 或者：
@@ -26,17 +26,19 @@ docker compose up -d --build
 
 - 数据卷 `ml-data` 挂在 `/data`：`people.json` + `photos/` + `meetings/` 都在里面，删容器不丢数据。
   想把本机现成的库直接挂进去，把 compose 里那行 `E:/ar-memory/data:/data` 的注释打开。
+  新克隆的仓库不含真实数据，容器首次启动是空库；要么在控制台手动建人，要么把宿主 `data/` 挂进去。
 - 模型打在镜像里（`models/` 41MB），**运行时不联网**。
 - 阈值走环境变量：`AR_MATCH_THRESHOLD`、`AR_VOICE_THRESHOLD`、`AR_VOICE_MARGIN`。
   资源上限：`AR_MAX_BODY_BYTES`、`AR_MEETING_MAX_SECONDS`、`AR_MEETING_MAX_CHUNKS`。
+- 安全：默认端口映射到 `127.0.0.1`；要局域网访问，设 `AR_API_TOKEN` 并把 ports 改回 `8765:8765`。
 
 ### 之后搬去云上
 
-同一份镜像，差别只有三件事：
+同一份镜像，四件事：
 
-1. **改成 HTTPS**：眼镜端和网页都在公网，别明文传 wav。前面挂一层 Nginx/Caddy 就行。
+1. **HTTPS**：服务端原生支持 `AR_TLS_CERT` / `AR_TLS_KEY`（`tools/gen_self_signed_cert.py` 可生成自签证书），或前面挂 Nginx/Caddy。
 2. **限制上传大小**：服务端已有 `AR_MAX_BODY_BYTES`（默认 16MB），Nginx 再给 `client_max_body_size 8m` 兜一层。
-3. **加个鉴权**：至少给 `/api/*` 加个 `X-Token`，不然谁都能往你的人脉库里塞脸。
+3. **鉴权**：设 `AR_API_TOKEN`，请求带 `X-API-Token` 或 `Authorization: Bearer`；`/api/health` 不鉴权供健康检查。
 4. **关掉本地文件路径**：公网/反代部署设 `AR_ALLOW_LOCAL_FILES=0`（详见 `docs/09-安全审计.md`）。
 
 ## 2. 眼镜工具链（打包 / 跑模拟器）

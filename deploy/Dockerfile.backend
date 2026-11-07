@@ -10,6 +10,7 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
     AR_PORT=8765 \
+    AR_HOST=0.0.0.0 \
     AR_DATA_DIR=/data \
     AR_MEETING_DIR=/data/meetings
 

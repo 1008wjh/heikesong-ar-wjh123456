@@ -19,10 +19,13 @@ const { Board, Color, Font, FusionRoot, Text, TextAlign } = require("@irisview/o
 
 // 眼镜连哪台电脑。模拟器上就是本机；真机换成同一局域网里跑 server.py 的那台。
 const BACKEND = process.env.MEMORYLENS_BACKEND || "http://127.0.0.1:8765";
+// 服务端开了 AR_API_TOKEN 时，眼镜端也要带上（MEMORYLENS_TOKEN）
+const API_TOKEN = (process.env.MEMORYLENS_TOKEN || "").trim();
 const POLL_MS = 700;        // 拉结果
 const NAV_MS = 120;         // 读按键/手势
 const HTTP_TIMEOUT_MS = 1500;
 const RECORD_MS = 4000;     // 一次最多听 4 秒，够说一句"我是王姐"
+const MEETING_RECORD_MS = 20000;  // 会议模式：一段 20 秒，避免触到 input.audio 60 秒会话上限
 const MAX_SAMPLES = 16000 * 30;
 
 const W = 640;
@@ -44,8 +47,11 @@ let pollTimer = null;
 let navTimer = null;
 let inFlight = false;
 let shownRev = -1;
-let recording = null;   // { session, chunks: Uint8Array[], samples, startedAt, timer }
+let recording = null;   // { session, chunks: Uint8Array[], samples, startedAt, timer, limitMs }
 let background = false;
+// 会议模式：null = 没开；{ id, chunks } = 正在录一场多人会议
+let meeting = null;
+let meetingSeq = 0;
 
 // 实测结论（simulator）：单个 Text 只画得出一百多像素宽，再长就被硬切。
 // 所以一行文字拆成若干个 Text，横向拼起来（每块 x 依次 +124）。
@@ -142,18 +148,24 @@ function buildHud() {
 }
 // ---------- 网络 ----------
 
+function authHeaders(extra) {
+  const h = Object.assign({}, extra || {});
+  if (API_TOKEN) h["X-API-Token"] = API_TOKEN;
+  return h;
+}
+
 function getJson(path) {
   if (typeof fetch === "function") {
     const signal = typeof AbortSignal !== "undefined" && AbortSignal.timeout
       ? AbortSignal.timeout(HTTP_TIMEOUT_MS) : undefined;
-    return fetch(BACKEND + path, { signal, cache: "no-store" }).then((r) => {
+    return fetch(BACKEND + path, { headers: authHeaders(), signal, cache: "no-store" }).then((r) => {
       if (!r.ok) throw new Error("HTTP " + r.status);
       return r.json();
     });
   }
   const http = require("node:http");
   return new Promise((resolve, reject) => {
-    const req = http.get(BACKEND + path, { timeout: HTTP_TIMEOUT_MS }, (res) => {
+    const req = http.get(BACKEND + path, { headers: authHeaders(), timeout: HTTP_TIMEOUT_MS }, (res) => {
       let buf = "";
       res.setEncoding("utf8");
       res.on("data", (c) => { buf += c; });
@@ -172,7 +184,7 @@ function postJson(path, body) {
       ? AbortSignal.timeout(8000) : undefined;
     return fetch(BACKEND + path, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),
       signal,
       cache: "no-store",
@@ -184,7 +196,7 @@ function postJson(path, body) {
     const req = http.request(BACKEND + path, {
       method: "POST",
       timeout: 8000,
-      headers: { "Content-Type": "application/json", "Content-Length": payload.length },
+      headers: authHeaders({ "Content-Type": "application/json", "Content-Length": payload.length }),
     }, (res) => {
       let buf = "";
       res.setEncoding("utf8");
@@ -273,7 +285,7 @@ function paintOffline(err) {
 
 function paintCard(card, rev, ms) {
   const known = card.status !== "unknown";
-  const kind = card.kind === "voice" ? "听到" : "看到";
+  const kind = card.kind === "voice" ? "听到" : card.kind === "meeting" ? "会议" : "看到";
   viewMode = "simple";
   complexRows = null;
   putText(retained.status,
@@ -395,7 +407,7 @@ function stopRecording(cancelled) {
   recording = null;
   if (r.timer) clearTimeout(r.timer);
   try { cancelled ? r.session.cancel() : r.session.finish(); } catch (e) { /* 会话可能已结束 */ }
-  if (!cancelled) paintIdle("听完了 · 正在认人…");
+  if (!cancelled) paintIdle(meeting ? "上传中…" : "听完了 · 正在认人…");
 }
 
 async function finishRecording() {
@@ -405,7 +417,12 @@ async function finishRecording() {
   const bytes = r.samples * 2;
   stopRecording(false);
   if (bytes < 16000 * 2 * 0.6) {      // 不到 0.6 秒，后台也认不了
-    paintIdle("太短了 · 按住多说两句");
+    meeting ? paintMeeting("太短 · 再说长一点") : paintIdle("太短了 · 按住多说两句");
+    return;
+  }
+  if (meeting) {
+    const dataUrl = toWav(chunks, bytes);   // toWav 已经返回 data:audio/wav;base64,...
+    await uploadMeetingChunk(dataUrl);
     return;
   }
   retained.status.setText("正在认人…");
@@ -431,12 +448,13 @@ function pumpRecording() {
       return;
     }
   }
-  if (r.samples >= 16000 * (RECORD_MS / 1000)) finishRecording();
+  if (r.samples >= 16000 * ((r.limitMs || RECORD_MS) / 1000)) finishRecording();
   else setTimeout(pumpRecording, 40);
 }
 
-function startRecording() {
+function startRecording(recordMs) {
   if (recording || background) return;
+  const limit = recordMs || RECORD_MS;
   let availability;
   try {
     availability = input.getVoiceInputAvailability("audio");
@@ -455,18 +473,89 @@ function startRecording() {
     paintIdle("开不了麦克风 · " + (e && e.message));
     return;
   }
-  recording = { session, chunks: [], samples: 0, startedAt: Date.now(), timer: null };
+  recording = { session, chunks: [], samples: 0, startedAt: Date.now(), timer: null, limitMs: limit };
   retained.status.setText("在听… 说话");
   putText(retained.name, "");
   putText(retained.role, "");
   putText(retained.sim, "");
   retained.info.forEach((t) => putText(t, ""));
-  retained.info[0].setText("说一句话（比如：我是王姐）");
-  retained.info[1].setText("再按一下结束，或 4 秒后自动结束");
+  retained.info[0].setText(meeting ? "会议录音中" : "说一句话（比如：我是王姐）");
+  retained.info[1].setText("再按一下结束，或 " + Math.round(limit / 1000) + " 秒后自动结束");
 
-  // 兜底：4 秒还没结束就主动 finish()
-  recording.timer = setTimeout(() => finishRecording(), RECORD_MS + 1200);
+  // 兜底：到点还没结束就主动 finish()
+  recording.timer = setTimeout(() => finishRecording(), limit + 1200);
   setTimeout(pumpRecording, 40);
+}
+
+// ---------- 会议模式（多人轮流说话） ----------
+
+function paintMeeting(msg) {
+  stopScroll();
+  viewMode = "idle";
+  complexRows = null;
+  lastScene = { idle: msg };
+  putText(retained.status, msg);
+  putText(retained.name, "会议录制");
+  putText(retained.role, meeting ? "已传 " + meeting.chunks + " 段" : "");
+  putText(retained.sim, "");
+  retained.info.forEach((t) => putText(t, ""));
+  const rows = splitLines(meeting ? "按确认录 20 秒 · 按返回结束" : "按上键开始会议", 6);
+  retained.info.forEach((t, i) => putText(t, rows[i] || ""));
+  putText(retained.foot, meeting ? "确认录音 · 返回结束" : "按一下就说");
+}
+
+async function startMeeting() {
+  if (meeting || recording) return;
+  putText(retained.status, "正在建会…");
+  try {
+    const r = await postJson("/api/v1/session/create", { title: "眼镜会议" });
+    if (!r || !r.ok) throw new Error((r && r.error) || "建会失败");
+    meeting = { id: r.sessionId, chunks: 0 };
+    meetingSeq = 0;
+    paintMeeting("会议已开始");
+  } catch (e) {
+    paintOffline(e && e.message);
+  }
+}
+
+async function uploadMeetingChunk(dataUrl) {
+  if (!meeting) return;
+  const m = meeting;
+  meetingSeq += 1;
+  retained.status.setText("上传第 " + meetingSeq + " 段…");
+  try {
+    const r = await postJson("/api/v1/audio/upload", {
+      sessionId: m.id, seq: meetingSeq, audio: dataUrl,
+    });
+    if (!r || !r.ok) throw new Error((r && r.error) || "上传失败");
+    m.chunks += 1;
+    paintMeeting("已上传 " + m.chunks + " 段");
+  } catch (e) {
+    console.error("[meeting] upload failed:", e && (e.stack || e.message) || e);
+    paintOffline("上传失败：" + (e && e.message ? e.message : "网络错误"));
+  }
+}
+
+async function finishMeeting() {
+  const m = meeting;
+  if (!m) return;
+  if (recording) stopRecording(true);
+  meeting = null;
+  putText(retained.status, "正在分离…");
+  try {
+    const r = await postJson("/api/v1/session/" + encodeURIComponent(m.id) + "/finalize", {});
+    if (!r || !r.ok) throw new Error((r && r.error) || "分离失败");
+    const lines = (r.speakers || []).map(
+      (s) => (s.name || s.spk_id) + " · " + Math.round(s.seconds || 0) + "s");
+    if (!lines.length) lines.push("没分出人声，靠近点再说");
+    const card = {
+      status: "known", name: "会议 · " + (r.speaker_count || 0) + " 人", role: "多人分离",
+      similarity: null, kind: "meeting", lines,
+    };
+    paintCard(card, Date.now(), r.ms || 0);
+  } catch (e) {
+    paintOffline("分离失败：" + (e && e.message ? e.message : "网络错误"));
+  }
 }
 
 // ---------- 主循环 ----------
@@ -476,6 +565,16 @@ function handleNavigation() {
   let nav = null;
   do {
     try { nav = input.takeNavigationAction(); } catch (e) { nav = null; }
+    if (meeting) {
+      if (nav === "activate") {
+        if (recording) finishRecording();
+        else startRecording(MEETING_RECORD_MS);
+      } else if (nav === "back") {
+        if (recording) stopRecording(true);
+        finishMeeting();
+      }
+      continue;
+    }
     if (nav === "activate") {
       if (recording) finishRecording();
       else if (viewMode === "simple" || viewMode === "complex") toggleDetail();
@@ -487,6 +586,8 @@ function handleNavigation() {
       } else if (viewMode !== "idle") {
         clearView();        // 清屏：回到"按一下开始听"
       }
+    } else if (nav === "up" && !recording && viewMode === "idle") {
+      startMeeting();       // 空屏按「上」进入会议模式（下保留给翻页）
     }
   } while (nav);
 }
@@ -499,7 +600,7 @@ function clearView() {
 }
 
 async function poll() {
-  if (inFlight || background || recording) return;
+  if (inFlight || background || recording || meeting) return;
   inFlight = true;
   try {
     const data = await getJson("/api/latest");

@@ -151,6 +151,29 @@ def test_meeting():
     check("质心维度 192", len(result["_centroids"][0]) == 192)
 
 
+def test_noise():
+    print("7) 加噪鲁棒性（近似真实会场底噪）")
+    samples, truth = build_meeting()
+    rng = np.random.default_rng(11)
+    noise = rng.normal(0.0, 0.002, size=samples.shape).astype(np.float32)
+    noisy = samples + noise
+    enrolled = []
+    for label, idx in (("A", 0), ("B", 1), ("C", 2)):
+        x = read_wav(ORDER[idx][0])
+        enrolled.append({"id": "id_" + label, "name": label, "role": "",
+                         "voice_embeddings": [voice.embed(x).tolist()]})
+    result = diarize.diarize(noisy, enrolled)
+    check("加噪后仍是 3 人", result["speaker_count"] == 3, str(result["speaker_count"]))
+    mapping = {}
+    for seg in result["segments"]:
+        mid = (seg["start"] + seg["end"]) / 2
+        for t0, t1, label in truth:
+            if t0 <= mid <= t1:
+                mapping.setdefault(label, set()).add(seg["spk_id"])
+                break
+    check("加噪后不串号", len(mapping) == 3 and all(len(v) == 1 for v in mapping.values()), str(mapping))
+
+
 def main():
     test_cluster_unit()
     test_merge_pairwise()
@@ -158,6 +181,7 @@ def main():
     test_overlap()
     test_silence()
     test_meeting()
+    test_noise()
     print(f"\n{ok_count} passed, {fail_count} failed")
     return 1 if fail_count else 0
 

@@ -8,15 +8,19 @@ services:
     image: memorylens:latest
     container_name: memorylens
     ports:
-      - "8765:8765"
+      # 默认只绑本机；要让手机/眼镜从局域网访问，改成 "8765:8765" 并配 AR_API_TOKEN
+      - "127.0.0.1:8765:8765"
     volumes:
       - ml-data:/data
       # 演示时也可以把本机的人脉库直接挂进去（Windows 路径要写绝对路径）
       # - E:/ar-memory/data:/data
     environment:
       AR_PORT: "8765"
+      AR_HOST: "0.0.0.0"
       AR_DATA_DIR: "/data"
       AR_MEETING_DIR: "/data/meetings"
+      # 局域网访问时必须设置；本机演示可留空
+      # AR_API_TOKEN: "换成你的随机 token"
       AR_MATCH_THRESHOLD: "0.40"
       AR_VOICE_THRESHOLD: "0.72"
       AR_VOICE_MARGIN: "0.08"

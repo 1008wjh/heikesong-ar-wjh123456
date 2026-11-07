@@ -6,7 +6,7 @@
 const $ = (s) => document.querySelector(s);
 
 // 改代码就 +1，页脚会显示。看到 build 不是最新的，说明浏览器还在跑旧脚本。
-const BUILD = 15;
+const BUILD = 16;
 
 const state = { people: [], threshold: 0.4 };
 
@@ -21,8 +21,33 @@ const BLANK_IMG = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAA
 
 /* ---------------- 小工具 ---------------- */
 
+// 服务端配了 AR_API_TOKEN 时，浏览器需要带 token；401 时询问一次并记住。
+const TOKEN_KEY = 'memorylens_token';
+
+function authHeaders(extra) {
+  const t = localStorage.getItem(TOKEN_KEY);
+  const h = Object.assign({}, extra || {});
+  if (t) h['X-API-Token'] = t;
+  return h;
+}
+
+async function apiFetch(url, opts) {
+  const options = Object.assign({}, opts || {});
+  options.headers = authHeaders(options.headers);
+  let r = await fetch(url, options);
+  if (r.status === 401) {
+    const t = window.prompt('这个服务开了鉴权，请输入 AR_API_TOKEN（留空则取消）');
+    if (t && t.trim()) {
+      localStorage.setItem(TOKEN_KEY, t.trim());
+      options.headers = authHeaders(options.headers);
+      r = await fetch(url, options);
+    }
+  }
+  return r;
+}
+
 function post(url, body) {
-  return fetch(url, {
+  return apiFetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -44,10 +69,32 @@ function photoUrl(p) {
   return '/api/photo?id=' + encodeURIComponent(p.id) + '&t=' + (p.photo ? Date.now() : 0);
 }
 
+// 图片不能用 <img src> 带 token，所以用 fetch 拿 blob 再转 objectURL
+async function loadPhotoInto(img, p) {
+  if (!img) return;
+  if (!p || !p.photo) {
+    img.src = BLANK_IMG;
+    img.classList.add('empty');
+    return;
+  }
+  try {
+    const r = await apiFetch(photoUrl(p));
+    if (!r.ok) throw new Error('photo ' + r.status);
+    const blob = await r.blob();
+    if (img._objUrl) URL.revokeObjectURL(img._objUrl);
+    img._objUrl = URL.createObjectURL(blob);
+    img.src = img._objUrl;
+    img.classList.remove('empty');
+  } catch (e) {
+    img.src = BLANK_IMG;
+    img.classList.add('empty');
+  }
+}
+
 /* ---------------- 列表 ---------------- */
 
 async function loadPeople() {
-  const r = await fetch('/api/people').then((x) => x.json());
+  const r = await apiFetch('/api/people').then((x) => x.json());
   state.people = r.people || [];
   state.threshold = r.threshold || 0.4;
   $('#count').textContent = `库中 ${state.people.length} 人`;
@@ -77,7 +124,7 @@ function renderPeople() {
     const av = document.createElement('img');
     av.className = 'av';
     av.alt = '';
-    if (p.photo) av.src = photoUrl(p);
+    if (p.photo) loadPhotoInto(av, p);
     else av.classList.add('ph');
 
     const who = document.createElement('div');
@@ -139,8 +186,18 @@ function setEdPhoto(src) {
   const img = $('#edPhoto');
   if (!img) return;
   if (src) {
-    img.src = src;
-    img.classList.remove('empty');
+    apiFetch(src).then((r) => {
+      if (!r.ok) throw new Error('photo ' + r.status);
+      return r.blob();
+    }).then((blob) => {
+      if (img._objUrl) URL.revokeObjectURL(img._objUrl);
+      img._objUrl = URL.createObjectURL(blob);
+      img.src = img._objUrl;
+      img.classList.remove('empty');
+    }).catch(() => {
+      img.src = BLANK_IMG;
+      img.classList.add('empty');
+    });
   } else {
     img.src = BLANK_IMG;          // 清空时给个透明占位，否则浏览器会画出"碎图"图标
     img.classList.add('empty');
@@ -363,6 +420,274 @@ async function finishVoice(r) {
 const CONV_CHUNK_MS = 6000;   // 每 6 秒切一段送上去转写，避免一次性传几分钟音频
 const CONV_MIN_FRAMES = 3;    // 攒够 3 帧（约 0.2s）才切，避免碎片
 
+/* ---------------- 模块 03：多人会议 ---------------- */
+
+const meet = { sessions: [], meta: null };
+
+function meetFmt(t) {
+  const sec = Math.max(0, Math.round(Number(t) || 0));
+  const m = Math.floor(sec / 60);
+  return m ? m + 'm' + String(sec % 60).padStart(2, '0') + 's' : sec + 's';
+}
+
+function meetSetState(text) {
+  if ($('#meetState')) $('#meetState').textContent = text;
+}
+
+async function loadMeetSessions() {
+  try {
+    const r = await apiFetch('/api/v1/sessions').then((x) => x.json());
+    meet.sessions = r.sessions || [];
+  } catch (e) {
+    meet.sessions = [];
+  }
+  renderMeetSessions();
+}
+
+function renderMeetSessions() {
+  const ul = $('#meetSessions');
+  if (!ul) return;
+  ul.innerHTML = '';
+  if (!meet.sessions.length) {
+    const li = document.createElement('li');
+    li.className = 'muted';
+    li.textContent = '还没有会议';
+    ul.appendChild(li);
+    return;
+  }
+  meet.sessions.forEach((s) => {
+    const li = document.createElement('li');
+    if (meet.meta && meet.meta.sessionId === s.sessionId) li.classList.add('is-locked');
+    const nm = document.createElement('span');
+    nm.className = 'nm';
+    nm.textContent = s.title || s.sessionId;
+    const rl = document.createElement('span');
+    rl.className = 'rl';
+    rl.textContent = (s.speakerCount || 0) + ' 人 · ' + meetFmt(s.duration);
+    li.append(nm, rl);
+    li.onclick = () => loadMeeting(s.sessionId);
+    ul.appendChild(li);
+  });
+}
+
+async function loadMeeting(sid) {
+  try {
+    const r = await apiFetch('/api/v1/session/' + encodeURIComponent(sid)).then((x) => x.json());
+    if (!r.ok) throw new Error(r.error || '读取失败');
+    meet.meta = r;
+    renderMeeting(r);
+    renderMeetSessions();
+    meetSetState('已载入，可继续上传或重新生成');
+  } catch (e) {
+    toast('读取会议失败：' + e.message, true);
+  }
+}
+
+function renderMeeting(meta) {
+  const nameEl = $('#meetName');
+  const metaEl = $('#meetMeta');
+  if (!meta) {
+    if (nameEl) nameEl.textContent = '还没有会议';
+    if (metaEl) metaEl.textContent = '先新建，或从左边选一场历史会议';
+    ['#meetUpload', '#meetFinalize', '#meetDelete'].forEach((s) => { if ($(s)) $(s).disabled = true; });
+    ['#meetSpeakers', '#meetSegments'].forEach((s) => { if ($(s)) $(s).innerHTML = ''; });
+    return;
+  }
+  if (nameEl) nameEl.textContent = meta.title || meta.sessionId;
+  if (metaEl) {
+    metaEl.textContent = (meta.speaker_count || 0) + ' 人 · ' + meetFmt(meta.duration)
+      + ' · ' + ((meta.segments || []).length) + ' 段 · 丢弃重叠 ' + (meta.dropped_overlap || 0);
+  }
+  if ($('#meetUpload')) $('#meetUpload').disabled = false;
+  if ($('#meetFinalize')) $('#meetFinalize').disabled = false;
+  if ($('#meetDelete')) $('#meetDelete').disabled = false;
+
+  const spkUl = $('#meetSpeakers');
+  spkUl.innerHTML = '';
+  (meta.speakers || []).forEach((spk) => {
+    const li = document.createElement('li');
+    li.dataset.spk = spk.spk_id;
+    const info = document.createElement('div');
+    info.className = 'meet-spk';
+    info.textContent = (spk.name || '陌生人') + ' · ' + meetFmt(spk.seconds) + ' · ' + (spk.segments || 0) + ' 段';
+    const sel = document.createElement('select');
+    sel.className = 'field meet-bind';
+    const blank = document.createElement('option');
+    blank.value = '';
+    blank.textContent = '选一个人';
+    sel.appendChild(blank);
+    state.people.forEach((p) => {
+      const op = document.createElement('option');
+      op.value = p.id;
+      op.textContent = p.name;
+      if (spk.person_id === p.id) op.selected = true;
+      sel.appendChild(op);
+    });
+    const btn = document.createElement('button');
+    btn.className = 'btn mini-btn';
+    btn.textContent = '绑定';
+    btn.onclick = () => meetBind(spk.spk_id, sel.value);
+    li.append(info, sel, btn);
+    spkUl.appendChild(li);
+  });
+  if (!(meta.speakers || []).length) {
+    const li = document.createElement('li');
+    li.className = 'muted';
+    li.textContent = '还没有分离结果，先上传音频再点「生成分离」';
+    spkUl.appendChild(li);
+  }
+
+  const segUl = $('#meetSegments');
+  segUl.innerHTML = '';
+  (meta.segments || []).forEach((seg) => {
+    const li = document.createElement('li');
+    const time = document.createElement('span');
+    time.className = 'meet-time';
+    time.textContent = meetFmt(seg.start) + '-' + meetFmt(seg.end);
+    const who = document.createElement('span');
+    who.className = 'meet-spk';
+    const names = {};
+    (meta.speakers || []).forEach((s) => { names[s.spk_id] = s.name || s.spk_id; });
+    who.textContent = names[seg.spk_id] || seg.spk_id;
+    const text = document.createElement('span');
+    text.className = 'meet-text';
+    text.textContent = seg.text || '（未配置 ASR，只有时间/说话人）';
+    const play = document.createElement('button');
+    play.className = 'btn mini-btn';
+    play.textContent = '回放';
+    play.onclick = () => meetPlay(seg.start);
+    li.append(time, who, text, play);
+    segUl.appendChild(li);
+  });
+  if (!(meta.segments || []).length) {
+    const li = document.createElement('li');
+    li.className = 'muted';
+    li.textContent = '还没有分段';
+    segUl.appendChild(li);
+  }
+}
+
+async function meetCreate() {
+  const title = (($('#meetTitle') && $('#meetTitle').value) || '').trim() || '未命名会议';
+  try {
+    const r = await post('/api/v1/session/create', { title });
+    if (!r.ok) throw new Error(r.error || '新建失败');
+    meet.meta = r;
+    renderMeeting(r);
+    await loadMeetSessions();
+    meetSetState('会议已建好，上传音频吧');
+    toast('已新建：' + title);
+  } catch (e) {
+    toast('新建失败：' + e.message, true);
+  }
+}
+
+async function meetUpload() {
+  const input = $('#meetFile');
+  if (!meet.meta) return toast('先新建或选一场会议', true);
+  if (!input || !input.files || !input.files.length) return toast('先选音频文件', true);
+  const files = Array.from(input.files);
+  let seq = ((meet.meta.chunks || []).length) || 0;
+  try {
+    meetSetState('上传中…');
+    for (const f of files) {
+      const data = await readAsDataURL(f);
+      seq += 1;
+      const r = await post('/api/v1/audio/upload', {
+        sessionId: meet.meta.sessionId, seq, audio: data,
+      });
+      if (!r.ok) throw new Error(r.error || ('上传失败：' + f.name));
+    }
+    input.value = '';
+    await loadMeeting(meet.meta.sessionId);
+    meetSetState('已上传 ' + files.length + ' 个文件');
+    toast('上传完成');
+  } catch (e) {
+    meetSetState('上传失败');
+    toast('上传失败：' + e.message, true);
+  }
+}
+
+async function meetFinalize() {
+  if (!meet.meta) return;
+  try {
+    meetSetState('正在分离（CPU 上约 4-5 秒 / 30 秒音频）…');
+    const r = await post('/api/v1/session/' + encodeURIComponent(meet.meta.sessionId) + '/finalize', {});
+    if (!r.ok) throw new Error(r.error || '分离失败');
+    meet.meta = r;
+    renderMeeting(r);
+    await loadMeetSessions();
+    meetSetState('分离完成：' + (r.speaker_count || 0) + ' 人');
+    toast('分离完成');
+  } catch (e) {
+    meetSetState('分离失败');
+    toast('分离失败：' + e.message, true);
+  }
+}
+
+async function meetBind(spkId, personId) {
+  if (!meet.meta || !personId) return toast('先选一个人', true);
+  try {
+    const r = await post('/api/v1/speaker/bind', {
+      sessionId: meet.meta.sessionId, spkId, personId, enroll: true,
+    });
+    if (!r.ok) throw new Error(r.error || '绑定失败');
+    meet.meta = r;
+    renderMeeting(r);
+    await loadPeople();
+    toast('已绑定并录入声纹');
+  } catch (e) {
+    toast('绑定失败：' + e.message, true);
+  }
+}
+
+async function meetDelete() {
+  if (!meet.meta) return;
+  if (!window.confirm('删除这场会议的音频和转写？')) return;
+  try {
+    const r = await apiFetch('/api/v1/session/' + encodeURIComponent(meet.meta.sessionId),
+      { method: 'DELETE' }).then((x) => x.json());
+    if (!r.ok) throw new Error(r.error || '删除失败');
+    meet.meta = null;
+    renderMeeting(null);
+    await loadMeetSessions();
+    meetSetState('已删除');
+  } catch (e) {
+    toast('删除失败：' + e.message, true);
+  }
+}
+
+function meetPlay(ts) {
+  if (!meet.meta) return;
+  const sid = meet.meta.sessionId;
+  apiFetch('/api/v1/audio/play?sessionId=' + encodeURIComponent(sid)
+    + '&timestamp=' + Number(ts) + '&before=2&after=2')
+    .then((r) => {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.blob();
+    })
+    .then((blob) => {
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audio.onended = () => URL.revokeObjectURL(url);
+      audio.play();
+    })
+    .catch((e) => toast('回放失败：' + e.message, true));
+}
+
+let meetBound = false;
+function meetBindOnce() {
+  if (meetBound) return;
+  meetBound = true;
+  if ($('#meetCreate')) $('#meetCreate').onclick = meetCreate;
+  if ($('#meetUpload')) $('#meetUpload').onclick = meetUpload;
+  if ($('#meetFinalize')) $('#meetFinalize').onclick = meetFinalize;
+  if ($('#meetDelete')) $('#meetDelete').onclick = meetDelete;
+  if ($('#meetFile')) $('#meetFile').onchange = () => {
+    if ($('#meetUpload')) $('#meetUpload').disabled = !$('#meetFile').files.length;
+  };
+}
+
 const conv = {
   llm: null,
   person: null,
@@ -381,26 +706,35 @@ const conv = {
 };
 
 function setModule(name) {
-  const onConv = name === 'conv';
-  const convEl = $('#conv');
-  if (!convEl) return;
-  convEl.hidden = !onConv;
-  if ($('#contentPeople')) $('#contentPeople').hidden = onConv;
-  if ($('#listcol')) $('#listcol').hidden = onConv;
-  if ($('#modPeople')) $('#modPeople').classList.toggle('is-active', !onConv);
-  if ($('#modConv')) $('#modConv').classList.toggle('is-active', onConv);
-  if ($('#modConv')) $('#modConv').setAttribute('aria-current', onConv ? 'page' : 'false');
-  if (onConv) {
+  const isPeople = name === 'people';
+  const isConv = name === 'conv';
+  const isMeet = name === 'meeting';
+  if ($('#contentPeople')) $('#contentPeople').hidden = !isPeople;
+  if ($('#listcol')) $('#listcol').hidden = !isPeople;
+  if ($('#conv')) $('#conv').hidden = !isConv;
+  if ($('#meeting')) $('#meeting').hidden = !isMeet;
+  [['#modPeople', isPeople], ['#modConv', isConv], ['#modMeet', isMeet]].forEach(([sel, on]) => {
+    const el = $(sel);
+    if (!el) return;
+    el.classList.toggle('is-active', on);
+    el.setAttribute('aria-current', on ? 'page' : 'false');
+  });
+  if (isConv) {
     convBindOnce();
     renderConvPeople();
     loadConvLlm();
+  }
+  if (isMeet) {
+    meetBindOnce();
+    loadMeetSessions();
+    renderMeeting(meet.meta);
   }
 }
 
 async function loadConvLlm() {
   if (conv.llm) return;
   try {
-    const r = await fetch('/api/converse/llm').then((x) => x.json());
+    const r = await apiFetch('/api/converse/llm').then((x) => x.json());
     conv.llm = r;
   } catch (e) {
     conv.llm = { available: false };
@@ -461,7 +795,7 @@ function renderConvPeople() {
     const src = p.photo ? photoUrl(p) : '';
     if (src) {
       const img = document.createElement('img');
-      img.src = src;
+      loadPhotoInto(img, p);
       img.alt = '';
       img.onerror = () => { img.replaceWith(makeDot()); };
       li.appendChild(img);
@@ -715,6 +1049,7 @@ function bind() {
   if ($('#btnAdd2')) $('#btnAdd2').onclick = add;
   if ($('#modPeople')) $('#modPeople').onclick = () => setModule('people');
   if ($('#modConv')) $('#modConv').onclick = () => setModule('conv');
+  if ($('#modMeet')) $('#modMeet').onclick = () => setModule('meeting');
   if ($('#search')) $('#search').oninput = renderPeople;
   if ($('#edCancel')) $('#edCancel').onclick = closeEditor;
   if ($('#edSave')) $('#edSave').onclick = savePerson;

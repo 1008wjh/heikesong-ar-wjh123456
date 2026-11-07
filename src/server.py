@@ -4,15 +4,17 @@
 刻意不依赖 FastAPI/Flask：零安装成本，现场不可能装不上。
 """
 import base64
+import hmac
 import json
 import os
+import ssl
 import sys
 import threading
 import time
 import traceback
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlparse
 
 import cv2
 import numpy as np
@@ -30,7 +32,17 @@ from store import MATCH_THRESHOLD, Store  # noqa: E402
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 WEB = os.path.join(ROOT, "web")
 PORT = int(os.environ.get("AR_PORT", "8765"))
+# 默认只监听本机：要局域网/手机访问时显式设 AR_HOST=0.0.0.0（并配 AR_API_TOKEN）
+HOST = os.environ.get("AR_HOST", "127.0.0.1").strip() or "127.0.0.1"
 MAX_SIDE = 960  # 送进检测前先缩放，CPU 上快 3 倍
+
+# ---- 安全开关 ----
+# 配了就要求所有 /api/*（/api/health 除外）带 X-API-Token 或 Authorization: Bearer
+API_TOKEN = os.environ.get("AR_API_TOKEN", "").strip()
+TLS_CERT = os.environ.get("AR_TLS_CERT", "").strip()
+TLS_KEY = os.environ.get("AR_TLS_KEY", "").strip()
+DEBUG_ERRORS = os.environ.get("AR_DEBUG_ERRORS", "0").strip() == "1"
+LOG_PII = os.environ.get("AR_LOG_PII", "0").strip() == "1"
 
 # ---- 资源上限：防超大盘内存/磁盘；本地演示够用，正式部署可按需调 ----
 MAX_BODY_BYTES = int(os.environ.get("AR_MAX_BODY_BYTES", str(16 * 1024 * 1024)))
@@ -41,6 +53,14 @@ ALLOW_LOCAL_FILES = os.environ.get("AR_ALLOW_LOCAL_FILES", "1").strip().lower() 
 
 
 class RequestTooLarge(ValueError):
+    pass
+
+
+class UnsupportedMediaType(ValueError):
+    pass
+
+
+class ForbiddenRequest(ValueError):
     pass
 
 store = Store()
@@ -194,14 +214,35 @@ class Handler(BaseHTTPRequestHandler):
         host = (self.client_address or ("",))[0]
         return ALLOW_LOCAL_FILES and host in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
+    def _token(self):
+        auth = (self.headers.get("Authorization") or "").strip()
+        if auth.lower().startswith("bearer "):
+            return auth[7:].strip()
+        return (self.headers.get("X-API-Token") or "").strip()
+
+    def _authorized(self):
+        if not API_TOKEN:
+            return True
+        return hmac.compare_digest(self._token(), API_TOKEN)
+
+    def _reject(self, code, message):
+        return self._json({"ok": False, "error": message}, code)
+
     # ---------- 路由 ----------
 
     def do_GET(self):
+        path = self.path.split("?")[0]
+        # /api/health 不鉴权（容器健康检查/存活探测）；其余 API 都要 token
+        if path.startswith("/api/") and path != "/api/health" and not self._authorized():
+            return self._reject(401, "unauthorized")
         try:
             self._get()
-        except Exception as e:  # GET 也要返回 JSON，不能直接断连接让客户端 RemoteDisconnected
-            traceback.print_exc()
+        except ValueError as e:  # 业务错（不存在/参数错）保留可读信息
             return self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+        except Exception as e:  # 其他异常不能泄露内部细节
+            traceback.print_exc()
+            detail = f"{type(e).__name__}: {e}" if DEBUG_ERRORS else "internal_error"
+            return self._json({"ok": False, "error": detail}, 500)
 
     def _get(self):
         path = self.path.split("?")[0]
@@ -240,6 +281,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?")[0]
+        if path.startswith("/api/") and not self._authorized():
+            return self._reject(401, "unauthorized")
         try:
             body = self._read_json()
             if path == "/api/scan":
@@ -287,21 +330,33 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": False, "error": "未知接口"}, 404)
         except RequestTooLarge as e:
             return self._json({"ok": False, "error": str(e)}, 413)
-        except Exception as e:  # 任何异常都返回给前端看，黑客松现场方便排查
-            traceback.print_exc()
+        except UnsupportedMediaType as e:
+            return self._json({"ok": False, "error": str(e)}, 415)
+        except ForbiddenRequest as e:
+            return self._json({"ok": False, "error": str(e)}, 403)
+        except ValueError as e:  # 业务校验失败：保留可读信息（现场排障）
             return self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+        except Exception as e:  # 未知异常：默认不回显内部细节
+            traceback.print_exc()
+            detail = f"{type(e).__name__}: {e}" if DEBUG_ERRORS else "internal_error"
+            return self._json({"ok": False, "error": detail}, 500)
 
     def do_DELETE(self):
         path = self.path.split("?")[0]
+        if path.startswith("/api/") and not self._authorized():
+            return self._reject(401, "unauthorized")
         try:
             if path.startswith("/api/v1/session/"):
                 sid = path[len("/api/v1/session/"):].strip("/")
                 if sid and "/" not in sid:
                     return self._json({"ok": True, **meetings.delete(sid)})
             return self._json({"ok": False, "error": "未知接口"}, 404)
+        except ValueError as e:
+            return self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
         except Exception as e:
             traceback.print_exc()
-            return self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+            detail = f"{type(e).__name__}: {e}" if DEBUG_ERRORS else "internal_error"
+            return self._json({"ok": False, "error": detail}, 500)
 
     # ---------- 业务 ----------
 
@@ -352,8 +407,8 @@ class Handler(BaseHTTPRequestHandler):
 
         emb = voice.embed(samples)
         person, sim, margin = voice.match(emb, store.voice_index())
-        print(f"[voice] {voice.seconds(samples):.1f}s sim={sim:+.3f} margin={margin:+.3f} "
-              f"-> {person['name'] if person else 'unknown'}")
+        who = (person["name"] if LOG_PII else person["id"]) if person else "unknown"
+        print(f"[voice] {voice.seconds(samples):.1f}s sim={sim:+.3f} margin={margin:+.3f} -> {who}")
 
         if person:
             full = store.get(person["id"]) or person
@@ -679,6 +734,21 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("非法 Content-Length")
         if n > MAX_BODY_BYTES:
             raise RequestTooLarge(f"请求体超过上限 {MAX_BODY_BYTES} 字节")
+        if n:
+            ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if ctype != "application/json":
+                raise UnsupportedMediaType("Content-Type 必须是 application/json")
+
+            # 基础 CSRF 防线：跨站请求/跨站 Origin 直接拒绝（浏览器通常会自动带这两个头）
+            site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+            if site == "cross-site":
+                raise ForbiddenRequest("cross-site request rejected")
+            origin = (self.headers.get("Origin") or "").strip()
+            if origin:
+                host = (self.headers.get("Host") or "").strip().lower()
+                if urlparse(origin).netloc.lower() != host:
+                    raise ForbiddenRequest("origin mismatch")
+
         raw = self.rfile.read(n) if n else b"{}"
         # utf-8-sig：容忍 Windows 工具（PowerShell Set-Content 等）写入的 BOM
         return json.loads(raw.decode("utf-8-sig")) if raw.strip() else {}
@@ -734,8 +804,22 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
-    print(f"MemoryLens 已启动: http://127.0.0.1:{PORT}  (阈值 {MATCH_THRESHOLD}, 库中 {len(store.people())} 人)")
+    if bool(TLS_CERT) != bool(TLS_KEY):
+        raise SystemExit("AR_TLS_CERT 和 AR_TLS_KEY 必须同时设置（或都不设）")
+    srv = ThreadingHTTPServer((HOST, PORT), Handler)
+    scheme = "http"
+    if TLS_CERT:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        ctx.load_cert_chain(TLS_CERT, TLS_KEY)
+        srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+        scheme = "https"
+    shown = "127.0.0.1" if HOST in ("0.0.0.0", "::") else HOST
+    print(f"MemoryLens 已启动: {scheme}://{shown}:{PORT}  (阈值 {MATCH_THRESHOLD}, 库中 {len(store.people())} 人)")
+    print(f"监听 {HOST}:{PORT}；鉴权 {'开启' if API_TOKEN else '关闭'}；"
+          f"本机文件路径 {'允许' if ALLOW_LOCAL_FILES else '禁用'}；TLS {'开启' if TLS_CERT else '关闭'}")
+    if HOST in ("0.0.0.0", "::") and not API_TOKEN:
+        print("警告: 正在监听所有网卡且未设置 AR_API_TOKEN，同一局域网的人可以访问你的数据！")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

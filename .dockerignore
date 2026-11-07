@@ -1,0 +1,18 @@
+# 构建上下文瘦身：不要把 .git（~52MB）、真实人脉数据、测试料送进 Docker daemon
+.git
+.gitignore
+.gitattributes
+data/people.json
+data/photos
+data/meetings
+test
+docs
+examples
+tools
+glasses
+dist
+deploy/cache
+*.md
+*.png
+*.jpg
+!models/**

@@ -116,6 +116,7 @@ def start_server():
         "AR_DATA_DIR": os.path.join(tmpdir, "data"),
         "AR_MEETING_DIR": os.path.join(tmpdir, "meetings"),
         "AR_ASR_PROVIDER": "off",
+        "AR_LLM_STUB": "1",
         "PYTHONIOENCODING": "utf-8",
     })
     # 必须落文件：服务端每个 /api/ 请求都会写日志，接 PIPE 又不读会把管道写满，
@@ -191,6 +192,9 @@ def main():
           str([s.get("name") for s in r.get("speakers", [])]))
     check("分段 >= 6", len(r.get("segments", [])) >= 6, str(len(r.get("segments", []))))
     check("干净音频无重叠丢弃", r.get("dropped_overlap") == 0, str(r.get("dropped_overlap")))
+    check("ASR 转写非空", all((seg.get("text") or "").strip() for seg in r.get("segments", [])),
+          str([seg.get("text") for seg in r.get("segments", [])][:2]))
+    check("ASR 状态 ok", (r.get("asr") or {}).get("state") == "ok", str(r.get("asr")))
     check("耗时 < 20s", elapsed < 20, f"{elapsed:.1f}s")
     spk_ids = [s["spk_id"] for s in r.get("speakers", [])]
 

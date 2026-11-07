@@ -31,6 +31,9 @@ cd heikesong-ar-wjh123456
 克隆下来 `models/` 里已经有三个模型（人脸两个 + 声纹一个，共约 41MB），**不用另外下**。
 只有亮亮视野的开发包不在仓库里（400+MB），见 `docs/07`。
 
+> **隐私说明**：仓库不再跟踪 `data/people.json` 与 `data/photos/`（声纹/人脸底片/照片）。
+> 新克隆后先造一份演示库：`python tools/seed_demo.py`。你自己的真实数据只留在本机。
+
 ---
 
 ## 30 秒跑起来
@@ -150,21 +153,23 @@ curl -s -X POST http://127.0.0.1:8765/api/v1/speaker/bind \
 | `src/voice.py` | 声纹：CAM++ 提 192 维（sherpa-onnx）、余弦匹配、阈值 0.72 + 与第二名的差距 0.08 |
 | `src/store.py` | 人脉库：JSON 读写、多张脸底片取最大相似度（阈值 0.40 可调）、声纹覆盖式更新；字段 name / role / info×3 / photo / simple / complex |
 | `src/cards.py` | 两档数据：`simple` 摊平成镜片上那几行，`complex` 供详情页；老数据自动迁移；可选调 MiMo 生成开场白 |
-| `src/server.py` | 零依赖 HTTP 服务（stdlib，不用装 FastAPI） |
+| `src/server.py` | 零依赖 HTTP 服务（stdlib，不用装 FastAPI）；鉴权/TLS/CSRF/资源上限 |
+| `src/llm.py` | 转写（本地 paraformer / OpenAI 兼容）+ 对话析出（MiMo/DeepSeek/OpenAI） |
 | `src/diarize.py` | v3 多人分离：pyannote 分段 + CAM++ 逐段声纹 + 自研聚类 + 实名映射（无模型时退回能量 VAD） |
-| `src/meeting.py` | v3 会议会话：分片落盘、合并、finalize、绑定实名、锚点回放、眼镜会议卡片 |
+| `src/meeting.py` | v3 会议会话：分片落盘、合并、finalize、逐段 ASR、绑定实名、锚点回放、眼镜会议卡片 |
 | `src/asr.py` | v3 云端 ASR 预留适配层（aliyun/tencent/volcano/off），统一 `{spk_id,start,end,text}` 契约 |
-| `web/` | 控制台：左侧人脉库列表，右侧编辑表单（照片 / 名字 / 身份 / 信息×3 / 两档 JSON / 录声纹）。没有摄像头 |
+| `web/` | 控制台：01 人物数据 / 02 单人对析 / 03 多人会议；无摄像头 |
 | `test/smoke.py` | 管线冒烟测试（同人/不同人相似度） |
 | `test/voice_api_test.py` | 声纹接口 13 项（注册、同人换句、串号、latest、说得太短） |
-| `test/diarize_test.py` | v3 多人分离 25 项（聚类/二次合并/碎片并入/重叠清洗/静音 + 3 人会议零串号） |
-| `test/meeting_api_test.py` | v3 会议 API 53 项（独立端口/临时数据：分片、finalize、bind、锚点回放、删除、参数边界、预留 action） |
+| `test/diarize_test.py` | v3 多人分离 27 项（聚类/二次合并/碎片并入/重叠清洗/静音/加噪鲁棒 + 3 人会议零串号） |
+| `test/meeting_api_test.py` | v3 会议 API 55 项（独立端口/临时数据：分片、finalize、ASR、bind、锚点回放、删除、参数边界） |
+| `test/auth_test.py` | 鉴权/TLS/CSRF 15 项（401、Bearer/X-API-Token、HTTPS、text/plain 415、跨站 403） |
 | `test/security_test.py` | 安全回归 13 项（路径穿越、前缀绕过、本地文件读取、body/会议上限、正常静态文件） |
 | `test/api_test.py` | 端到端 14 项（识别、抗干扰、陌生人、录入、卡片 == 信息 1/2/3） |
 | `test/api_console.py` | 控制台接口 15 项（增删改查、换图、空名拒绝、照片 404） |
 | `test/e2e_console.js` | 真浏览器跑控制台 9 项（点新增、上传图、保存、编辑、删除） |
 | `test/dom_sim.js` | 控制台前端 17 项（列表渲染、表单回填、保存提交的 JSON、坏 JSON 被拦住） |
-| `test/glasses_sim.js` | 眼镜端 17 项：假 FusionUI + 假麦克风跑真后端，断言镜片上写出什么字、按「确认」能不能翻到详情 |
+| `test/glasses_sim.js` | 眼镜端 21 项：假 FusionUI + 假麦克风跑真后端，含单人流程、人脸上屏、会议模式 |
 | `glasses/` | 眼镜端 FusionUI 应用源码（`src/index.js`），打包产物在 `glasses/dist/` |
 | `dist/memorylens.fuiapp` | 打好的包（1.6.2 / versionCode 18 / debug-unsigned），给模拟器或真机 |
 | `tools/kit-docker.ps1` | Windows 入口：在容器里跑 `test/build/package/run`（推荐） |
@@ -175,6 +180,9 @@ curl -s -X POST http://127.0.0.1:8765/api/v1/speaker/bind \
 | `tools/enroll.py` | 命令行批量导脸：`python tools/enroll.py 张三 photos/zhangsan/` |
 | `tools/hud_preview.py` | 按眼镜端坐标把 HUD 画成 PNG：`python tools/hud_preview.py voice huihui_b` |
 | `tools/try_voice.py` | 拿一条 WAV 直接测声纹：`python tools/try_voice.py test/voice/huihui_b.wav` |
+| `tools/seed_demo.py` | 造演示人脉库（公开样图 + 合成语音），新克隆后先跑它 |
+| `tools/eval_diarization.py` | 用真实录音 + 标注 JSON 算分离准确率（现场调阈值用） |
+| `tools/gen_self_signed_cert.py` | 生成自签 TLS 证书（本机/局域网 HTTPS 演示） |
 | `tools/cdp_*.js` | 调试用：通过 Edge DevTools 协议查 DOM / 截图 / 敲键 / 跑端到端脚本 |
 | `examples/` | 三张公开示例图（验证识别用）；**真实人脉数据只在本机 `data/`，不进仓库** |
 | `start.bat` | 一键启动（找 Python、装依赖、读 `env.local.bat`、开浏览器） |
@@ -243,6 +251,24 @@ python src\server.py
 
 刻意没做的两件事：**多人分离**（另一个模块在做）、**自动写库**（模型会有幻觉，必须人工勾选）。
 
+### 模块 03 · 多人会议（v3）
+
+控制台第三个模块：**新建会议 → 上传 wav（可多段）→ 生成分离 → 给 spk 绑实名 → 回放片段**。
+
+| 环节 | 实现 |
+|---|---|
+| 分段 | pyannote segmentation-3.0（ONNX 5.72MB） |
+| 声纹/聚类 | CAM++ 逐段 192 维 + 自研贪心聚类；**只处理轮流说话**，重叠段默认丢弃（`dropped_overlap`） |
+| 转写 | `src/llm.py` 统一 ASR（本地 paraformer / 任意 OpenAI 兼容），逐段贴回；没配就只显示时间/说话人 |
+| 眼镜端 | 空屏按「上」进会议模式；「确认」录 20 秒一段并上传，「返回」结束并分离 |
+
+```powershell
+# 命令行也能跑（详见 docs/08）
+curl -s -X POST http://127.0.0.1:8765/api/v1/session/create -H "Content-Type: application/json" -d '{\"title\":\"周会\"}'
+```
+
+**只做轮流说话**：两人同时说话会被当垃圾丢弃，不尝试拆分。设计、模型选型、参数见 [docs/08](docs/08-多人识别.md)。
+
 ---
 
 ## 做到哪一步了
@@ -259,6 +285,8 @@ python src\server.py
 **D3 · 演示与兜底（已完成）**
 - 批量导脸 `tools/enroll.py`；单张照片验证 `tools/try_face.py`；阈值现场可调（`AR_MATCH_THRESHOLD` / `AR_VOICE_THRESHOLD`）
 - 模块 02 对话分析：锁人 → 录音 → MiMo 转写/析出 → 勾选写入档案（`test/converse_api_test.py` 16 项）
+- 模块 03 多人会议：分段 + 逐段声纹 + 聚类 + 实名映射；控制台/眼镜都有入口；`test/diarize_test.py` 27 项、`test/meeting_api_test.py` 55 项
+- 安全：鉴权 / TLS / CSRF / 路径穿越 / 任意文件读取 / 请求体与会议上限；`test/auth_test.py` 15 项、`test/security_test.py` 13 项
 - 容器化：后端与工具链两个镜像，模拟器能在容器里真跑（见 `deploy/`）
 - 文档：`使用说明.md`、`开发者文档.md`（原 `docs/00`、`docs/08`）
 
@@ -290,6 +318,7 @@ python src\server.py
   镜片上单个 Text 只画得出约 110px，所以 HUD 是窄列、每行按字宽断成 6 个汉字以内；
   信息超过一屏（6 行）会**自动滚动**，页脚显示 `1/2` 页码（详见 docs/07）。
 - 连哪台电脑由 `MEMORYLENS_BACKEND` 决定，默认 `http://127.0.0.1:8765`；真机改成笔记本的局域网 IP。
+- 服务端开了 `AR_API_TOKEN` 时，眼镜端设 `MEMORYLENS_TOKEN`（同一串）；会议模式：空屏按「上」进入，确认录 20 秒一段，返回结束并分离。
 - 打包与跑：`powershell -File tools/kit-docker.ps1 package`、`powershell -File tools/kit-docker.ps1 run`。
 - 真机镜片长什么样：`test/glasses_card.png`（简单卡片）、`test/glasses_detail.png`（按「确认」展开的详情页），
   都是模拟器 mono 模式，单色绿，640×480。
@@ -306,7 +335,8 @@ python src\server.py
 | 眼镜上没有摄像头 | 手机/笔记本采集，眼镜只做显示；架构不变 |
 | 断网 | 全本地，无任何外部请求（LLM 是可选开关） |
 | 现场吵、认错人 | 声纹双条件：绝对分 ≥0.72 且比第二名高 0.08；不满足就当陌生人，不瞎猜 |
-| 被问隐私 | 主动讲：仅本人同意录入、数据留在设备、可一键删除（控制台「删」/ `/api/people/delete`） |
+| 被问隐私 | 主动讲：仅本人同意录入、数据留在设备、可一键删除（控制台「删」/ `/api/people/delete`）；**仓库不跟踪真实人脉数据**，克隆后 `tools/seed_demo.py` 只造演示库 |
+| 局域网/公网裸奔 | 默认只监听 `127.0.0.1`；要给手机/眼镜访问时设 `AR_HOST=0.0.0.0` + `AR_API_TOKEN`，并建议 `tools/gen_self_signed_cert.py` 开 TLS |
 | 同框多人卡片打架 | 卡片不再跟着脸走：脸只画框 + 编号，信息固定堆在左下角面板，按编号对应 |
 
 ## 环境
@@ -314,4 +344,10 @@ python src\server.py
 - 模型：`models/yunet.onnx`（检测）、`models/arcface_mbf.onnx`（MobileFaceNet，13MB）
 - 依赖：`opencv-python-headless`、`onnxruntime`、`numpy`、`sherpa-onnx`（2.0.1）
 - 声纹模型：`models/campplus_zh_16k.onnx`（CAM++，28MB；`AR_VOICE_MODEL` 可换）
+- 多人分段：`models/diarization/pyannote-segmentation-3.0.onnx`（5.72MB）
+- 安全开关：`AR_HOST`（默认 127.0.0.1）、`AR_API_TOKEN`、`AR_TLS_CERT/KEY`、`AR_DEBUG_ERRORS`、`AR_LOG_PII`
+- 资源上限：`AR_MAX_BODY_BYTES`、`AR_MEETING_MAX_SECONDS/CHUNKS/CHUNK_SECONDS`
+- 许可证：代码 [MIT](LICENSE)；模型来源与许可见下方，商用前请复核权重条款
+  - CAM++ / 3D-Speaker：Apache-2.0（阿里 ModelScope）
+  - pyannote segmentation 导出 ONNX：pyannote 系模型，按模型发布页条款
 - 已在本机验证：Python 3.12 / OpenCV 5.0 / onnxruntime 1.31，CPU 单帧 40–130ms

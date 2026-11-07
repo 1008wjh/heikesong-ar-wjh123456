@@ -32,5 +32,9 @@ probe/
 glasses/dist/
 # 会议运行时数据（分片音频 / meta.json / 转写），不进仓库
 data/meetings/
+# 真实人脉数据（声纹/人脸底片/照片）不进仓库；克隆后跑 tools/seed_demo.py 造演示库
+data/people.json
+data/photos/
 models/asr/
 env.local.bat
+certs/

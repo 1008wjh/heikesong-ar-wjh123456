@@ -80,8 +80,9 @@ class _CloudAsr(AsrProvider):
             self.state = "not-configured"
             self.detail = "缺少环境变量: " + ", ".join(missing)
         else:
-            self.state = "ready"
-            self.detail = "已配置（Demo 阶段先返回占位：接入时补 HTTP 调用）"
+            # 密钥齐了，但这一层只是预留：不要假装 ready，否则 finalize 一定进 error
+            self.state = "reserved"
+            self.detail = "密钥已配置，但厂商 HTTP 调用尚未实现（多人链路优先用 src/llm.py 的 ASR）"
 
     def transcribe(self, wav_path: str) -> list[dict]:
         if not self.available:
