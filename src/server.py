@@ -323,8 +323,8 @@ class Handler(BaseHTTPRequestHandler):
         if owner:
             owner_ids.add(owner["id"])
             owner_embs = list(owner.get("voice_embeddings") or [])
-        if not owner_embs:
-            return {"ok": False, "status": "no_owner", "error": "还没录过主人的声音"}
+        # 主人还没录声纹时不做剔除，至少还能认人（阈值放宽靠 voice.match 自己把关）
+        no_owner_voice = not owner_embs
 
         clusters, segs = diar.split(samples)
         if not clusters:
@@ -334,11 +334,11 @@ class Handler(BaseHTTPRequestHandler):
         lines = []
         best = None
         for spk, c in clusters.items():
-            sim_owner = max(float(np.dot(c["emb"], e)) for e in owner_embs)
+            sim_owner = max((float(np.dot(c["emb"], e)) for e in owner_embs), default=0.0)
             person, sim_val, margin = voice.match(c["emb"], others)
             lines.append({"speaker": spk, "secs": c["secs"], "sim_owner": round(sim_owner, 3),
                           "person": (person or {}).get("name"), "sim": round(sim_val, 3)})
-            if sim_owner >= voice.THRESHOLD:
+            if owner_embs and sim_owner >= voice.THRESHOLD:
                 continue
             if best is None or sim_val > best[0]:
                 best = (sim_val, person, sim_owner, spk)

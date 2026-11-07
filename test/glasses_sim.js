@@ -13,6 +13,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 process.env.MEMORYLENS_FIRST_SLICE_MS = process.env.MEMORYLENS_FIRST_SLICE_MS || "15000";
+process.env.MEMORYLENS_IDENTIFY_MS = process.env.MEMORYLENS_IDENTIFY_MS || "9000";
 const Module = require("node:module");
 
 const BACKEND = process.env.MEMORYLENS_BACKEND || "http://127.0.0.1:8765";
@@ -267,28 +268,24 @@ function wavFramesLoop(name, seconds) {
   navQueue.push("activate");
   await waitUntil(() => hud().some((v) => v.includes("在听")), 8000);
   check("进入持续听（状态行有计时）", hud().some((v) => v.includes("在听")), JSON.stringify(hud()));
-  await waitUntil(() => hud().includes("王姐"), 30000);
+  // 进在听之后不再自动切片：界面上只有「识别人」
   let lines = hud();
-  check("切片后认出王姐", lines.includes("王姐"), JSON.stringify(lines));
+  check("进在听只给「识别人」按钮", lines.some((v) => v.includes("识别人")), JSON.stringify(lines));
+  check("没有自动切片（还没卡片）", !lines.some((v) => v.includes("王姐")), JSON.stringify(lines));
+
+  // 1b) 按「确认」→ 录一段做分轨认人
+  navQueue.push("activate");
+  await waitUntil(() => hud().some((v) => v.includes("20 秒") || v.includes("识别人 ")), 6000);
+  check("识别人开始录", hud().some((v) => v.includes("20 秒") || v.includes("识别人 ")), JSON.stringify(hud()));
+
+  await waitUntil(() => hud().includes("王姐"), 20000);
+  lines = hud();
+  check("识别人认出王姐", lines.includes("王姐"), JSON.stringify(lines));
   check("卡片带相似度", lines.some((v) => v.includes("SIM")), JSON.stringify(lines));
   check("HUD 出现身份", lines.some((v) => v.startsWith("产品经理")), JSON.stringify(lines));
-  check("第一片回的是数据库内容（身份 + 信息，不是 AI 总结）",
-    lines.join("").includes("产品经理") && (lines.join("").includes("报价单") || lines.join("").includes("豆豆")),
-    JSON.stringify(lines));
-
-  // 1b) 录音中按「确认」→ 进入「识别人」（新流程：先认出对方，再出三个按钮）
-  await sleep(900);
-  navQueue.push("activate");
-  await waitUntil(() => hud().some((v) => v.includes("识别人")), 6000);
-  lines = hud();
-  check("按确认进入识别人（状态行显示 识别人 N/20）",
-    lines.some((v) => v.includes("识别人")), JSON.stringify(lines));
-
-  // 识别人期间：卡片仍然保留在上面（没有被刷成空白）
-  lines = hud();
-  check("识别人期间上一张卡片还在（没被刷掉）",
-    lines.some((v) => v.includes("王姐")), JSON.stringify(lines));
-  navQueue.push("back");   // 退出识别人（返回 = 结束这段）
+  await waitUntil(() => hud().some((v) => v.includes("提词") || v.includes("待办")), 12000);
+  check("认出之后出现三个预设按钮",
+    hud().some((v) => v.includes("提词")) || hud().some((v) => v.includes("待办")), JSON.stringify(hud()));
 
   // 1c) 按「返回」→ 结束这段录音（测试里关掉自动入库，所以停在卡片上）
   navQueue.push("back");
