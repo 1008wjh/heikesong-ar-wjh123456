@@ -495,9 +495,10 @@ function paintListening() {
     putText(retained.role, silent ? "点「确认采集」" : "直接说话就行，不用按键");
     putText(retained.sim, " ");
     const bar = levelBar();
+    const quiet = capture.peaks.slice(-12).every((v) => v < 0.03);
     const hint = [
       "55 秒出一片 · 先认人",
-      bar || "（等声音…）",
+      quiet ? "（等声音…）" : bar,
       "按「返回」结束并入库",
     ];
     retained.info.forEach((t, i) => putText(t, hint[i] || ""));
@@ -540,7 +541,7 @@ function pump() {
         const v = Math.abs(buf.readInt16LE(i));
         if (v > peak) peak = v;
       }
-      c.level = Math.min(1, peak / 12000);
+      c.level = Math.min(1, peak / 4000);
       c.peaks.push(c.level);
       if (c.peaks.length > 24) c.peaks.shift();
     } else if (ev.type === "end") {
@@ -606,6 +607,12 @@ async function drain(c) {
 async function startListening(mode) {
   if (capture || background) return;
   listenSig = "";
+  // 上一段刚结束时会话还没被平台释放，立刻再申请就会报"麦克风繁忙"
+  const cool = 1200 - (Date.now() - (endedAt || 0));
+  if (cool > 0) {
+    paintIdle("稍等 · 麦克风正在释放");
+    await new Promise((r) => setTimeout(r, cool));
+  }
   let availability;
   try {
     availability = input.getVoiceInputAvailability("audio");
@@ -615,9 +622,9 @@ async function startListening(mode) {
   }
   if (!availability || availability.canRequest === false) {
     // 常见原因是上一次录音还没被回收，等一会儿再试
-    for (let i = 0; i < 3 && availability && availability.canRequest === false; i++) {
+    for (let i = 0; i < 4 && availability && availability.canRequest === false; i++) {
       paintIdle("麦克风忙 · 等一下再试");
-      await new Promise((r) => setTimeout(r, 800));
+      await new Promise((r) => setTimeout(r, 700));
       try {
         availability = input.getVoiceInputAvailability("audio");
       } catch (e) {
