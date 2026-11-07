@@ -12,7 +12,13 @@ import sys
 import time
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LOG = os.path.join(os.environ.get("AR_DATA_DIR") or os.path.join(BASE, "data"), "logs", "agent.log")
+sys.path.insert(0, os.path.join(BASE, "src"))
+
+try:
+    import calllog            # 和服务端共用同一套路径解析（AR_LOG_DIR → E:\pear\logs → data/logs）
+    LOG = calllog.path()
+except Exception:             # 极端情况下退回老路径
+    LOG = os.path.join(os.environ.get("AR_DATA_DIR") or os.path.join(BASE, "data"), "logs", "agent.log")
 
 
 def rows(n):

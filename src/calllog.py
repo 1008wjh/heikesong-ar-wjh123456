@@ -1,8 +1,12 @@
 # -*- coding: utf-8 -*-
-"""调用日志：每一段对话处理完写一行 JSON，方便排查"是不是规则兜底、哪一步慢"。
+r"""调用日志：每一段对话处理完写一行 JSON，方便排查"是不是规则兜底、哪一步慢"。
 
-文件位置：<AR_DATA_DIR 或仓库 data>/logs/agent.log（JSONL，一行一件事）
-查看方式：GET /api/agent/log?n=50，或直接 tail 文件
+文件位置（按优先级）：
+1. `AR_LOG_DIR` 指定的目录；
+2. `E:\pear\logs`（队友共享目录，方便两个人对着同一份日志看）；
+3. `<AR_DATA_DIR 或仓库 data>/logs`（兜底）。
+
+查看方式：GET /api/agent/log?n=50，或 `python tools/tail_log.py 20 --follow`
 """
 import json
 import os
@@ -11,9 +15,28 @@ import time
 
 _LOCK = threading.Lock()
 _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SHARED = r"E:\pear\logs"
+
+
+def _writable(d):
+    try:
+        os.makedirs(d, exist_ok=True)
+        probe = os.path.join(d, ".write-test")
+        with open(probe, "w", encoding="utf-8") as f:
+            f.write("ok")
+        os.remove(probe)
+        return True
+    except Exception:
+        return False
 
 
 def _dir():
+    want = os.environ.get("AR_LOG_DIR")
+    if want:
+        os.makedirs(want, exist_ok=True)
+        return want
+    if _writable(_SHARED):
+        return _SHARED
     root = os.environ.get("AR_DATA_DIR") or os.path.join(_BASE, "data")
     path = os.path.join(root, "logs")
     os.makedirs(path, exist_ok=True)
