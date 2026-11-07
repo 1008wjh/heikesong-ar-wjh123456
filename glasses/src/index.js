@@ -284,14 +284,17 @@ function paintOffline(err) {
 function paintCard(card, rev, ms) {
   const known = card.status !== "unknown";
   const kind = card.kind === "voice" ? "听到" : "看到";
+  // 智能体链路会直接给状态（待命/处理中/待确认/完成/异常），优先用它
+  const agentState = card.kind === "agent" ? (card.state || "") : "";
   viewMode = "simple";
   complexRows = null;
   putText(retained.status,
     card.status === "short" ? "没听清 · 再说一次"
-      : known ? kind + " · " + (ms || 0) + "ms"
-        : (card.kind === "voice" ? "陌生的声音" : "陌生人 · 不认识"));
+      : agentState ? agentState + (card.degraded ? " · 兜底" : "") + " · " + (ms || 0) + "ms"
+        : known ? kind + " · " + (ms || 0) + "ms"
+          : (card.kind === "voice" ? "陌生的声音" : "陌生人 · 不认识"));
   putText(retained.name, card.name || "陌生人");
-  putText(retained.role, card.role || "");
+  putText(retained.role, card.layout === "notice" ? "多人对话 · 没入库" : (card.role || ""));
   putText(retained.sim, known && typeof card.similarity === "number"
     ? "SIM " + card.similarity.toFixed(2) : "");
 

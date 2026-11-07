@@ -269,6 +269,58 @@ PROMPT = """你在帮一个人整理他和某个人的对话记录。只根据�
 key 只能从这里选：答应的事 / 偏好 / 近况 / 关系 / 日期 / 跟进 / 其他"""
 
 
+def _chat_plain(system, user, max_tokens=64, temperature=0.0):
+    """只要一句短回答的调用（分类、选人）。"""
+    if STUB:
+        raise LLMUnavailable("stub 模式没有这个能力")
+    if not LLM_KEY:
+        raise LLMUnavailable("没配文本模型 Key")
+    data = _post_json(
+        "/chat/completions",
+        {
+            "model": LLM_MODEL,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        },
+    )
+    try:
+        return (data["choices"][0]["message"]["content"] or "").strip()
+    except Exception:
+        raise LLMUnavailable("模型返回格式看不懂")
+
+
+def classify_mode(transcript):
+    """这段对话是单人对谈还是多人会议？只回 single / meeting。"""
+    out = _chat_plain(
+        "判断下面这段对话是【一个人和对面一个人】在聊，还是【三个及以上的人】在开会。"
+        "只回一个词：single 或 meeting。看不出来就回 single。",
+        (transcript or "")[:1500],
+        max_tokens=4,
+    ).lower()
+    return "meeting" if "meeting" in out else "single"
+
+
+def pick_person(transcript, names):
+    """从名单里挑出用户提到的那个（"刚才那个产品经理"）。挑不出返回 None。"""
+    if not names:
+        return None
+    out = _chat_plain(
+        "从候选名单里，选出对话中提到的那个人。只回名字本身；判断不出来就回 none。\n"
+        "候选：" + "、".join(names[:30]),
+        (transcript or "")[:800],
+        max_tokens=12,
+    )
+    out = out.strip().strip("。.「」\"'")
+    for name in names:
+        if name and name in out:
+            return name
+    return None
+
+
 def analyze(transcript, person):
     """对话原文 → {summary, items[]}。person 只用 name/role 做上下文。"""
     transcript = (transcript or "").strip()
