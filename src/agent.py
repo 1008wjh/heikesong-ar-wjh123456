@@ -123,7 +123,8 @@ def tool_voice_match(state: AgentState) -> dict:
     if state.get("auto_add") and len(heard) >= 2 and float(sim) < voice.AUTOADD_MAX:
         name = next_stranger_name(store_ref)
         created = store_ref.save(name=name, role="陌生人 · 眼镜端自动建的",
-                                 info=["语音自动入库，回头改个名字", "", ""])
+                                 info=["语音自动入库，回头改个名字", "", ""],
+                                 simple={}, complex_={})
         store_ref.add_voice(created["id"], emb)
         return {"person_id": created["id"], "person_name": name, "similarity": 1.0,
                 "matched_by": "voice", "notes": ["新面孔，已建号 %s" % name]}

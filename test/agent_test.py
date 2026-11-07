@@ -90,7 +90,22 @@ def main():
     check("陌生人自动建号", (r4["view"].get("person") or "").startswith("陌生人"),
           r4["view"].get("person"))
     if r4["view"].get("person_id"):
-        created.append(r4["view"]["person_id"])
+        pid4 = r4["view"]["person_id"]
+        created.append(pid4)
+        p4 = next((x for x in get(base, "/api/people")["people"] if x["id"] == pid4), {})
+        check("陌生人的简单/复杂数据是空的",
+              not (p4.get("simple") or {}) and not (p4.get("complex") or {}),
+              {"simple": p4.get("simple"), "complex": p4.get("complex")})
+        # 继续聊一段：不能把 LLM 提取的要点自动写进这个陌生人的详细数据
+        post(base, "/api/agent/feed", {
+            "session": "stranger2-" + os.urandom(3).hex(), "person_id": pid4,
+            "manual": True, "text": "我下周三去上海出差，回来再聊",
+        })
+        p4 = next((x for x in get(base, "/api/people")["people"] if x["id"] == pid4), {})
+        check("陌生人不会被自动写详细数据",
+              not (p4.get("complex") or {}).get("对话要点"), p4.get("complex"))
+        check("陌生人也不会被自动写对话记录", not (p4.get("conversations") or []),
+              len(p4.get("conversations") or []))
 
     # 5) 眼镜端拿得到这一帧（老接口不变）
     latest = get(base, "/api/latest")

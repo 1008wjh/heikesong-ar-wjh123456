@@ -363,7 +363,8 @@ class Handler(BaseHTTPRequestHandler):
         if not person or sim_val < voice.THRESHOLD:
             # 陌生人：直接建号入库（带这一簇的声纹），之后就能被认出来
             name = _next_stranger_name()
-            rec = store.save(name=name, role="陌生人", info=["眼镜端自动建的，回头改个名字"])
+            rec = store.save(name=name, role="陌生人", info=["眼镜端自动建的，回头改个名字"],
+                             simple={}, complex_={})
             store.add_voice(rec["id"], clusters[spk]["emb"])
             person = store.get(rec["id"]) or rec
             sim_val = max(sim_val, 0.0)
@@ -413,6 +414,7 @@ class Handler(BaseHTTPRequestHandler):
                 name=_next_stranger_name(),
                 role="陌生人 · 眼镜端自动建的",
                 info=["语音自动入库，回头改个名字", "", ""],
+                simple={}, complex_={},
             )
             store.add_voice(person["id"], emb)
             person = [p for p in store.people() if p["id"] == person["id"]][0]
