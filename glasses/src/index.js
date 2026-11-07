@@ -411,6 +411,8 @@ function stopScroll() {
 // ④ 边切边传，不在内存里堆整段（要支持 30 分钟）
 
 const SLICE_MS = 15000;         // 一片 15 秒：够听清一句话，也让"认人"不用等太久
+const FIRST_SLICE_MS = 15000;   // 第一片：15 秒就要出结果（认人 + 第一版要点）
+const NEXT_SLICE_MS = 55000;    // 之后每 55 秒一片，正好在平台 60 秒会话上限之前
 const SLICE_MIN_MS = 3000;      // 停止时最后一片不足这个数就丢掉
 const MAX_SESSION_MS = 55000;   // 平台上限 60 秒，提前换会话
 const MAX_LISTEN_MS = 30 * 60 * 1000;   // 兜底：连续听 30 分钟自动停
@@ -476,7 +478,8 @@ function pump() {
       return;
     }
   }
-  if (c.samples >= 16000 * (SLICE_MS / 1000)) cutSlice(c);
+  const target = (c.sent || 0) === 0 ? FIRST_SLICE_MS : NEXT_SLICE_MS;
+  if (c.samples >= 16000 * (target / 1000)) cutSlice(c);
   if (Date.now() - c.sessionStartedAt >= MAX_SESSION_MS) {
     try { c.session.finish(); } catch (e) { /* 已经结束 */ }
     if (!c.stopped) { openSession(); return; }
@@ -630,25 +633,141 @@ async function stopAndArchive(msg) {
 
 // ---------- 主循环 ----------
 
+
+// ---------------- 文本通道：虚拟键盘 + AI 建议 ----------------
+// 眼镜上只有六个离散动作（上下左右/确认/返回），所以键盘做成"短语键"：
+// 每格是一个常用词，方向键选，确认键输入。比 26 个字母更适合中文。
+const KEY_ROWS = [
+  ["我", "你", "他", "好", "不"],
+  ["是", "的", "了", "再", "说"],
+  ["一", "次", "下", "周", "报"],
+  ["删除", "发送", "关闭"],
+];
+const DEFAULT_OPTS = ["只留待办", "再说细一点", "不是他"];
+let textMode = null;   // {kind:"keys"|"opts", r, c, draft, options, index}
+
+function openText(kind) {
+  if (capture) {
+    // 录音时也可以开：文本只会另起一段，不会打断正在录的对话
+  }
+  textMode = { kind: kind, r: 0, c: 0, draft: "", index: 0, options: (lastScene && lastScene.card && lastScene.card.options) || DEFAULT_OPTS };
+  paintText();
+}
+
+function closeText() {
+  textMode = null;
+  if (capture) { paintListening(); return; }
+  if (lastScene && lastScene.card) { paintCard(lastScene.card, lastScene.rev, lastScene.ms); return; }
+  paintIdle("按一下开始听 · 上=打字 下=看建议");
+}
+
+function keyRowsView() {
+  return KEY_ROWS.map((row, r) =>
+    row.map((k, c) => (r === textMode.r && c === textMode.c ? "【" + k + "】" : k)).join(" "));
+}
+
+function paintText() {
+  if (!textMode) return;
+  if (textMode.kind === "opts") {
+    putText(retained.status, "建议 · 上下选");
+    putText(retained.name, (lastScene && lastScene.card && lastScene.card.name) || "一句话指令");
+    putText(retained.role, "确认=发送");
+    putText(retained.sim, "");
+    const rows = textMode.options.map((o, i) => (i === textMode.index ? "▶ " + o : "  " + o));
+    retained.info.forEach((t, i) => putText(t, rows[i] || ""));
+    putText(retained.foot, "返回 关掉");
+    return;
+  }
+  putText(retained.status, "打字 · 方向键选");
+  putText(retained.name, textMode.draft ? textMode.draft.slice(-5) : "?");
+  putText(retained.role, "短语键");
+  putText(retained.sim, "");
+  const rows = keyRowsView();
+  retained.info.forEach((t, i) => putText(t, rows[i] || ""));
+  putText(retained.foot, "删除 发送 关闭");
+}
+
+async function sendText(text) {
+  const t = (text || "").trim();
+  if (!t) return;
+  textMode = null;
+  try {
+    const resp = await postJson("/api/agent/feed", {
+      session: "text-" + Date.now().toString(36),
+      text: t,
+      auto_add: false,
+    });
+    const v = resp && resp.view;
+    if (!v) { paintIdle("没拿到结果"); return; }
+    const card = {
+      kind: "agent",
+      status: v.person ? "known" : "unknown",
+      name: v.person || "文字",
+      role: "",
+      similarity: v.similarity || 0,
+      lines: v.rows || [],
+      state: v.state,
+      layout: v.layout,
+      options: v.options || [],
+      degraded: !!v.degraded,
+    };
+    lastScene = { card: card, rev: resp.rev, ms: 0 };
+    shownRev = resp.rev;
+    paintCard(card, resp.rev, v.ms || 0);
+  } catch (e) {
+    paintOffline(e && e.message);
+  }
+}
+
+function navText(act) {
+  if (!textMode) return;
+  if (textMode.kind === "opts") {
+    const n = textMode.options.length;
+    if (act === "up") textMode.index = (textMode.index + n - 1) % n;
+    else if (act === "down") textMode.index = (textMode.index + 1) % n;
+    else if (act === "activate") { sendText(textMode.options[textMode.index]); return; }
+    else if (act === "back") { closeText(); return; }
+    paintText();
+    return;
+  }
+  let r = textMode.r;
+  let c = textMode.c;
+  if (act === "left") c = (c + KEY_ROWS[r].length - 1) % KEY_ROWS[r].length;
+  else if (act === "right") c = (c + 1) % KEY_ROWS[r].length;
+  else if (act === "up") { r = (r + KEY_ROWS.length - 1) % KEY_ROWS.length; c = Math.min(c, KEY_ROWS[r].length - 1); }
+  else if (act === "down") { r = (r + 1) % KEY_ROWS.length; c = Math.min(c, KEY_ROWS[r].length - 1); }
+  else if (act === "back") { closeText(); return; }
+  else if (act === "activate") {
+    const k = KEY_ROWS[r][c];
+    if (k === "删除") textMode.draft = textMode.draft.slice(0, -1);
+    else if (k === "发送") { sendText(textMode.draft); return; }
+    else if (k === "关闭") { closeText(); return; }
+    else textMode.draft = (textMode.draft + k).slice(0, 24);
+  }
+  textMode.r = r;
+  textMode.c = c;
+  paintText();
+}
+
 function handleNavigation() {
-  if (background) return;
-  let nav = null;
-  do {
-    try { nav = input.takeNavigationAction(); } catch (e) { nav = null; }
-    if (nav === "activate") {
-      if (capture) {
-        // 录音中按「确认」= 看这个人的详细信息（再按一次收起），不打断录音
-        if (capture.lastCard) toggleDetail();
-      } else if (viewMode === "simple" || viewMode === "complex") toggleDetail();
-      else startListening();                                          // 空白 → 开始听
-    } else if (nav === "back") {
-      if (capture) {
-        stopAndArchive();                                             // 录音中按「返回」= 结束并入库
-      } else if (viewMode !== "idle") {
-        clearView();        // 清屏：回到"按一下开始听"
-      }
-    }
-  } while (nav);
+  const act = input.takeNavigationAction();
+  if (!act) return;
+  if (textMode) { navText(act); return; }
+  if (capture) {
+    if (act === "activate") { toggleDetail(); return; }   // 录音中看详情，不打断
+    if (act === "back") { stopAndArchive("结束了"); return; }
+    if (act === "up") { openText("keys"); return; }
+    if (act === "down") { openText("opts"); return; }
+    return;
+  }
+  if (act === "up") { openText("keys"); return; }
+  if (act === "down") { openText("opts"); return; }
+  if (act === "activate") {
+    if (viewMode === "simple" || viewMode === "complex") { toggleDetail(); return; }
+    startListening();
+    return;
+  }
+  if (act === "back") { clearView(); return; }
 }
 
 function clearView() {
@@ -698,6 +817,7 @@ async function flushOutbox() {
 }
 
 function tick() {
+  if (textMode) { paintText(); return; }
   rafId = typeof os.requestAnimationFrame === "function" ? os.requestAnimationFrame(tick) : null;
   const now = Date.now();
   if (now - lastPaintAt < 400) return;

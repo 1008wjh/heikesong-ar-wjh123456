@@ -283,6 +283,31 @@ function wavFramesLoop(name, seconds) {
   check("人脸结果也能上屏（里奥）", lines.includes("里奥"), JSON.stringify(lines));
   check("状态是「看到」", lines.some((v) => v.includes("看到")), JSON.stringify(lines));
 
+
+  // 6) 文本通道：上键打开键盘（短语键），确认键输入，返回键关掉
+  await fetch(BACKEND + "/api/latest/reset");
+  navQueue.push("up");
+  await sleep(600);
+  lines = hud();
+  check("文本通道：上键打开键盘", lines.some((v) => v.includes("打字")), JSON.stringify(lines));
+  check("键盘上能看到短语键", lines.some((v) => v.includes("【我】")), JSON.stringify(lines));
+
+  navQueue.push("activate");          // 输入「我」
+  await sleep(400);
+  lines = hud();
+  check("确认键把字打进去了", lines.some((v) => v.includes("我") && !v.includes("（还没输入）")),
+    JSON.stringify(lines));
+
+  navQueue.push("right");
+  navQueue.push("activate");          // 输入「你」
+  await sleep(400);
+  lines = hud();
+  check("连续输入拼成一句", lines.some((v) => v.includes("我你")), JSON.stringify(lines));
+
+  navQueue.push("back");
+  await sleep(400);
+  check("返回键关掉键盘", !hud().some((v) => v.includes("【")), JSON.stringify(hud()));
+
   console.log(failures ? `\n${failures} 项失败` : "\n全部通过");
   process.exit(failures ? 1 : 0);
 })().catch((e) => {

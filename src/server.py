@@ -356,6 +356,7 @@ class Handler(BaseHTTPRequestHandler):
             "person_id": view.get("person_id") or "",
             "state": view.get("state"),
             "layout": view.get("layout"),
+            "options": view.get("options") or [],
             "degraded": bool(view.get("degraded")),
         }
         payload = {"ok": True, "session": session, "view": view, "ms": view.get("ms", 0),

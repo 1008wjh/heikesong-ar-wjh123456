@@ -171,6 +171,17 @@ def node_extract(state: AgentState) -> dict:
     return tool_extract(state)
 
 
+def suggest_options(state_name, person_name):
+    """给眼镜端三条快捷指令（文本通道的入口之一）。"""
+    if state_name == "待确认":
+        return ["就是我说的这个人", "换一个人", "先别入库"]
+    if state_name == "待命":
+        return ["开始记录", "我刚才说了什么", "帮我总结一下"]
+    if state_name == "异常":
+        return ["再试一次", "换成手打", "先存着"]
+    return ["只留待办", "再说细一点", "不是他"]
+
+
 def node_render(state: AgentState) -> dict:
     """把"人 + 要点"渲染成镜片视图模型（五状态之一 + 布局）。"""
     if state.get("mode") == "meeting":
@@ -199,6 +210,7 @@ def node_render(state: AgentState) -> dict:
         "person_id": state.get("person_id") or "",
         "matched_by": state.get("matched_by") or "none",
         "similarity": state.get("similarity") or 0.0,
+        "options": suggest_options(state_name, name),
         "degraded": state.get("degraded", False),
     }}
 

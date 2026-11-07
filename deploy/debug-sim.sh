@@ -70,6 +70,13 @@ PY
   sleep "${AGENT_WAIT:-5}"
 fi
 
+# 想截"文本键盘"就点一下 Client 控制台里的「上」（坐标按 1280x960 量）
+if [[ "${PRESS_UP:-0}" == "1" ]]; then
+  echo "== press up =="
+  timeout 10 xdotool mousemove "${UP_X:-1016}" "${UP_Y:-244}" click 1 2>/dev/null || echo "click failed"
+  sleep "${UP_WAIT:-3}"
+fi
+
 # 想截"详情页"就点一下 Client 控制台里的「确认」按钮（坐标是 1280x960 布局下量的）
 if [[ "${PRESS_CONFIRM:-0}" == "1" ]]; then
   echo "== press confirm =="
