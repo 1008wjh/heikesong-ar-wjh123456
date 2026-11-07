@@ -141,7 +141,8 @@ python tools\try_face.py test\biden.jpg      # unknown 陌生人
 | `tools/hud_preview.py` | 按眼镜端坐标把 HUD 画成 PNG：`python tools/hud_preview.py voice huihui_b` |
 | `tools/try_voice.py` | 拿一条 WAV 直接测声纹：`python tools/try_voice.py test/voice/huihui_b.wav` |
 | `tools/cdp_*.js` | 调试用：通过 Edge DevTools 协议查 DOM / 截图 / 敲键 / 跑端到端脚本 |
-| `start.bat` | 一键启动（找 Python、装依赖、开浏览器） |
+| `examples/` | 三张公开示例图（验证识别用）；**真实人脉数据只在本机 `data/`，不进仓库** |
+| `start.bat` | 一键启动（找 Python、装依赖、读 `env.local.bat`、开浏览器） |
 
 ### 控制台（人脉库增删改查）
 
