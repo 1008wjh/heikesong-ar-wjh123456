@@ -28,7 +28,14 @@ import voice
 MAX_SPEAKERS = 8
 SPEAKER_MATCH = 0.72
 MAX_SEGMENTS = 400
-MAX_ASR_SEGMENTS = 12
+# 55 秒会议通常只有十几段；24 是上限，避免长段会议把后半段整段丢掉。
+MAX_ASR_SEGMENTS = 24
+MAX_ACTIONS = 8
+
+LAYOUT_FULL = "meeting"
+LAYOUT_FOCUS = "meeting_focus"
+LAYOUT_COMPACT = "meeting_compact"
+LAYOUT_ADVICE = "meeting_advice"
 
 
 class MeetingState(TypedDict, total=False):
@@ -52,6 +59,12 @@ class MeetingState(TypedDict, total=False):
     actions: list
     transcript: str
     summary: str
+
+    # 会议交互：五状态里的“待确认”不是靠首片猜，而是先问用户再锁人数。
+    layout: str
+    confirmed: bool
+    expected_speakers: int
+    command: str
 
     view: dict
     rev: int
@@ -147,6 +160,74 @@ def _rule_actions(segments: list[dict]) -> list[dict]:
     return dedup[:6]
 
 
+_CN_NUM = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
+           "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+
+
+def _cn_int(value: str) -> int:
+    value = (value or "").strip()
+    if value.isdigit():
+        return int(value)
+    if value in _CN_NUM:
+        return _CN_NUM[value]
+    if value.startswith("十") and len(value) == 1:
+        return 10
+    if value.startswith("十") and value[1:] in _CN_NUM:
+        return 10 + _CN_NUM[value[1:]]
+    if len(value) == 2 and value[0] in _CN_NUM and value[1] == "十":
+        return _CN_NUM[value[0]] * 10
+    return 0
+
+
+def _find_person(name: str, people: list[dict]):
+    name = (name or "").strip()
+    if not name:
+        return None
+    exact = [p for p in (people or []) if (p.get("name") or "").strip() == name]
+    if exact:
+        return exact[0]
+    # “王姐 / 王姐老师”这种称呼允许包含匹配，但至少两个字，避免“王”误配。
+    if len(name) >= 2:
+        for p in (people or []):
+            pn = (p.get("name") or "").strip()
+            if len(pn) >= 2 and (pn in name or name in pn):
+                return p
+    return None
+
+
+def _pending_actions(actions: list[dict]) -> list[dict]:
+    return [a for a in actions if (a.get("status") or "pending") == "pending"]
+
+
+def _advice(speakers: list[dict], actions: list[dict], expected: int) -> list[str]:
+    pending = _pending_actions(actions)
+    out = []
+    if expected and len(speakers) != expected:
+        out.append("人数对不上：检测到 %d 人，你说 %d 人" % (len(speakers), expected))
+    if len(speakers) >= 2:
+        out.append("先确认人数，再把「这是谁」绑到真实姓名")
+    if pending:
+        first = pending[0]
+        owner = first.get("owner") or "未指定"
+        out.append("先追：%s 的「%s」" % (owner, (first.get("task") or "")[:18]))
+        out.append("会后逐条确认负责人和截止时间")
+    else:
+        out.append("还没听到明确待办：可以问「谁负责、什么时候」")
+    out.append("说「只看待确认」只看待办，说「保存」锁定本场")
+    return out[:5]
+
+
+def _summary(speakers: list[dict], segments: list[dict], actions: list[dict]) -> str:
+    bits = []
+    if speakers:
+        bits.append("%d 人" % len(speakers))
+    if segments:
+        bits.append("%d 段" % len(segments))
+    if actions:
+        bits.append("%d 条待办" % len(actions))
+    return " · ".join(bits) if bits else "会议还没听到内容"
+
+
 # ---------------------------------------------------------------- 节点
 
 
@@ -154,15 +235,20 @@ def node_ingest(state: MeetingState) -> dict:
     audio = state.get("audio") or ""
     text = (state.get("text") or "").strip()
     session = state.get("session") or "meeting"
+    has_audio = bool(audio)
     out = {
         "session": session,
         "meeting_id": state.get("meeting_id") or ("m_" + _safe_session(session)),
-        "slice_no": int(state.get("slice_no") or 0) + 1,
+        # 文本指令不是“新的一片”，不能推进 slice_no，否则待确认状态会被跳过。
+        "slice_no": int(state.get("slice_no") or 0) + (1 if has_audio else 0),
         "degraded": False,
         "notes": [],
     }
     if not audio:
-        return out
+        # 清掉上一片的采样/分人，否则文本指令会拿旧音频再跑一遍。
+        return {**out, "audio": "", "samples": None, "mapped": [], "diarize": {},
+                "slice_sec": 0.0, "audio_peak": 0,
+                "offset_sec": float(state.get("offset_sec") or 0)}
     try:
         raw = _decode_audio(audio)
         samples = voice.read_wav(raw)
@@ -176,6 +262,76 @@ def node_ingest(state: MeetingState) -> dict:
     peak = int(np.max(np.abs(samples)) * 32768.0) if samples.size else 0
     return {**out, "samples": samples, "slice_sec": sec, "audio_peak": peak,
             "offset_sec": float(state.get("offset_sec") or 0)}
+
+
+def node_commands(state: MeetingState) -> dict:
+    """会议文本指令。
+
+    眼镜只有上下左右/确认/返回，所以会议里的文本不是“再开一段对话”，
+    而是对当前会议的窄指令：确认人数、绑人、切布局、看建议、保存标记。
+    """
+    raw = (state.get("text") or "").strip()
+    if not raw:
+        return {}
+    text = raw.replace(" ", "")
+    speakers = [dict(s) for s in (state.get("speakers") or [])]
+    layout = state.get("layout") or LAYOUT_FULL
+    confirmed = bool(state.get("confirmed"))
+    expected = int(state.get("expected_speakers") or 0)
+    notes: list[str] = []
+
+    # 1) 绑人：这是王姐 / 第二位是王姐 / 换成王姐
+    bind = re.search(
+        r"(?:第([一二三四五六七八九十\d]+)位|第([一二三四五六七八九十\d]+)个)?"
+        r"(?:是|叫|换成)([\u4e00-\u9fffA-Za-z·]{1,12})", text)
+    if bind and bind.group(3) not in ("谁", "哪位", "什么", "会议", "这样"):
+        name = bind.group(3).strip("，。！？、")
+        idx = _cn_int(bind.group(1) or bind.group(2) or "1") - 1
+        if not speakers:
+            notes.append("还没分人，先说几句再绑定")
+        elif idx < 0 or idx >= len(speakers):
+            notes.append("没有第 %d 位发言人" % (idx + 1))
+        else:
+            person = _find_person(name, state.get("people") or [])
+            sp = speakers[idx]
+            sp["name"] = (person or {}).get("name") or name
+            if person:
+                sp["person_id"] = person.get("id") or ""
+                notes.append("第 %d 位已绑定 %s" % (idx + 1, sp["name"]))
+            else:
+                sp["person_id"] = ""
+                notes.append("本场标记为 %s（通讯录没有，未写人脉）" % name)
+            return {"speakers": speakers, "notes": notes, "command": "bind"}
+
+    # 2) 人数：改人数 3 / 3 人 / 三人
+    m = (re.search(r"改人数\s*(\d+)", text)
+         or re.search(r"(\d+)\s*人", text)
+         or re.search(r"改人数\s*([一二两三四五六七八九十])", text)
+         or re.search(r"([一二两三四五六七八九十])\s*人", text))
+    if m:
+        expected = _cn_int(m.group(1))
+        notes.append("本场按 %d 人记录；检测到 %d 人" % (expected, len(speakers)))
+        return {"expected_speakers": expected, "notes": notes, "command": "count"}
+
+    # 3) 布局：必须放在“确认”之前，否则“只看待确认”会先命中确认。
+    if re.search(r"回到全部|看全部|取消筛选|全部", text):
+        return {"layout": LAYOUT_FULL, "notes": ["已回到全部"], "command": "layout"}
+    if re.search(r"只看待确认|待确认|待办", text):
+        return {"layout": LAYOUT_FOCUS, "notes": ["只看待确认"], "command": "layout"}
+    if re.search(r"按负责人|负责人分组|分组", text):
+        return {"layout": LAYOUT_COMPACT, "notes": ["按负责人分组"], "command": "layout"}
+    if re.search(r"给我建议|建议|怎么办", text):
+        return {"layout": LAYOUT_ADVICE, "notes": ["会议建议"], "command": "layout"}
+
+    # 4) 确认/保存：只锁定本场，不在这里归档（归档由返回键触发）。
+    if re.search(r"确认人数|确认参会|确认|锁定|保存", text):
+        confirmed = True
+        notes.append("已确认 %d 人；按返回归档" % len(speakers) if speakers else "还没有分人结果")
+        return {"confirmed": confirmed, "notes": notes, "command": "confirm"}
+
+    # 5) 未知指令：明确提示可用词，避免用户以为没反应
+    return {"notes": ["没听懂「%s」；可用：确认人数 / 只看待确认 / 按负责人 / 给我建议 / 保存"
+                      % raw[:18]], "command": "unknown"}
 
 
 def node_diarize(state: MeetingState) -> dict:
@@ -254,7 +410,14 @@ def node_asr(state: MeetingState) -> dict:
     names = {s["id"]: s.get("name") or "发言人" for s in (state.get("speakers") or [])}
     out = []
     texts = []
-    for seg in mapped[:MAX_ASR_SEGMENTS]:
+    # 24 段是硬上限；超过时保留长段（信息更多），短视频噪声先让位，再按时间还原。
+    selected = sorted(
+        mapped,
+        key=lambda s: float(s.get("end") or 0) - float(s.get("start") or 0),
+        reverse=True,
+    )[:MAX_ASR_SEGMENTS]
+    selected.sort(key=lambda s: float(s.get("start") or 0))
+    for seg in selected:
         a = max(0, int(float(seg["start"]) * voice.SAMPLE_RATE))
         b = min(samples.size, int(float(seg["end"]) * voice.SAMPLE_RATE))
         text = ""
@@ -292,42 +455,137 @@ def node_actions(state: MeetingState) -> dict:
         if key and key not in existing:
             existing.add(key)
             actions.append(a)
-    return {"actions": actions[-6:]}
+    return {"actions": actions[-MAX_ACTIONS:]}
+
+
+def node_summary(state: MeetingState) -> dict:
+    return {"summary": _summary(state.get("speakers") or [],
+                                state.get("segments") or [],
+                                state.get("actions") or [])}
 
 
 def node_view(state: MeetingState) -> dict:
     speakers = state.get("speakers") or []
     actions = state.get("actions") or []
     segments = state.get("segments") or []
-    rows = []
+    notes = state.get("notes") or []
+    layout = state.get("layout") or LAYOUT_FULL
+    confirmed = bool(state.get("confirmed"))
+    expected = int(state.get("expected_speakers") or 0)
+    has_audio = bool(state.get("audio"))
+    summary = state.get("summary") or _summary(speakers, segments, actions)
+
+    # 五状态：待命 → 处理中 → 待确认 → 完成；异常由 run_feed 兜底。
+    # 2 人以上必须由用户确认一次人数；不按切片数退回“完成”，否则第二片自动
+    # 切完就把“待确认”冲掉了。
+    waiting = bool(speakers) and not confirmed and len(speakers) >= 2
     if speakers:
-        names = [s.get("name") or "发言人" for s in speakers]
-        rows.append("%d 人 · %s" % (len(speakers), " / ".join(names[:3])))
-        for s in speakers[:2]:
-            rows.append("%s · %ds" % (s.get("name") or "发言人", int(float(s.get("seconds") or 0))))
-        if actions:
-            rows.append("待办: " + str(actions[0].get("task") or "")[:18])
-        if segments:
-            rows.append("已转写 %d 段" % len(segments))
-        rows.append("按「返回」结束并归档")
-        state_name = "待确认" if int(state.get("slice_no") or 0) <= 1 else "完成"
-    else:
-        rows = ["会议中…", "还没听到明确的人声", "再说几句，或按返回结束"]
+        state_name = "待确认" if waiting else "完成"
+    elif has_audio:
         state_name = "处理中"
+    else:
+        state_name = "待命"
+
+    names = [s.get("name") or "发言人" for s in speakers]
+    rows: list[str] = []
+    if layout == LAYOUT_FOCUS:
+        pending = _pending_actions(actions)
+        rows.append("待确认待办 · %d 条" % len(pending))
+        for a in pending[:4]:
+            rows.append("%s · %s" % ((a.get("owner") or "未指定"), (a.get("task") or "")[:18]))
+        if not pending:
+            rows.append("没有待确认待办")
+        if waiting:
+            rows.append("人数待确认 · 说「确认人数」")
+        rows.append("说「回到全部」恢复")
+    elif layout == LAYOUT_COMPACT:
+        groups: dict[str, list[dict]] = {}
+        for a in actions:
+            groups.setdefault(a.get("owner") or "未指定", []).append(a)
+        rows.append("按负责人 · %d 条待办" % len(actions))
+        for owner, items in list(groups.items())[:4]:
+            rows.append("%s · %d 条" % (owner, len(items)))
+        if not actions:
+            rows.append("还没有待办")
+        rows.append("说「回到全部」恢复")
+    elif layout == LAYOUT_ADVICE:
+        rows.append("会议建议")
+        rows.extend(_advice(speakers, actions, expected)[:4])
+        rows.append("说「回到全部」恢复")
+    else:
+        if speakers:
+            if waiting:
+                rows.append("检测到 %d 人 · 确认参会人" % len(speakers))
+            else:
+                rows.append("%d 人 · %s" % (len(speakers), " / ".join(names[:3])))
+            for s in speakers[:2]:
+                rows.append("%s · %ds" % (s.get("name") or "发言人",
+                                          int(float(s.get("seconds") or 0))))
+            if expected and expected != len(speakers):
+                rows.append("人数 %d≠%d · 说「改人数 %d」" % (len(speakers), expected, len(speakers)))
+            if actions:
+                rows.append("待办: " + str(actions[0].get("task") or "")[:18])
+            if segments:
+                rows.append("已转写 %d 段" % len(segments))
+            rows.append("按「返回」结束并归档")
+        elif has_audio:
+            rows = ["会议中…", "还没听到明确的人声", "再说几句，或按返回结束"]
+        else:
+            # 文本指令先于第一片音频：保持“待命”，但把可用词和错误提示露出来。
+            if notes:
+                rows = [str(notes[-1])[:24], "可用：确认人数 / 只看待确认 / 给我建议"]
+            else:
+                rows = ["会议待命", "按一下开始听 · 左/右选模式",
+                        "可用：确认人数 / 只看待确认 / 给我建议"]
+
+    # 所有布局都要把“绑定成功/人数已改/没听懂”露出来，否则文本指令像没反应。
+    # full 卡把提示插在标题后，避免被底部“按返回”挤掉。
+    if notes:
+        note = str(notes[-1])[:24]
+        if note not in rows:
+            if layout == LAYOUT_FULL and rows:
+                rows.insert(1, note)
+            else:
+                rows.append(note)
+
+    # 布局优先，但“待确认”时任何布局都要能一键确认人数。
+    if layout == LAYOUT_FOCUS:
+        options = ["回到全部", "保存"] + (["确认人数"] if waiting else [])
+    elif layout == LAYOUT_COMPACT:
+        options = ["回到全部", "只看待确认", "保存"] + (["确认人数"] if waiting else [])
+    elif layout == LAYOUT_ADVICE:
+        options = ["回到全部", "保存"] + (["确认人数"] if waiting else [])
+    elif waiting:
+        options = ["确认人数", "只看待确认", "给我建议"]
+    else:
+        options = ["只看待确认", "按负责人", "给我建议", "保存"]
+
+    role = "多人会议 · %d 人" % len(speakers)
+    if state_name == "待确认":
+        role += " · 待确认"
+    elif state_name == "待命":
+        role = "多人会议 · 待命"
 
     view = {
         "state": state_name,
-        "layout": "meeting",
+        "layout": layout,
         "rows": rows[:6],
         "person": "会议",
         "person_id": state.get("meeting_id") or "",
-        "role": "多人会议 · %d 人" % len(speakers),
+        "role": role,
         "similarity": 0.0,
-        "options": ["保存", "只看待确认", "给我建议"],
+        "options": options,
         "mode": "meeting",
         "speaker_count": len(speakers),
+        "speakers": [{"id": s.get("id"), "name": s.get("name") or "发言人",
+                      "person_id": s.get("person_id") or "",
+                      "seconds": s.get("seconds") or 0,
+                      "similarity": s.get("similarity")} for s in speakers],
         "action_count": len(actions),
-        "actions": actions[:6],
+        "actions": actions[:MAX_ACTIONS],
+        "summary": summary,
+        "confirmed": confirmed,
+        "expected_speakers": expected,
         "degraded": bool(state.get("degraded")),
     }
     return {"view": view}
@@ -336,17 +594,21 @@ def node_view(state: MeetingState) -> dict:
 def build(memory=None):
     g = StateGraph(MeetingState)
     g.add_node("ingest", node_ingest)
+    g.add_node("commands", node_commands)
     g.add_node("diarize", node_diarize)
     g.add_node("merge", node_merge)
     g.add_node("asr", node_asr)
     g.add_node("actions", node_actions)
+    g.add_node("summary", node_summary)
     g.add_node("view", node_view)
     g.add_edge(START, "ingest")
-    g.add_edge("ingest", "diarize")
+    g.add_edge("ingest", "commands")
+    g.add_edge("commands", "diarize")
     g.add_edge("diarize", "merge")
     g.add_edge("merge", "asr")
     g.add_edge("asr", "actions")
-    g.add_edge("actions", "view")
+    g.add_edge("actions", "summary")
+    g.add_edge("summary", "view")
     g.add_edge("view", END)
     return g.compile(checkpointer=memory) if memory else g.compile()
 
@@ -382,11 +644,15 @@ def run_feed(session: str, text: str = "", audio: str = "", auto_add: bool = Fal
     try:
         out = graph().invoke(state, _cfg(session))
     except Exception as e:
-        view = {"state": "异常", "layout": "meeting",
+        view = {"state": "异常", "layout": LAYOUT_FULL,
                 "rows": ["会议智能体出错了", str(e)[:40]], "person": "会议",
-                "mode": "meeting", "speaker_count": 0, "action_count": 0}
+                "mode": "meeting", "speaker_count": 0, "action_count": 0,
+                "options": ["回到全部", "保存"], "summary": "会议处理失败",
+                "confirmed": False, "expected_speakers": 0,
+                "degraded": True}
         view["rev"] = int(time.time() * 1000) % 1000000
         view["ms"] = int((time.time() - t0) * 1000)
+        view["notes"] = ["会议智能体异常：%s" % e]
         return view
 
     view = out.get("view") or {"state": "处理中", "layout": "meeting",

@@ -62,6 +62,7 @@ let outboxTimer = null;
 let inFlight = false;
 let shownRev = -1;
 let background = false;
+let lastMeeting = null;      // 最近一场会议的 session；会议结束后仍可用文本指令回看
 
 // 实测结论（simulator）：单个 Text 只画得出一百多像素宽，再长就被硬切。
 // 所以一行文字拆成若干个 Text，横向拼起来（每块 x 依次 +124）。
@@ -420,6 +421,10 @@ function paintFootHint() {
   const pages = Math.max(1, Math.ceil(cardRows.length / VISIBLE_ROWS));
   const page = pages > 1 ? " · " + (Math.floor(rowOffset / VISIBLE_ROWS) + 1) + "/" + pages : "";
   if (viewMode === "complex") { putText(retained.foot, "确认收起 返回清屏" + page); return; }
+  if (capture && capture.mode === "meeting") {
+    putText(retained.foot, "确认追问 返回归档" + page);
+    return;
+  }
   putText(retained.foot, (lastScene && lastScene.card && lastScene.card.status === "unknown"
     ? "按一下 · 去控制台新增" : "按一下再说") + page);
 }
@@ -520,7 +525,7 @@ function paintListening(msg) {
     for (const ln of (card.lines || [])) rows.push(...splitLines(ln, 6));
     if (rows.join("|") !== cardRows.join("|")) { cardRows = rows; rowOffset = 0; }
     paintRows();
-    putText(retained.foot, "确认详情 返回结束");
+    putText(retained.foot, capture.mode === "meeting" ? "确认追问 返回归档" : "确认详情 返回结束");
     return;
   }
   if (!c0) {
@@ -538,7 +543,7 @@ function paintListening(msg) {
     retained.info.forEach((t, i) => putText(t, hint[i] || ""));
     paintedRows = "";
   }
-  putText(retained.foot, "确认详情 返回结束");
+  putText(retained.foot, capture.mode === "meeting" ? "确认追问 返回归档" : "确认详情 返回结束");
 }
 
 // 调试用：容器里没有声卡时，用正弦波顶替麦克风，方便验证波形与切片链路
@@ -805,6 +810,9 @@ async function startListening(mode) {
     personId: "", personName: "", sessionId: null,
     lastCard: null, stopped: false, dropped: 0, pumpTimer: null,
   };
+  // 单人开始会清掉上一场会议；会议结束（返回归档）后保留，文本指令还能回看。
+  if (capture.mode === "meeting") lastMeeting = { session: capture.agentSession, at: Date.now() };
+  else lastMeeting = null;
   viewMode = "idle";
   complexRows = null;
   openSession();
@@ -912,6 +920,13 @@ async function stopAndArchive(msg) {
   endedAt = Date.now();
   putText(retained.foot, "收尾 · 传剩余录音…");
   await drain(c);
+  // drain() 在 busy 时会直接返回；归档前必须等队列真正清空，
+  // 否则会议 meta 会漏掉最后几片（尤其最后一句待办）。
+  const drainT0 = Date.now();
+  while ((c.busy || c.queue.length) && Date.now() - drainT0 < 45000) {
+    if (!c.busy && c.queue.length) drain(c).catch(() => {});
+    await new Promise((r) => setTimeout(r, 100));
+  }
   if (c.mode === "meeting") {
     paintIdle("正在保存会议…");
     try {
@@ -1011,19 +1026,31 @@ async function sendText(text) {
   const t = (text || "").trim();
   if (!t) return;
   textMode = null;
+  // 会议中的文本是对“当前会议”的指令，不能再开 text-* 新 session。
+  let session = "text-" + Date.now().toString(36);
+  let mode = "";
+  if (capture) {
+    session = capture.agentSession;
+    mode = capture.mode;
+  } else if (lastMeeting) {
+    session = lastMeeting.session;
+    mode = "meeting";
+  }
+  if (capture) {
+    capture.thinkingUntil = Date.now() + 20000;
+    paintListening("处理中…");
+  }
   try {
-    const resp = await postJson("/api/agent/feed", {
-      session: "text-" + Date.now().toString(36),
-      text: t,
-      auto_add: false,
-    }, 30000);
+    const body = { session: session, text: t, auto_add: false };
+    if (mode) body.mode = mode;
+    const resp = await postJson("/api/agent/feed", body, 30000);
     const v = resp && resp.view;
-    if (!v) { paintIdle("没拿到结果"); return; }
+    if (!v) { if (capture) capture.thinkingUntil = 0; paintIdle("没拿到结果"); return; }
     const card = {
       kind: "agent",
       status: v.person ? "known" : "unknown",
       name: v.person || "文字",
-      role: "",
+      role: v.role || "",
       similarity: v.similarity || 0,
       lines: v.rows || [],
       state: v.state,
@@ -1033,8 +1060,19 @@ async function sendText(text) {
     };
     lastScene = { card: card, rev: resp.rev, ms: 0 };
     shownRev = resp.rev;
+    if (capture) {
+      capture.thinkingUntil = 0;
+      capture.lastCard = card;
+      capture.lastRev = resp.rev;
+      capture.lastMs = v.ms || 0;
+      capture.showUntil = Date.now() + 20000;
+      paintCard(card, resp.rev, v.ms || 0);
+      paintListening();
+      return;
+    }
     paintCard(card, resp.rev, v.ms || 0);
   } catch (e) {
+    if (capture) capture.thinkingUntil = 0;
     paintOffline(e && e.message);
   }
 }
@@ -1074,7 +1112,7 @@ let modeSelect = null;   // {index:0|1}
 
 const MODE_ITEMS = [
   { key: "single", label: "单人", hint: "一个人聊 · 55 秒出片" },
-  { key: "meeting", label: "多人", hint: "三人以上 · 分人 / 待办 / 归档" },
+  { key: "meeting", label: "多人", hint: "2 人以上 · 分人 / 待办 / 归档" },
 ];
 
 function openMode() {
