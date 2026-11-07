@@ -301,6 +301,18 @@ code {
 
 .list-search { padding: 10px; }
 
+/* 主人还没录声纹时的提醒：识别人不会剔除自己，会被当成陌生人 */
+.owner-warn {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  background: var(--accent3);
+  border-left: 6px solid var(--accent);
+  color: var(--ink);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+.owner-warn p { margin: 0 0 6px; }
+
 /* 列表放在一个白格里，行与行之间的黑线由 ul 的黑底露出来 */
 .listbody {
   padding: 0;

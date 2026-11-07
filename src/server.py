@@ -356,6 +356,7 @@ class Handler(BaseHTTPRequestHandler):
             person = store.get(rec["id"]) or rec
             sim_val = max(sim_val, 0.0)
             card = cards.build_card(person, 1.0, voice.THRESHOLD)
+            card["created"] = True
             return {"ok": True, "status": "known", "created": True,
                     "person_id": person["id"], "name": person["name"],
                     "similarity": 1.0, "clusters": lines, "card": card}
@@ -469,6 +470,7 @@ class Handler(BaseHTTPRequestHandler):
             "similarity": float(view.get("similarity") or 0.0),
             "lines": (view.get("rows") or [])[:6],
             "person_id": view.get("person_id") or "",
+            "matched_by": view.get("matched_by") or "",
             "state": view.get("state"),
             "layout": view.get("layout"),
             "options": view.get("options") or [],

@@ -6,7 +6,7 @@
 const $ = (s) => document.querySelector(s);
 
 // 改代码就 +1，页脚会显示。看到 build 不是最新的，说明浏览器还在跑旧脚本。
-const BUILD = 17;
+const BUILD = 18;
 
 const state = { people: [], threshold: 0.4 };
 
@@ -61,6 +61,7 @@ function renderPeople() {
   const list = state.people.filter(
     (p) => !q || (p.name + ' ' + (p.role || '')).toLowerCase().includes(q)
   );
+  renderOwnerWarn();
   ul.innerHTML = '';
   if (!list.length) {
     const li = document.createElement('li');
@@ -134,6 +135,32 @@ function renderPeople() {
   });
 }
 
+/* ---------------- 主人声纹提醒 ---------------- */
+
+// 识别人时会先剔除"主人"那一簇；主人没有声纹时这一步等于没做，
+// 主人自己说话就可能被当陌生人建号。这里给出一个一键去录的入口。
+function renderOwnerWarn() {
+  const box = $('#ownerWarn');
+  if (!box) return;
+  const owner = state.people.find((p) => p.owner);
+  const missing = owner && !(owner.voice_count > 0);
+  box.hidden = !missing;
+  if (!missing) return;
+  box.innerHTML = '';
+  const p = document.createElement('p');
+  p.textContent = '主人「' + owner.name + '」还没录声纹：识别人时不会剔除你自己，'
+    + '容易被当成陌生人建号。';
+  const btn = document.createElement('button');
+  btn.className = 'mini';
+  btn.textContent = '录主人声纹（' + VOICE_SECONDS + ' 秒）';
+  btn.onclick = () => {
+    openEditor(owner.id);
+    const v = $('#edVoice');
+    if (v && v.scrollIntoView) v.scrollIntoView({ block: 'center' });
+  };
+  box.append(p, btn);
+}
+
 /* ---------------- 编辑器 ---------------- */
 
 function jsonText(obj) {
@@ -198,10 +225,15 @@ function openEditor(id) {
     : '正脸、光线均匀、别戴帽子。';
 
   const vc = (editing && editing.voice_count) || 0;
-  $('#edVoiceHint').textContent = vc > 0
-    ? '已有 ' + vc + ' 条声纹，重录会覆盖。'
-    : '说一句「我是 XXX」，眼镜就能听声认人。';
-  $('#edVoice').textContent = '◉ 录声纹（3 秒）';
+  const isOwner = !!(editing && editing.owner);
+  $('#edVoiceHint').textContent = isOwner
+    ? (vc > 0
+      ? '主人已有 ' + vc + ' 条声纹，重录会覆盖；识别人时会先剔除这一簇。'
+      : '主人声纹用来在识别人时剔除你自己，录 ' + VOICE_SECONDS + ' 秒即可。')
+    : (vc > 0
+      ? '已有 ' + vc + ' 条声纹，重录会覆盖。'
+      : '说一句「我是 XXX」，眼镜就能听声认人。');
+  $('#edVoice').textContent = (isOwner ? '◉ 录主人声纹（' : '◉ 录声纹（') + VOICE_SECONDS + ' 秒）';
   $('#edDelete').hidden = !editing;
 
   $('#empty').hidden = true;
@@ -372,7 +404,8 @@ async function finishVoice(r) {
   const wav = floatToWav(r.chunks, sampleRate);
   const blob = new Blob([wav], { type: 'audio/wav' });
   pendingVoice = await blobToDataURL(blob);
-  $('#edVoice').textContent = '◉ 重录声纹（3 秒）';
+  const ownerVoice = !!(editing && editing.owner);
+  $('#edVoice').textContent = (ownerVoice ? '◉ 重录主人声纹（' : '◉ 重录声纹（') + VOICE_SECONDS + ' 秒）';
   $('#edVoiceHint').textContent = '已录 ' + (blob.size / 32000).toFixed(1) + ' 秒，保存时一起写入。';
 }
 

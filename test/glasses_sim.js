@@ -282,6 +282,7 @@ function wavFramesLoop(name, seconds) {
   check("识别人认出王姐", lines.includes("王姐"), JSON.stringify(lines));
   check("卡片带相似度", lines.some((v) => v.includes("SIM")), JSON.stringify(lines));
   check("HUD 出现身份", lines.some((v) => v.startsWith("产品经理")), JSON.stringify(lines));
+  check("认出后先停档案（按钮稍后出现）", hud().some((v) => v.includes("先看档案")), JSON.stringify(hud()));
   await waitUntil(() => hud().some((v) => v.includes("提词") || v.includes("待办")), 12000);
   check("认出之后出现三个预设按钮",
     hud().some((v) => v.includes("提词")) || hud().some((v) => v.includes("待办")), JSON.stringify(hud()));

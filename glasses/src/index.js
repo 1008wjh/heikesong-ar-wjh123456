@@ -31,6 +31,8 @@ const OUTBOX_RETRY_MS = 8000;  // 离线录音的重发间隔
 let HOLD_MS = 9000;                       // 第一片自动认人后：9 秒
 let IDENTIFY_MS = Number(process.env.MEMORYLENS_IDENTIFY_MS || 20000);   // 识别人：录多久
 let PRESET_HOLD_MS = Number(process.env.MEMORYLENS_PRESET_HOLD_MS || 30000);  // 手动提交：30 秒      // 认人卡片在镜片上停留多久
+// 认出人之后先把档案停 5 秒，再出三个按钮（这段时间按键仍然有效）
+const BUTTON_DELAY_MS = Number(process.env.MEMORYLENS_BUTTON_DELAY_MS || 5000);
 
 // 宿主注入的私有数据目录；没有（单测 / 无沙箱环境）就不落盘。
 const APP_DATA_DIR = process.env.FUSIONUI_APP_DATA_DIR;
@@ -318,6 +320,7 @@ function paintCard(card, rev, ms) {
   putText(retained.name, card.name || "陌生人");
   putText(retained.role, card.layout === "notice" ? "多人对话 · 没入库" : (card.role || ""));
   putText(retained.sim, known && typeof card.similarity === "number"
+    && card.matched_by !== "pinned" && !card.created
     ? "SIM " + card.similarity.toFixed(2) : "");
 
   // tick 每 400ms 会重画一次同一张卡，别把滚动位置重置了。
@@ -510,12 +513,17 @@ function paintListening(msg) {
   const c0 = held ? capture.lastCard : null;
   const left = c0 ? Math.max(0, Math.ceil((capture.showUntil - Date.now()) / 1000)) : 0;
   // 回复在的时候，状态行改成倒计时，让人知道还有几秒
-  const identSecs = capture.identifying ? Math.min(20, Math.round((Date.now() - capture.identAt) / 1000)) : 0;
+  const identTarget = Math.round(IDENTIFY_MS / 1000);
+  const identSecs = capture.identifying
+    ? Math.min(identTarget, Math.round((Date.now() - capture.identAt) / 1000)) : 0;
   const head = thinking || flash
-    || (capture.identifying ? ("识别人 " + identSecs + "/20") : "")
+    || (capture.identifying ? ("识别人 " + identSecs + "/" + identTarget) : "")
     || (c0 ? ("回复 · " + left + "s") : statusWithBar(listenLine()));
+  // 认出人之后先只显示档案，过几秒再出三个按钮；这段时间按键仍然有效
+  const buttonsReady = !capture.buttonsAt || Date.now() >= capture.buttonsAt;
   // 整屏指纹：文字没变就整帧跳过
-  const sig = head + "|" + (c0 ? left + "|" + (c0.lines || []).join("~") : levelBar() + "|" + presetIdx);
+  const sig = head + "|" + buttonsReady + "|" + (c0 ? left + "|" + (c0.lines || []).join("~")
+    : levelBar() + "|" + presetIdx);
   if (sig === listenSig) return;
   listenSig = sig;
   putText(retained.status, head);
@@ -525,6 +533,7 @@ function paintListening(msg) {
     putText(retained.name, c0.name || "陌生人");
     putText(retained.role, c0.layout === "notice" ? "多人对话 · 没入库" : (c0.role || ""));
     putText(retained.sim, c0.status !== "unknown" && typeof c0.similarity === "number"
+      && c0.matched_by !== "pinned" && !c0.created
       ? "SIM " + c0.similarity.toFixed(2) : "");
     // 名字/身份已经在上面两行了，这里只放"信息行"，最多三行
     const role = (c0.role || "").trim();
@@ -544,11 +553,17 @@ function paintListening(msg) {
 
   // 下半区：单人还没认出人 → 只给一个「识别人」；认出之后（多人会议不需要认人）→ 三个预设按钮
   if (!capture.identified && capture.mode !== "meeting") {
-    const secs = capture.identifying ? Math.min(20, Math.round((Date.now() - capture.identAt) / 1000)) : 0;
+    const secs = capture.identifying
+      ? Math.min(identTarget, Math.round((Date.now() - capture.identAt) / 1000)) : 0;
     putText(retained.info[3], "> 识别人");
-    putText(retained.info[4], capture.identifying ? (secs + "/20 秒") : "录 20 秒来找人");
+    putText(retained.info[4], capture.identifying
+      ? (secs + "/" + identTarget + " 秒") : ("录 " + identTarget + " 秒来找人"));
     putText(retained.info[5], " ");
     putText(retained.foot, capture.identifying ? "再按确认 提前结束" : "确认 识别人");
+  } else if (!buttonsReady) {
+    // 档案先单独停几秒：让人看清是谁，再给按钮
+    retained.info.slice(3, 6).forEach((t) => putText(t, " "));
+    putText(retained.foot, "先看档案 · 按钮 " + Math.ceil((capture.buttonsAt - Date.now()) / 1000) + " 秒后出现");
   } else {
     const chips = PRESETS.map((p, i) => (i === presetIdx ? "> " : "  ") + p.label);
     retained.info.slice(3, 6).forEach((t, i) => putText(t, chips[i] || " "));
@@ -1021,7 +1036,8 @@ async function loadUiSettings() {
     if (hold >= 3) PRESET_HOLD_MS = Math.round(hold * 1000);
     if (first >= 3) HOLD_MS = Math.round(first * 1000);
     const ident = Number(d && d.identify_sec);
-    if (ident >= 5) IDENTIFY_MS = Math.round(ident * 1000);
+    // 显式写了环境变量就以 env 为准（测试/演示要缩短识别人时长）
+    if (ident >= 5 && !process.env.MEMORYLENS_IDENTIFY_MS) IDENTIFY_MS = Math.round(ident * 1000);
   } catch (e) { /* 用默认值 */ }
 }
 
@@ -1309,8 +1325,9 @@ function startIdentify(c) {
   c.identAt = Date.now();
   c.identChunks = [];
   presetIdx = 0;
-  retained.status.setText("识别人 0/20");
-  paintListening("对着对方说两句 · 20 秒");
+  const target = Math.round(IDENTIFY_MS / 1000);
+  retained.status.setText("识别人 0/" + target);
+  paintListening("对着对方说两句 · " + target + " 秒");
 }
 
 async function finishIdentify(c) {
@@ -1333,6 +1350,7 @@ async function finishIdentify(c) {
       c.personName = r.name;
       c.lastCard = r.card || null;
       c.showUntil = Date.now() + PRESET_HOLD_MS;
+      c.buttonsAt = Date.now() + BUTTON_DELAY_MS;      // 先看档案，再出按钮
       if (c.lastCard) paintCard(c.lastCard, { ms: 0 });
       // 认出来之后立刻重画下半区：三个预设按钮要在这一帧就换上去
       paintListening("认出 " + r.name);
@@ -1352,12 +1370,17 @@ function submitPreset() {
   const c = capture;
   if (!c || c.stopped) return;
   if (!c.personId) { paintListening("还在认人 · 再说两句"); return; }
-  const bytes = (c.samples || 0) * 2;
-  if (bytes < 16000 * 2 * 1.5) { paintListening("再说两句再提交"); return; }
   const p = PRESETS[presetIdx];
+  const bytes = (c.samples || 0) * 2;
+  c.thinkingUntil = Date.now() + 20000;
+  if (bytes < 16000 * 2 * 1.5) {
+    // 从上次提交到现在没怎么说话：不硬等，直接拿「档案 + 之前听到的话」问一次模型
+    c.queue.push({ wav: "", manual: true, preset: p.id });
+    drain(c);
+    return;
+  }
   c.manualNext = true;
   c.pendingPreset = p.id;
-  c.thinkingUntil = Date.now() + 20000;
   cutSlice(c, 1500);
 }
 
