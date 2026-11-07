@@ -21,6 +21,8 @@ const { createOutbox } = require("./outbox");
 
 // 眼镜连哪台电脑。模拟器上就是本机；真机换成同一局域网里跑 server.py 的那台。
 const BACKEND = process.env.MEMORYLENS_BACKEND || "http://127.0.0.1:8765";
+// 服务端开了 AR_API_TOKEN 时，眼镜端也要带同一串
+const API_TOKEN = (process.env.MEMORYLENS_TOKEN || "").trim();
 const POLL_MS = 700;        // 拉结果
 const NAV_MS = 120;         // 读按键/手势
 const HTTP_TIMEOUT_MS = 1500;
@@ -58,6 +60,7 @@ let outboxTimer = null;
 let inFlight = false;
 let shownRev = -1;
 let background = false;
+let lastAgentSession = "";   // 文本指令要接在最近一次语音会话上，保持上下文
 
 // 实测结论（simulator）：单个 Text 只画得出一百多像素宽，再长就被硬切。
 // 所以一行文字拆成若干个 Text，横向拼起来（每块 x 依次 +124）。
@@ -154,18 +157,24 @@ function buildHud() {
 }
 // ---------- 网络 ----------
 
+function authHeaders(extra) {
+  const h = Object.assign({}, extra || {});
+  if (API_TOKEN) h["X-API-Token"] = API_TOKEN;
+  return h;
+}
+
 function getJson(path) {
   if (typeof fetch === "function") {
     const signal = typeof AbortSignal !== "undefined" && AbortSignal.timeout
       ? AbortSignal.timeout(HTTP_TIMEOUT_MS) : undefined;
-    return fetch(BACKEND + path, { signal, cache: "no-store" }).then((r) => {
+    return fetch(BACKEND + path, { headers: authHeaders(), signal, cache: "no-store" }).then((r) => {
       if (!r.ok) throw new Error("HTTP " + r.status);
       return r.json();
     });
   }
   const http = require("node:http");
   return new Promise((resolve, reject) => {
-    const req = http.get(BACKEND + path, { timeout: HTTP_TIMEOUT_MS }, (res) => {
+    const req = http.get(BACKEND + path, { headers: authHeaders(), timeout: HTTP_TIMEOUT_MS }, (res) => {
       let buf = "";
       res.setEncoding("utf8");
       res.on("data", (c) => { buf += c; });
@@ -184,7 +193,7 @@ function postJson(path, body) {
       ? AbortSignal.timeout(8000) : undefined;
     return fetch(BACKEND + path, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),
       signal,
       cache: "no-store",
@@ -196,7 +205,7 @@ function postJson(path, body) {
     const req = http.request(BACKEND + path, {
       method: "POST",
       timeout: 8000,
-      headers: { "Content-Type": "application/json", "Content-Length": payload.length },
+      headers: authHeaders({ "Content-Type": "application/json", "Content-Length": payload.length }),
     }, (res) => {
       let buf = "";
       res.setEncoding("utf8");
@@ -565,6 +574,7 @@ function startListening(mode) {
     mode: mode === "meeting" ? "meeting" : "single",
     agentSession: "g-" + Date.now().toString(36),
     personId: "", personName: "", sessionId: null,
+    isMeeting: mode === "meeting",
     lastCard: null, stopped: false, dropped: 0, pumpTimer: null,
   };
   viewMode = "idle";
@@ -586,10 +596,12 @@ async function identify(c, wav) {
     return;
   }
   c.sent += 1;
+  lastAgentSession = c.agentSession;
   const v = (res && res.view) || null;
   if (!v) return;
   c.personId = v.person_id || "";
   c.personName = v.person || "";
+  c.isMeeting = v.mode === "meeting" || c.mode === "meeting";
   if (!c.personId) return;
   c.slices += 1;
   c.lastCard = agentCard(v);
@@ -627,8 +639,10 @@ async function pushChunk(c, wav) {
       session: c.agentSession, audio: wav, auto_add: true, mode: c.mode,
     });
     c.sent += 1;
+    lastAgentSession = c.agentSession;
     const v = (res && res.view) || null;
     if (!v) return;
+    c.isMeeting = v.mode === "meeting" || c.mode === "meeting";
     if (v.person_id) { c.personId = v.person_id; c.personName = v.person; }
     if (v.rows && v.rows.length) {
       c.lastCard = agentCard(v);
@@ -664,6 +678,21 @@ async function stopAndArchive(msg) {
   endedAt = Date.now();
   putText(retained.foot, "收尾 · 传剩余录音…");
   await drain(c);
+  if (c.isMeeting) {
+    paintIdle("正在保存会议…");
+    try {
+      const r = await postJson("/api/agent/archive", { session: c.agentSession });
+      if (r && r.ok) {
+        paintIdle("会议已保存 · " + (r.speaker_count || 0) + " 人 / "
+          + ((r.action_items || []).length) + " 条待办");
+      } else {
+        paintIdle("会议保存失败 · " + ((r && r.error) || "未知错误"));
+      }
+    } catch (e) {
+      paintIdle("会议保存失败 · " + (e && e.message));
+    }
+    return;
+  }
   if (!c.personId) {
     if (shownRev === revAtStop) paintIdle(msg || "没认出人 · 这段没入库");
     return;
@@ -694,12 +723,12 @@ async function stopAndArchive(msg) {
 // 眼镜上只有六个离散动作（上下左右/确认/返回），所以键盘做成"短语键"：
 // 每格是一个常用词，方向键选，确认键输入。比 26 个字母更适合中文。
 const KEY_ROWS = [
-  ["我", "你", "他", "好", "不"],
-  ["是", "的", "了", "再", "说"],
-  ["一", "次", "下", "周", "报"],
+  ["只看待确认", "按负责人分组", "只留负责人和截止"],
+  ["保存", "给我建议", "换个说法"],
+  ["问他项目进度", "他上次答应什么", "再委婉一点"],
   ["删除", "发送", "关闭"],
 ];
-const DEFAULT_OPTS = ["只留待办", "再说细一点", "不是他"];
+const DEFAULT_OPTS = ["只看待确认", "给我建议", "保存"];
 let textMode = null;   // {kind:"keys"|"opts", r, c, draft, options, index}
 
 function openText(kind) {
@@ -748,11 +777,14 @@ async function sendText(text) {
   if (!t) return;
   textMode = null;
   try {
+    const session = (capture && capture.agentSession) || lastAgentSession || ("text-" + Date.now().toString(36));
     const resp = await postJson("/api/agent/feed", {
-      session: "text-" + Date.now().toString(36),
+      session: session,
       text: t,
       auto_add: false,
+      mode: capture ? capture.mode : "",
     });
+    lastAgentSession = session;
     const v = resp && resp.view;
     if (!v) { paintIdle("没拿到结果"); return; }
     const card = {
@@ -810,7 +842,7 @@ let modeSelect = null;   // {index:0|1}
 
 const MODE_ITEMS = [
   { key: "single", label: "单人", hint: "和对面一个人聊 · 15 秒认人" },
-  { key: "meeting", label: "多人", hint: "三个人以上 · 只转写不入库" },
+  { key: "meeting", label: "多人", hint: "多人会议 · 分人/待办/建议" },
 ];
 
 function openMode() {
@@ -838,7 +870,7 @@ function paintMode() {
 
 function navMode(act) {
   if (!modeSelect) return;
-  if (act === "left" || act === "up") { modeSelect.index = (modeSelect.index + 1) % MODE_ITEMS.length; paintMode(); return; }
+  if (act === "left" || act === "up") { modeSelect.index = (modeSelect.index + MODE_ITEMS.length - 1) % MODE_ITEMS.length; paintMode(); return; }
   if (act === "right" || act === "down") { modeSelect.index = (modeSelect.index + 1) % MODE_ITEMS.length; paintMode(); return; }
   if (act === "back") { closeMode(); return; }
   if (act === "activate") {
@@ -879,7 +911,8 @@ function clearView() {
 }
 
 async function poll() {
-
+  // 键盘/模式选择时不要用轮询结果把当前界面冲掉
+  if (textMode || modeSelect) return;
   inFlight = true;
   try {
     const data = await getJson("/api/latest");

@@ -174,6 +174,26 @@ def test_noise():
     check("加噪后不串号", len(mapping) == 3 and all(len(v) == 1 for v in mapping.values()), str(mapping))
 
 
+def test_per_speaker_embedding():
+    print("8) 整段音色模式（per_speaker=True）")
+    samples, truth = build_meeting()
+    enrolled = []
+    for label, idx in (("A", 0), ("B", 1), ("C", 2)):
+        x = read_wav(ORDER[idx][0])
+        enrolled.append({"id": "id_" + label, "name": label, "role": "",
+                         "voice_embeddings": [voice.embed(x).tolist()]})
+    result = diarize.diarize(samples, enrolled, per_speaker=True)
+    check("整段音色仍是 3 人", result["speaker_count"] == 3, str(result["speaker_count"]))
+    mapping = {}
+    for seg in result["segments"]:
+        mid = (seg["start"] + seg["end"]) / 2
+        for t0, t1, label in truth:
+            if t0 <= mid <= t1:
+                mapping.setdefault(label, set()).add(seg["spk_id"])
+                break
+    check("整段音色不串号", len(mapping) == 3 and all(len(v) == 1 for v in mapping.values()), str(mapping))
+
+
 def main():
     test_cluster_unit()
     test_merge_pairwise()
@@ -182,6 +202,7 @@ def main():
     test_silence()
     test_meeting()
     test_noise()
+    test_per_speaker_embedding()
     print(f"\n{ok_count} passed, {fail_count} failed")
     return 1 if fail_count else 0
 

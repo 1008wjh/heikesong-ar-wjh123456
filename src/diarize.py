@@ -341,10 +341,12 @@ def _empty(reason: str, duration: float, t0: float, dropped: int) -> dict:
 
 
 def diarize(samples: np.ndarray, people: list[dict] | None = None,
-            threshold: float | None = None) -> dict:
+            threshold: float | None = None, per_speaker: bool = False) -> dict:
     """一段音频 → 多人分离结果。
 
     people 传 store.voice_index()，即可把 spk_N 映射成实名（同一个人只认一次）。
+    per_speaker=True：聚类后把同一 spk 的所有语音段拼成"整段音色"再比对一次，
+    更符合会议里"以整段有效音色为单位"的要求（默认仍用簇质心，保持旧行为）。
     """
     t0 = time.time()
     if samples is None:
@@ -409,10 +411,30 @@ def diarize(samples: np.ndarray, people: list[dict] | None = None,
     speakers: list[dict] = []
     if people:
         candidates = []
-        for label, centroid in enumerate(centroids):
-            person, sim, margin = voice.match(centroid, people)
-            if person is not None:
-                candidates.append((sim, margin, label, person))
+        if per_speaker:
+            # 每个 spk 的"整段音色"：把该簇所有语音段拼起来，只提一次、只查一次
+            by_label: dict[int, list[tuple[float, float]]] = {}
+            for it in items:
+                by_label.setdefault(it["label"], []).append((it["start"], it["end"]))
+            for label in range(len(centroids)):
+                pieces = [samples[int(a * SAMPLE_RATE):int(b * SAMPLE_RATE)]
+                          for a, b in by_label.get(label, [])]
+                pieces = [p for p in pieces if p.size]
+                if not pieces:
+                    continue
+                audio = np.concatenate(pieces) if len(pieces) > 1 else pieces[0]
+                try:
+                    emb = voice.embed(audio)
+                except Exception:
+                    continue
+                person, sim, margin = voice.match(emb, people)
+                if person is not None:
+                    candidates.append((sim, margin, label, person))
+        else:
+            for label, centroid in enumerate(centroids):
+                person, sim, margin = voice.match(centroid, people)
+                if person is not None:
+                    candidates.append((sim, margin, label, person))
         candidates.sort(reverse=True, key=lambda t: t[0])
         claimed: dict[int, dict] = {}
         for sim, margin, label, person in candidates:

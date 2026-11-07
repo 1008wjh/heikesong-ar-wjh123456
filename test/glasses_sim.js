@@ -204,6 +204,18 @@ function wavFramesLoop(name, seconds) {
   return out.slice(0, need);
 }
 
+/** 从任意 wav 路径读帧（会议测试用 demo_meeting.wav）。 */
+function wavFramesFrom(file, seconds) {
+  const buf = fs.readFileSync(file);
+  const pcm = buf.subarray(44);
+  const frames = [];
+  for (let i = 0; i < pcm.length; i += 640) frames.push(pcm.subarray(i, i + 640));
+  const need = Math.ceil((seconds * 1000) / 20);
+  const out = [];
+  while (out.length < need && frames.length) out.push(...frames);
+  return out.slice(0, need);
+}
+
 // ---------- 跑 ----------
 
 (async () => {
@@ -245,7 +257,7 @@ function wavFramesLoop(name, seconds) {
   await sleep(400);
   check("先出单人/多人选择", hud().some((v) => v.includes("单人")), JSON.stringify(hud()));
   navQueue.push("activate");
-  await sleep(600);
+  await waitUntil(() => hud().some((v) => v.includes("在听")), 5000);
   check("进入持续听（状态行有计时）", hud().some((v) => v.includes("在听")), JSON.stringify(hud()));
   await sleep(6000);
   let lines = hud();
@@ -253,13 +265,13 @@ function wavFramesLoop(name, seconds) {
   check("卡片带相似度", lines.some((v) => v.includes("SIM")), JSON.stringify(lines));
   check("HUD 出现身份", lines.some((v) => v.startsWith("产品经理")), JSON.stringify(lines));
   check("HUD 出两条信息（窄列会自动折行，只要求首行与第二条标题出现）",
-    lines.join("").includes("日期") && lines.join("").includes("跟进"), JSON.stringify(lines));
+    lines.join("").includes("答应的事") && lines.join("").includes("跟进"), JSON.stringify(lines));
 
   // 1b) 录音中按「确认」→ 看详情，不打断录音；再按一次收起
   navQueue.push("activate");
   await sleep(600);
   lines = hud();
-  check("录音中按确认看详情", lines.some((v) => v.includes("详情")), JSON.stringify(lines));
+  check("录音中按确认看详情", lines.some((v) => v.includes("详情") || v.includes("对话要点")), JSON.stringify(lines));
   check("详情页可以看", lines.some((v) => v.includes("王姐")), JSON.stringify(lines));
   navQueue.push("activate");
   await sleep(600);
@@ -293,45 +305,48 @@ function wavFramesLoop(name, seconds) {
   await waitUntil(() => hud().some((v) => v.includes("打字")), 6000);
   lines = hud();
   check("文本通道：上键打开键盘", lines.some((v) => v.includes("打字")), JSON.stringify(lines));
-  check("键盘上能看到短语键", lines.some((v) => v.includes("【我】")), JSON.stringify(lines));
+  check("键盘上能看到短语键", lines.some((v) => v.includes("【只看待确认】")), JSON.stringify(lines));
 
-  navQueue.push("activate");          // 输入「我」
-  await sleep(400);
+  navQueue.push("activate");          // 输入短语「只看待确认」
+  await sleep(500);
   lines = hud();
-  check("确认键把字打进去了", lines.some((v) => v.includes("我") && !v.includes("（还没输入）")),
-    JSON.stringify(lines));
+  check("确认键把短语打进去了", lines.join("").includes("只看待确认"), JSON.stringify(lines));
 
   navQueue.push("right");
-  navQueue.push("activate");          // 输入「你」
-  await sleep(400);
+  navQueue.push("activate");          // 输入「按负责人分组」
+  await sleep(500);
   lines = hud();
-  check("连续输入拼成一句", lines.some((v) => v.includes("我你")), JSON.stringify(lines));
+  check("连续输入拼成一句指令",
+    lines.join("").includes("只看待确认") && lines.join("").includes("按负责人分组"),
+    JSON.stringify(lines));
 
   navQueue.push("back");
   await sleep(400);
   check("返回键关掉键盘", !hud().some((v) => v.includes("【")), JSON.stringify(hud()));
 
-  // 6) 会议模式：空屏按「上」建会 → 确认录一段 → 返回分离
-  navQueue.push("back");            // 先清掉人脸卡片，回到 idle
+  // 6) 会议模式：先选「多人」→ 持续录音 → 首片走会议节点 → 返回归档
+  navQueue.push("back");
   await sleep(600);
-  navQueue.push("up");
-  await sleep(900);
-  lines = hud();
-  check("上键进入会议模式", lines.some((v) => v.includes("会议录制")), JSON.stringify(lines));
-
-  pendingPcm = wavFrames("huihui_a");
+  pendingPcm = fs.existsSync(path.join(__dirname, "demo_meeting.wav"))
+    ? wavFramesFrom(path.join(__dirname, "demo_meeting.wav"), 20)
+    : wavFramesLoop("huihui_a", 20);
+  navQueue.push("activate");        // 打开模式选择
+  await sleep(400);
+  check("先出单人/多人选择", hud().some((v) => v.includes("单人")), JSON.stringify(hud()));
+  navQueue.push("right");           // 从「单人」切到「多人」
   navQueue.push("activate");
-  await sleep(900);
-  navQueue.push("activate");        // 手动结束这一段
-  await sleep(1500);
-  lines = hud();
-  check("会议已有上传段", lines.some((v) => v.includes("已传") || v.includes("上传")),
-    JSON.stringify(lines));
+  await waitUntil(() => hud().some((v) => v.includes("在听")), 5000);
+  check("进入会议录音", hud().some((v) => v.includes("在听")), JSON.stringify(hud()));
 
-  navQueue.push("back");            // 结束会议 → finalize
-  await sleep(5000);
+  // 首片 15 秒后，会议节点应给出分人结果
+  await waitUntil(() => hud().some((v) => v.includes("会议") && v.includes("人")), 15000);
   lines = hud();
-  check("会议分离结果上屏", lines.some((v) => v.includes("会议") && v.includes("人")),
+  check("会议首片出分人结果", lines.some((v) => v.includes("会议") && v.includes("人")),
+    JSON.stringify(lines));
+  navQueue.push("back");            // 结束会议 → archive
+  await waitUntil(() => hud().some((v) => v.includes("会议已保存") || v.includes("保存")), 15000);
+  lines = hud();
+  check("会议结束已归档", lines.some((v) => v.includes("会议已保存") || v.includes("已保存")),
     JSON.stringify(lines));
 
   console.log(failures ? `\n${failures} 项失败` : "\n全部通过");

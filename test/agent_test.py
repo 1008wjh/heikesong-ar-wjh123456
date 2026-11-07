@@ -76,10 +76,19 @@ def main():
     check("同一会话第二片仍认作王姐", r2["view"].get("person") == "王姐", r2["view"].get("person"))
     check("第二片有 rev", isinstance(r2.get("rev"), int))
 
-    # 3) 多人：三个人说话
+    # 3) 多人：三个人说话（文本先分人，再走会议视图）
     r3 = post(base, "/api/agent/feed", {"session": "meeting-" + os.urandom(3).hex(),
-                                        "text": "张总：这个季度的目标先对一下。\n李工：后端我这边没问题。\n王姐：报价单我下周给。"})
-    check("多人会话被判定为 meeting", r3["view"].get("layout") == "notice", r3["view"].get("layout"))
+                                        "text": "张总：这个季度的目标先对一下。\n李工：后端我这边没问题。\n王姐：报价单我下周给。",
+                                        "mode": "meeting"})
+    check("多人会话进入会议布局", r3["view"].get("layout") == "meeting", r3["view"].get("layout"))
+    check("多人会话分出 3 人", int(r3["view"].get("speaker_count") or 0) == 3,
+          r3["view"].get("speaker_count"))
+    check("多人会话有待确认/待办", any(("待办" in str(x)) or ("待确认" in str(x))
+                                        for x in (r3["view"].get("rows") or [])),
+          r3["view"].get("rows"))
+    # 保存命令 → 完成
+    r3b = post(base, "/api/agent/feed", {"session": r3["session"], "text": "保存"})
+    check("会议保存后进入完成", r3b["view"].get("state") == "完成", r3b["view"].get("state"))
 
     # 4) 陌生声音 + 自动建号
     created = []

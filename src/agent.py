@@ -11,19 +11,25 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import re
 import threading
 import time
+from datetime import datetime
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
 import cards
+import diarize
 import llm
+import meeting
 import voice
 
 MAX_TRANSCRIPT = 4000
+AGENT_MEETING_ROOT = os.environ.get("AR_MEETING_DIR", os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "meetings"))
 
 
 class AgentState(TypedDict, total=False):
@@ -43,6 +49,21 @@ class AgentState(TypedDict, total=False):
     view: dict
     rev: int
     ms: int
+    # ---- 多人会议 ----
+    meeting_id: str
+    meeting_offset: float        # 已处理音频的秒数，给分段时间轴用
+    meeting_slice_no: int
+    meeting_speakers: list       # [{person_id,name,seconds,similarity}]
+    meeting_segments: list       # [{spk,start,end,text}]
+    meeting_text: str            # 累积转写，供行动项抽取
+    meeting_actions: list        # [{owner,task,deadline,status}]
+    meeting_layout: str          # full | focus | compact | advice
+    meeting_advice: list         # 建议问题（给"给我建议"用）
+    meeting_attitude: str        # 建议态度
+    meeting_confirmed: bool
+    meeting_archived: bool
+    # ---- 对话建议 ----
+    advice: dict
 
 
 # ---------- 工具：匹配、抽取 ----------
@@ -134,7 +155,7 @@ def rule_extract(text: str) -> list[dict]:
 def node_ingest(state: AgentState) -> dict:
     text = (state.get("text") or "").strip()
     audio = state.get("audio") or ""
-    if not text and audio:
+    if not text and audio and (state.get("mode") or "").lower() != "meeting":
         try:
             text = llm.transcribe(decode_audio_ref(audio))
         except Exception as e:
@@ -207,15 +228,25 @@ def node_render(state: AgentState) -> dict:
         state_name = "完成" if name else "待确认"
     if state.get("degraded"):
         rows = rows + ["（模型不可用，规则兜底）"]
+    advice = state.get("advice") if isinstance(state.get("advice"), dict) else {}
+    options = state.get("next_actions") or []
+    if advice:
+        att = advice.get("attitude") or {}
+        if att.get("recommended"):
+            rows = rows + ["态度: " + str(att.get("recommended"))]
+        qs = advice.get("questions") or []
+        rows = rows + ["问: " + str(q.get("text")) for q in qs[:2]]
+        options = [str(q.get("text")) for q in qs[:3] if q.get("text")] or options
     return {"view": {
         "state": state_name,
         "layout": "card",
-        "rows": rows,
+        "rows": rows[:6],
         "person": name,
         "person_id": state.get("person_id") or "",
         "matched_by": state.get("matched_by") or "none",
         "similarity": state.get("similarity") or 0.0,
-        "options": (state.get("next_actions") or suggest_options(state_name, name))[:3],
+        "options": (options or suggest_options(state_name, name))[:3],
+        "advice": advice,
         "degraded": state.get("degraded", False),
     }}
 
@@ -238,7 +269,15 @@ def node_recommend(state: AgentState) -> dict:
         got = llm.recommend(state.get("window") or state.get("text") or "",
                             state.get("person_name") or "", profile, state.get("items") or [])
         nxt = got.get("next") or []
-        return {"next_actions": nxt, "summary": state.get("summary") or got.get("summary") or ""}
+        advice = {}
+        try:
+            advice = llm.advise(state.get("window") or state.get("text") or "",
+                                state.get("person_name") or "", profile,
+                                state.get("items") or [], "single")
+        except llm.LLMUnavailable:
+            pass
+        return {"next_actions": nxt, "advice": advice,
+                "summary": state.get("summary") or got.get("summary") or ""}
     except llm.LLMUnavailable:
         return {"degraded": True,
                 "notes": (state.get("notes") or []) + ["给建议时模型不可用，用固定三条"]}
@@ -256,6 +295,249 @@ def node_commit(state: AgentState) -> dict:
     return {}
 
 
+def _safe_session(session: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", session or "session")[:64]
+
+
+def _meeting_dir(session: str) -> str:
+    return os.path.join(AGENT_MEETING_ROOT, "agent_" + _safe_session(session))
+
+
+def _save_slice(session: str, seq: int, wav: bytes) -> str:
+    d = _meeting_dir(session)
+    os.makedirs(d, exist_ok=True)
+    p = os.path.join(d, "slice_%03d.wav" % seq)
+    with open(p, "wb") as f:
+        f.write(wav)
+    return p
+
+
+def _merge_speakers(old: list, new: list) -> list:
+    """跨切片合并说话人：认识的按 person_id 合并，陌生人按 spk_id 分开。"""
+    out = [dict(s) for s in (old or [])]
+    index = {}
+    for s in out:
+        key = s.get("person_id") or ("u:" + str(s.get("spk_key") or s.get("name") or "陌生人"))
+        s["_key"] = key
+        index[key] = s
+    for s in new or []:
+        key = s.get("person_id") or ("u:" + str(s.get("spk_id") or "陌生人"))
+        row = index.get(key)
+        if row:
+            row["seconds"] = round(float(row.get("seconds") or 0) + float(s.get("seconds") or 0), 1)
+            if s.get("similarity") and not row.get("similarity"):
+                row["similarity"] = s["similarity"]
+        else:
+            row = dict(s)
+            row["_key"] = key
+            row["spk_key"] = s.get("spk_id") or key
+            index[key] = row
+            out.append(row)
+    for s in out:
+        s.pop("_key", None)
+    return out[:8]
+
+
+def _meeting_actions_from_text(text: str) -> list:
+    text = (text or "").strip()
+    if not text:
+        return []
+    try:
+        got = llm.analyze(text, {"name": "会议", "role": "多人会议"})
+        items = got.get("items") or []
+    except llm.LLMUnavailable:
+        items = rule_extract(text)
+    out = []
+    for it in items[:6]:
+        value = str(it.get("value") or it.get("task") or "").strip()
+        if value:
+            out.append({"owner": "", "task": value[:40], "deadline": "", "status": "pending"})
+    return out
+
+
+def _parse_text_speakers(text: str) -> list[tuple[str, str]]:
+    """从"张总：... / 李工：..."这种文本里拆出说话人和内容。"""
+    pairs = []
+    for line in (text or "").splitlines():
+        m = re.match(r"\s*([^：:\n]{1,8})[：:]\s*(.+)$", line)
+        if m:
+            pairs.append((m.group(1).strip(), m.group(2).strip()))
+    names = {n for n, _ in pairs}
+    return pairs if len(names) >= 2 else []
+
+
+def _meeting_view(state: AgentState) -> dict:
+    spk = state.get("meeting_speakers") or []
+    actions = state.get("meeting_actions") or []
+    known = len([s for s in spk if s.get("person_id")])
+    layout = state.get("meeting_layout") or "full"
+    confirmed = bool(state.get("meeting_confirmed"))
+    rows = []
+    if confirmed:
+        rows.append("已保存 · %d 人 · %d 条待办" % (len(spk), len(actions)))
+    elif spk:
+        rows.append("%d 人 · 熟人 %d · 陌生 %d" % (len(spk), known, len(spk) - known))
+    else:
+        rows.append("正在分人…")
+    if layout == "compact":
+        for a in actions[:5]:
+            rows.append(("待办: " + a.get("task", "")[:18]))
+    elif layout == "advice":
+        rows.append("态度: " + (state.get("meeting_attitude") or "先寒暄，再问进度"))
+        for q in (state.get("meeting_advice") or [])[:4]:
+            rows.append("问: " + str(q)[:20])
+    elif layout == "focus":
+        pending = [a for a in actions if a.get("status") != "done"] or actions
+        if pending:
+            for a in pending[:4]:
+                rows.append("待确认: " + a.get("task", "")[:16])
+        else:
+            rows.append("没有待确认事项")
+    else:
+        for s in spk[:3]:
+            rows.append("%s · %ss" % (s.get("name") or "陌生人", int(float(s.get("seconds") or 0))))
+        for a in actions[:2]:
+            rows.append("待办: " + a.get("task", "")[:18])
+    if state.get("degraded"):
+        rows.append("（模型不可用，规则兜底）")
+    name = "会议" if spk or actions else "会议中"
+    return {
+        "state": "完成" if confirmed else ("待确认" if (spk or actions) else "处理中"),
+        "layout": "meeting",
+        "rows": rows[:6],
+        "person": name,
+        "person_id": state.get("meeting_id") or state.get("session") or "meeting",
+        "role": "多人会议 · %d 人" % len(spk),
+        "similarity": 0.0,
+        "options": ["保存", "只看待确认", "给我建议"],
+        "mode": "meeting",
+        "degraded": bool(state.get("degraded")),
+        "speaker_count": len(spk),
+        "action_count": len(actions),
+    }
+
+
+def node_meeting(state: AgentState) -> dict:
+    """多人会议：每个切片做分人/声纹/转写，累积成会议视图。
+
+    兜底：分段/声纹失败 -> 单说话人；ASR 失败 -> 空文本；LLM 失败 -> 规则抽取。
+    """
+    session = state.get("session") or ""
+    text = (state.get("text") or "").strip()
+    audio = state.get("audio") or ""
+    mid = state.get("meeting_id") or ("m_" + _safe_session(session))
+    offset = float(state.get("meeting_offset") or 0.0)
+    speakers = state.get("meeting_speakers") or []
+    segments = state.get("meeting_segments") or []
+    meeting_text = state.get("meeting_text") or ""
+    actions = state.get("meeting_actions") or []
+    confirmed = bool(state.get("meeting_confirmed"))
+    degraded = bool(state.get("degraded"))
+    notes = list(state.get("notes") or [])
+    slice_no = int(state.get("meeting_slice_no") or 0)
+    advice = list(state.get("meeting_advice") or [])
+    attitude = state.get("meeting_attitude") or ""
+
+    # 有音频：分人 + 逐段转写
+    if audio:
+        try:
+            samples = voice.read_wav(decode_audio_ref(audio))
+        except Exception as e:
+            return {"view": _meeting_view({**state, "degraded": True}),
+                    "degraded": True, "notes": notes + ["音频解析失败：%s" % e]}
+        if samples.size:
+            try:
+                res = diarize.diarize(samples, store_ref.voice_index(), per_speaker=True)
+            except Exception as e:
+                degraded = True
+                notes.append("分人失败，按单说话人兜底：%s" % e)
+                res = {"speakers": [{"spk_id": "spk_0", "person_id": None, "name": "陌生人",
+                                     "similarity": None, "seconds": round(samples.size / 16000.0, 1)}],
+                       "segments": [{"start": 0.0, "end": samples.size / 16000.0, "spk_id": "spk_0"}]}
+
+            speakers = _merge_speakers(speakers, res.get("speakers") or [])
+            spk_names = {s.get("spk_id"): s.get("name") or "陌生人" for s in (res.get("speakers") or [])}
+            new_text = []
+            for seg in (res.get("segments") or [])[:8]:
+                a = max(0, int(float(seg.get("start") or 0) * 16000))
+                b = min(samples.size, int(float(seg.get("end") or 0) * 16000))
+                piece = samples[a:b]
+                line = ""
+                if piece.size >= 16000 * 0.3:
+                    try:
+                        line = llm.transcribe(meeting.wav_bytes(piece)) or ""
+                    except Exception as e:
+                        degraded = True
+                        notes.append("转写不可用：%s" % e)
+                segments.append({
+                    "spk": seg.get("spk_id"),
+                    "name": spk_names.get(seg.get("spk_id")) or "陌生人",
+                    "start": round(offset + float(seg.get("start") or 0), 2),
+                    "end": round(offset + float(seg.get("end") or 0), 2),
+                    "text": line[:200],
+                })
+                if line:
+                    new_text.append("%s：%s" % (spk_names.get(seg.get("spk_id")) or "陌生人", line))
+            if new_text:
+                meeting_text = (meeting_text + " " + " ".join(new_text)).strip()[-6000:]
+                actions = _meeting_actions_from_text(meeting_text) or actions
+            offset += float(samples.size) / 16000.0
+            slice_no += 1
+            if slice_no <= 8:
+                try:
+                    _save_slice(session, slice_no, meeting.wav_bytes(samples))
+                except Exception as e:
+                    notes.append("切片落盘失败：%s" % e)
+
+    # 纯文本会议（控制台/文本通道）：从"张总：... / 李工：..."里拆说话人
+    if text and not audio:
+        pairs = _parse_text_speakers(text)
+        if pairs:
+            new_spk = []
+            for name, line in pairs[:12]:
+                new_spk.append({"spk_id": "text:" + name, "person_id": None,
+                                "name": name, "similarity": None, "seconds": 0.0})
+                segments.append({"spk": "text:" + name, "name": name,
+                                 "start": round(offset, 2), "end": round(offset, 2),
+                                 "text": line[:200]})
+                meeting_text = (meeting_text + " " + name + "：" + line).strip()[-6000:]
+            speakers = _merge_speakers(speakers, new_spk)
+            actions = _meeting_actions_from_text(meeting_text) or actions
+
+    # 有文本：指令（保存/筛选/布局）
+    layout = state.get("meeting_layout") or "full"
+    if text:
+        if any(k in text for k in ("保存", "确认", "入库")):
+            confirmed = True
+            actions = [{**a, "status": "done"} for a in actions]
+        elif "只看待确认" in text or "待确认" in text:
+            layout = "focus"
+        elif "只留" in text or "负责人和截止" in text:
+            layout = "compact"
+        elif "按负责人" in text:
+            actions = sorted(actions, key=lambda a: a.get("owner") or "zzz")
+        elif "给我建议" in text or "建议" in text:
+            layout = "advice"
+            advice = []
+            attitude = "先寒暄，再问进度"
+            try:
+                got = llm.advise(meeting_text, "会议中的发言者", "", actions, "meeting")
+                advice = [q.get("text") for q in (got.get("questions") or []) if q.get("text")]
+                attitude = (got.get("attitude") or {}).get("recommended") or attitude
+            except llm.LLMUnavailable:
+                advice = ["问最近进展", "问卡在哪一步", "问需要什么支持"]
+            advice = advice[:4] or ["问最近进展", "问卡在哪一步", "问需要什么支持"]
+
+    state2 = {**state, "meeting_id": mid, "meeting_offset": offset,
+              "meeting_slice_no": slice_no, "meeting_speakers": speakers,
+              "meeting_segments": segments, "meeting_text": meeting_text,
+              "meeting_actions": actions, "meeting_confirmed": confirmed,
+              "meeting_layout": layout, "meeting_advice": advice,
+              "meeting_attitude": attitude,
+              "degraded": degraded, "notes": notes}
+    return {**state2, "view": _meeting_view(state2)}
+
+
 def build(memory=None):
     g = StateGraph(AgentState)
     g.add_node("ingest", node_ingest)
@@ -265,14 +547,16 @@ def build(memory=None):
     g.add_node("recommend", node_recommend)
     g.add_node("render", node_render)
     g.add_node("commit", node_commit)
+    g.add_node("meeting", node_meeting)
 
     g.add_edge(START, "ingest")
     g.add_edge("ingest", "route")
     g.add_conditional_edges("route", lambda s: "meeting" if s.get("mode") == "meeting" else "single",
-                            {"single": "identify", "meeting": "render"})
+                            {"single": "identify", "meeting": "meeting"})
     g.add_edge("identify", "extract")
     g.add_edge("extract", "recommend")
     g.add_edge("recommend", "render")
+    g.add_edge("meeting", END)
     g.add_conditional_edges("render", lambda s: "skip" if s.get("mode") == "meeting" else "commit",
                             {"commit": "commit", "skip": END})
     g.add_edge("commit", END)
@@ -302,8 +586,10 @@ def run_feed(session: str, text: str = "", audio: str = "", auto_add: bool = Tru
     """跑一片。session 相同的片会落在同一个 thread 里（上下文自动保留）。"""
     t0 = time.time()
     state: AgentState = {"session": session, "text": text, "audio": audio,
-                         "auto_add": auto_add, "degraded": False, "notes": [],
-                         "mode": (mode or "").lower()}
+                         "auto_add": auto_add, "degraded": False, "notes": []}
+    if mode:
+        # 不传 mode 时保留 checkpoint 里的旧 mode（文本纠正/追问要用）
+        state["mode"] = mode.lower()
     cfg = {"configurable": {"thread_id": session}}
     try:
         out = graph().invoke(state, cfg)
@@ -316,6 +602,43 @@ def run_feed(session: str, text: str = "", audio: str = "", auto_add: bool = Tru
     view["ms"] = int((time.time() - t0) * 1000)
     view["notes"] = out.get("notes") or []
     return view
+
+
+def archive_meeting(session: str) -> dict:
+    """结束多人会议：把 state 里的分人/转写/待办落成一份 JSON 会议记录。"""
+    cfg = {"configurable": {"thread_id": session}}
+    try:
+        snap = graph().get_state(cfg)
+        state = dict(snap.values or {})
+    except Exception as e:
+        return {"ok": False, "error": "读取会议状态失败：%s" % e}
+    mid = state.get("meeting_id") or ("m_" + _safe_session(session))
+    speakers = state.get("meeting_speakers") or []
+    actions = state.get("meeting_actions") or []
+    meta = {
+        "meeting_id": mid,
+        "session": session,
+        "status": "archived",
+        "mode": "meeting",
+        "archived_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "speaker_count": len(speakers),
+        "speakers": speakers,
+        "segments": state.get("meeting_segments") or [],
+        "action_items": actions,
+        "advice": state.get("meeting_advice") or [],
+        "advice_attitude": state.get("meeting_attitude") or "",
+        "transcript": state.get("meeting_text") or "",
+        "slices": int(state.get("meeting_slice_no") or 0),
+    }
+    d = _meeting_dir(session)
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, "meta.json")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=1)
+    except Exception as e:
+        return {"ok": False, "error": "写会议记录失败：%s" % e, **meta}
+    return {"ok": True, "path": path, **meta}
 
 
 def decode_audio_ref(payload: str) -> bytes:

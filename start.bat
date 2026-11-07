@@ -33,10 +33,10 @@ if not defined PY (
 )
 
 echo Using: %PY%
-"%PY%" -c "import cv2,onnxruntime,numpy" >nul 2>nul
+"%PY%" -c "import cv2,onnxruntime,numpy,sherpa_onnx,langgraph" >nul 2>nul
 if errorlevel 1 (
   echo [INFO] Installing dependencies...
-  "%PY%" -m pip install -i https://mirrors.aliyun.com/pypi/simple/ opencv-python-headless onnxruntime numpy
+  "%PY%" -m pip install -i https://mirrors.aliyun.com/pypi/simple/ opencv-python-headless onnxruntime numpy sherpa-onnx langgraph
 )
 
 REM Optional local secrets/config, never committed: copy env.local.bat.example to env.local.bat

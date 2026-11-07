@@ -1,0 +1,8 @@
+# MemoryLens 后端运行依赖
+# 安装：python -m pip install -r requirements.txt
+numpy>=2.0
+opencv-python-headless>=4.10
+onnxruntime>=1.19
+sherpa-onnx>=1.10
+# LangGraph 智能体（单人/多人节点、checkpoint）
+langgraph>=1.0

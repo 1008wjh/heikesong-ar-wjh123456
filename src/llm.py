@@ -338,6 +338,56 @@ def recommend(transcript, person_name, profile, items):
     return {"summary": str(obj.get("summary") or "")[:60], "next": nxt}
 
 
+def advise(transcript, person_name, profile, items, mode="single"):
+    """对话建议：谁 / 问什么 / 什么态度 / 怎么回答。
+
+    返回结构化对象；模型不可用会抛 LLMUnavailable，由 agent 的模板兜底。
+    """
+    who = person_name or "对面这个人"
+    facts = profile or "（没有档案）"
+    done = "；".join("%s：%s" % (i.get("key", ""), i.get("value", "")) for i in (items or [])[:6]) or "（还没抽出要点）"
+    out = _chat_plain(
+        "你在给 AR 眼镜用户做对话建议。根据人物档案和这段对话，输出 JSON，不要解释。\n"
+        '格式：{"who":{"name":"","relation":"","last_met":""},'
+        '"attitude":{"recommended":"warm_direct|formal|supportive|cautious","why":"","avoid":[""]},'
+        '"questions":[{"text":"","why":"","tone":""}],'
+        '"replies":[{"trigger":"如果对方说…","text":"…"}]}\n'
+        "要求：问题最多 3 个，回答最多 2 条，每条不超过 30 字；不要编造档案里没有的事实。",
+        "场景：%s\n对面的人：%s\n档案：%s\n这段的要点：%s\n对话原文：%s"
+        % (mode, who, facts, done, (transcript or "")[-1500:]),
+        max_tokens=420,
+    )
+    obj = _loads_loose(out)
+    if not isinstance(obj, dict):
+        raise LLMUnavailable("建议返回格式不对")
+    attitude = obj.get("attitude") or {}
+    if not isinstance(attitude, dict):
+        attitude = {}
+    questions = []
+    for q in (obj.get("questions") or [])[:3]:
+        if isinstance(q, dict) and str(q.get("text") or "").strip():
+            questions.append({"text": str(q["text"]).strip()[:30],
+                              "why": str(q.get("why") or "")[:40],
+                              "tone": str(q.get("tone") or "")[:20]})
+    replies = []
+    for r in (obj.get("replies") or [])[:2]:
+        if isinstance(r, dict) and str(r.get("text") or "").strip():
+            replies.append({"trigger": str(r.get("trigger") or "")[:30],
+                            "text": str(r["text"]).strip()[:50]})
+    if not questions:
+        raise LLMUnavailable("建议里没有问题")
+    return {
+        "who": obj.get("who") if isinstance(obj.get("who"), dict) else {},
+        "attitude": {
+            "recommended": str(attitude.get("recommended") or "warm_direct")[:20],
+            "why": str(attitude.get("why") or "")[:60],
+            "avoid": [str(x)[:20] for x in (attitude.get("avoid") or [])[:3]],
+        },
+        "questions": questions,
+        "replies": replies,
+    }
+
+
 def analyze(transcript, person):
     """对话原文 → {summary, items[]}。person 只用 name/role 做上下文。"""
     transcript = (transcript or "").strip()

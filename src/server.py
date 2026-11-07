@@ -331,6 +331,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._voice_scan(body)
             if path == "/api/agent/feed":
                 return self._agent_feed(body)
+            if path == "/api/agent/archive":
+                session = str(body.get("session") or "")
+                if not session:
+                    raise ValueError("缺少 session")
+                return self._json(agent.archive_meeting(session))
             if path == "/api/voice/enroll":
                 return self._voice_enroll(body)
             if path == "/api/people/save":
@@ -513,17 +518,20 @@ class Handler(BaseHTTPRequestHandler):
         text = body.get("text") or ""
         audio = body.get("audio") or ""
         auto_add = body.get("auto_add", True)
-        view = agent.run_feed(session, text=text, audio=audio, auto_add=bool(auto_add))
+        mode = str(body.get("mode") or "")
+        view = agent.run_feed(session, text=text, audio=audio, auto_add=bool(auto_add), mode=mode)
         person = store.get(view.get("person_id") or "")
         try:
             view["role"] = (person or {}).get("role") or ""
         except Exception:
             pass
+        if view.get("mode") == "meeting":
+            view["role"] = "多人会议 · %d 人" % int(view.get("speaker_count") or 0)
         card = {
             "kind": "agent",
             "status": "known" if view.get("person") else "unknown",
             "name": view.get("person") or "对话",
-            "role": (person or {}).get("role") or "",
+            "role": view.get("role") or (person or {}).get("role") or "",
             "similarity": float(view.get("similarity") or 0.0),
             "lines": (view.get("rows") or [])[:6],
             "person_id": view.get("person_id") or "",
