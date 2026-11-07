@@ -272,6 +272,13 @@ function wavFramesLoop(name, seconds) {
   check("录音中按确认 → 智能体开始想（状态行 在想…）",
     lines.some((v) => v.includes("在想")), JSON.stringify(lines));
 
+  // 关键回归：结果回来以后，"在听"页不能把卡片刷掉
+  await waitUntil(() => hud().some((v) => v.includes("王姐")) && !hud().some((v) => v.includes("在想")), 40000);
+  lines = hud();
+  check("提词显示在在听页上（卡片没有被刷掉）",
+    lines.includes("王姐") && lines.filter((v) => v && v.trim() && v !== " ").length >= 5,
+    JSON.stringify(lines));
+
   // 1c) 按「返回」→ 结束这段录音（测试里关掉自动入库，所以停在卡片上）
   navQueue.push("back");
   await waitUntil(() => hud().some((v) => v.includes("按一下")), 25000);

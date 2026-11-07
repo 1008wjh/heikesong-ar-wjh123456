@@ -873,7 +873,9 @@ async function pushChunk(c, wav, manual) {
       c.lastCard = agentCard(v);
       c.lastRev = res.rev;
       c.lastMs = v.ms || 0;
-        lastScene = { card: c.lastCard, rev: res.rev, ms: v.ms || 0 };
+      // 关键：没有 showUntil，"在听"页就会立刻把这张卡刷掉
+      c.showUntil = Date.now() + (manual ? 20000 : HOLD_MS);
+      lastScene = { card: c.lastCard, rev: res.rev, ms: v.ms || 0 };
       paintCard(c.lastCard, res.rev, v.ms || 0);
       paintListening();
     }
