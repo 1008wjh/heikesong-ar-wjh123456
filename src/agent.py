@@ -252,8 +252,12 @@ def node_render(state: AgentState) -> dict:
         }}
     name = state.get("person_name") or ""
     items = state.get("items") or []
+    heard = (state.get("window") or state.get("text") or "").strip()
     if not items:
-        rows = ["没听到明确的要点", "再说一段，或者对着他说说看"]
+        # 让镜片自己说出"听到了什么" —— 不然用户完全不知道是麦克风没收到、
+        # 还是收到了但没抽到要点。
+        first = ("听到：" + heard[:12]) if heard else "没听到声音"
+        rows = [first, "再说一段试试"]
         state_name = "完成" if name else "待命"
     else:
         rows = ["%s: %s" % (it.get("key", "其他"), it.get("value", "")) for it in items[:6]]

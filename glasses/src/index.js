@@ -429,7 +429,8 @@ function stopScroll() {
 // ④ 边切边传，不在内存里堆整段（要支持 30 分钟）
 
 const SLICE_MS = Number(process.env.MEMORYLENS_SLICE_MS || 55000);
-const FIRST_SLICE_MS = Number(process.env.MEMORYLENS_FIRST_SLICE_MS || 15000);   // 第一片短一点，先认人         // 一片 55 秒：正好卡在平台 60 秒会话上限之前
+const FIRST_SLICE_MS = Number(process.env.MEMORYLENS_FIRST_SLICE_MS || 15000);
+const SILENT_PEAK = 60;      // 整片峰值低于这个数就认为麦克风没进声音   // 第一片短一点，先认人         // 一片 55 秒：正好卡在平台 60 秒会话上限之前
 const MAX_SESSION_MS = 59000;   // 会话再长就换一个，避免撞平台上限
 const SLICE_MIN_MS = 5000;      // 停止时最后一片不足这个数就丢掉
 const MAX_LISTEN_MS = 30 * 60 * 1000;   // 兜底：连续听 30 分钟自动停
@@ -472,6 +473,9 @@ function levelBar(n) {
 
 // 卡片占屏时，把 6 格迷你条拼到状态行后面，保证任何时候都看得见音量
 function statusWithBar(line) {
+  if (capture && capture.noSoundUntil && Date.now() < capture.noSoundUntil) {
+    return "麦克风没声音";
+  }
   const ps = (capture && capture.peaks) || [];
   if (!ps.length) return line;
   const quiet = ps.slice(-6).every((v) => v < 0.03);
@@ -660,6 +664,19 @@ function cutSlice(c) {
   c.chunks = [];
   c.samples = 0;
   c.sliceStart = Date.now();          // 下一片重新计时
+  // 整片静音就别上传了：既省一次 ASR，也能让镜片明确告诉用户"没收到声音"
+  let slicePeak = 0;
+  for (const buf of chunks) {
+    for (let i = 0; i + 1 < buf.length; i += 2) {
+      const v = Math.abs(buf.readInt16LE(i));
+      if (v > slicePeak) slicePeak = v;
+    }
+  }
+  if (slicePeak < SILENT_PEAK) {
+    c.noSoundUntil = Date.now() + 6000;
+    c.silentSlices = (c.silentSlices || 0) + 1;
+    return;
+  }
   if (bytes < 16000 * 2 * (SLICE_MIN_MS / 1000)) return;
   c.queue.push(toWav(chunks, bytes));
   drain(c);
