@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Archivo:wght@400;600&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="style.css?v=16" />
+<link rel="stylesheet" href="style.css?v=17" />
 </head>
 <body>
 
@@ -138,7 +138,7 @@
       <div class="ed-row ed-row-split">
         <div class="cell voice-cell">
           <h3>声纹</h3>
-          <button id="edVoice" class="btn btn-block" type="button">◉ 录声纹（3 秒）</button>
+          <button id="edVoice" class="btn btn-block" type="button">◉ 录声纹（7 秒）</button>
           <p class="hint" id="edVoiceHint">说一句「我是 XXX」，眼镜就能听声认人。</p>
         </div>
 
@@ -180,6 +180,9 @@
         </label>
         <label>第一片自动认人后显示
           <input id="firstHoldSec" type="number" min="3" max="120" step="1" class="num" /> 秒
+        </label>
+        <label>「识别人」录多久
+          <input id="identifySec" type="number" min="5" max="60" step="1" class="num" /> 秒
         </label>
         <span class="tiny">范围 3–120 秒；改完点保存，眼镜下次启动生效</span>
       </div>
@@ -242,6 +245,6 @@
 
 <div id="toast" class="toast" hidden></div>
 
-<script src="app.js?v=16"></script>
+<script src="app.js?v=17"></script>
 </body>
 </html>

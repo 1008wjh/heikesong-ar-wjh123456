@@ -811,3 +811,14 @@ code {
 }
 .pres-time label { display: flex; align-items: center; gap: 6px; }
 .pres-time .num { width: 64px; padding: 6px 8px; }
+
+.ownertag {
+  font-style: normal;
+  font-size: 10px;
+  padding: 1px 5px;
+  margin-left: 6px;
+  border: 1px solid var(--ink);
+  background: var(--accent);
+  color: var(--on-accent);
+  vertical-align: 1px;
+}

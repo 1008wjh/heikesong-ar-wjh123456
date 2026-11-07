@@ -250,6 +250,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._voice_enroll(body)
             if path == "/api/people/save":
                 return self._save_person(body)
+            if path == "/api/people/owner":
+                pid = str(body.get("id") or "")
+                if not store.get(pid):
+                    return self._json({"ok": False, "error": "没有这个人"}, 404)
+                store.set_owner(pid)
+                return self._json({"ok": True})
             if path == "/api/people/delete":
                 return self._delete_person(body)
             if path == "/api/converse/start":

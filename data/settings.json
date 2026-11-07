@@ -1,4 +1,5 @@
 {
   "hold_sec": 45,
-  "first_hold_sec": 9
+  "first_hold_sec": 9,
+  "identify_sec": 15
 }

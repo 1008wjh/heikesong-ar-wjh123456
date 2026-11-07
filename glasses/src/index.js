@@ -29,7 +29,7 @@ const MAX_SAMPLES = 16000 * 60;   // 平台单会话上限 60 秒；55 秒片不
 const OUTBOX_RETRY_MS = 8000;  // 离线录音的重发间隔
 // 卡片（认人结果/55 秒建议）露一会儿就收起来，录音不停
 let HOLD_MS = 9000;                       // 第一片自动认人后：9 秒
-const IDENTIFY_MS = Number(process.env.MEMORYLENS_IDENTIFY_MS || 20000);   // 识别人：录多久
+let IDENTIFY_MS = Number(process.env.MEMORYLENS_IDENTIFY_MS || 20000);   // 识别人：录多久
 let PRESET_HOLD_MS = Number(process.env.MEMORYLENS_PRESET_HOLD_MS || 30000);  // 手动提交：30 秒      // 认人卡片在镜片上停留多久
 
 // 宿主注入的私有数据目录；没有（单测 / 无沙箱环境）就不落盘。
@@ -1016,6 +1016,8 @@ async function loadUiSettings() {
     const first = Number(d && d.first_hold_sec);
     if (hold >= 3) PRESET_HOLD_MS = Math.round(hold * 1000);
     if (first >= 3) HOLD_MS = Math.round(first * 1000);
+    const ident = Number(d && d.identify_sec);
+    if (ident >= 5) IDENTIFY_MS = Math.round(ident * 1000);
   } catch (e) { /* 用默认值 */ }
 }
 

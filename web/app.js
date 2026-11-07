@@ -6,7 +6,7 @@
 const $ = (s) => document.querySelector(s);
 
 // 改代码就 +1，页脚会显示。看到 build 不是最新的，说明浏览器还在跑旧脚本。
-const BUILD = 16;
+const BUILD = 17;
 
 const state = { people: [], threshold: 0.4 };
 
@@ -16,7 +16,7 @@ let pendingVoice = null;  // 这次新录的声纹（dataURL wav），保存时�
 let voiceRecording = false;
 let voiceRec = null;
 
-const VOICE_SECONDS = 3;
+const VOICE_SECONDS = 7;
 const BLANK_IMG = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
 
 /* ---------------- 小工具 ---------------- */
@@ -94,6 +94,13 @@ function renderPeople() {
       vt.title = '已录声纹，眼镜能听声认人';
       rl.append(' ', vt);
     }
+    if (p.owner) {
+      const ow = document.createElement('i');
+      ow.className = 'ownertag';
+      ow.textContent = '主人';
+      ow.title = '分轨时会被剔除的就是这个人';
+      nm.append(' ', ow);
+    }
     who.append(nm, rl);
 
     const acts = document.createElement('div');
@@ -106,6 +113,19 @@ function renderPeople() {
     del.className = 'mini ghost';
     del.textContent = '删';
     del.onclick = (e) => { e.stopPropagation(); deletePerson(p); };
+    if (!p.owner) {
+      const own = document.createElement('button');
+      own.className = 'mini ghost';
+      own.textContent = '设为主人';
+      own.onclick = async (e) => {
+        e.stopPropagation();
+        const r = await post('/api/people/owner', { id: p.id });
+        if (!r.ok) return toast('设主人失败：' + r.error, true);
+        await loadPeople();
+        toast('已把「' + p.name + '」设为主人');
+      };
+      acts.append(own);
+    }
     acts.append(ed, del);
 
     li.append(av, who, acts);
@@ -425,6 +445,7 @@ async function loadPresets() {
     const cfg = await (await fetch('/api/settings')).json();
     if ($('#holdSec')) $('#holdSec').value = cfg.hold_sec || 30;
     if ($('#firstHoldSec')) $('#firstHoldSec').value = cfg.first_hold_sec || 9;
+    if ($('#identifySec')) $('#identifySec').value = cfg.identify_sec || 20;
   } catch (e) {
     if ($('#presetMsg')) $('#presetMsg').textContent = '读不到预设：' + e.message;
   }
@@ -475,6 +496,7 @@ async function savePresets() {
       body: JSON.stringify({
         hold_sec: Number(($('#holdSec') || {}).value || 30),
         first_hold_sec: Number(($('#firstHoldSec') || {}).value || 9),
+        identify_sec: Number(($('#identifySec') || {}).value || 20),
       }),
     });
     const cfg = await cfgRes.json();
