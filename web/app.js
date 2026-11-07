@@ -6,7 +6,7 @@
 const $ = (s) => document.querySelector(s);
 
 // 改代码就 +1，页脚会显示。看到 build 不是最新的，说明浏览器还在跑旧脚本。
-const BUILD = 18;
+const BUILD = 19;
 
 const state = { people: [], threshold: 0.4 };
 
@@ -18,6 +18,16 @@ let voiceRec = null;
 
 const VOICE_SECONDS = 7;
 const BLANK_IMG = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+
+// 控制台选的麦克风（存本地）。换设备是"录不到声音"最常见的原因。
+const MIC_KEY = 'ml.mic';
+function storeGet(k) {
+  try { return window.localStorage.getItem(k) || ''; } catch (e) { return ''; }
+}
+function storeSet(k, v) {
+  try { window.localStorage.setItem(k, v); } catch (e) { /* 无痕模式 */ }
+}
+let voiceDeviceId = storeGet(MIC_KEY);
 
 /* ---------------- 小工具 ---------------- */
 
@@ -238,6 +248,7 @@ function openEditor(id) {
 
   $('#empty').hidden = true;
   $('#editor').hidden = false;
+  listMics();
   renderPeople();
   setTimeout(() => { const n = $('#edName'); if (n) n.focus(); }, 30);
 }
@@ -363,6 +374,31 @@ function stopVoiceIfRecording() {
   return r;
 }
 
+async function listMics() {
+  const sel = $('#edMic');
+  if (!sel || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+  let mics = [];
+  try {
+    mics = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audioinput');
+  } catch (e) {
+    return;
+  }
+  if (!mics.length) return;
+  sel.innerHTML = '';
+  mics.forEach((d, i) => {
+    const o = document.createElement('option');
+    o.value = d.deviceId;
+    o.textContent = d.label || ('麦克风 ' + (i + 1));
+    sel.appendChild(o);
+  });
+  if (voiceDeviceId && mics.some((d) => d.deviceId === voiceDeviceId)) sel.value = voiceDeviceId;
+  sel.onchange = () => {
+    voiceDeviceId = sel.value || '';
+    storeSet(MIC_KEY, voiceDeviceId);
+    toast('已切换麦克风');
+  };
+}
+
 async function recordVoice() {
   if (voiceRecording) {                       // 再点一次 = 提前结束
     const r = stopVoiceIfRecording();
@@ -374,21 +410,54 @@ async function recordVoice() {
   }
   let stream;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } });
+    const audio = { channelCount: 1 };
+    if (voiceDeviceId) audio.deviceId = { exact: voiceDeviceId };
+    stream = await navigator.mediaDevices.getUserMedia({ audio });
   } catch (e) {
-    return toast('拿不到麦克风：' + e.message, true);
+    if (!voiceDeviceId) return toast('拿不到麦克风：' + e.message, true);
+    // 记住的麦克风拔掉了：清掉选择，退回系统默认再试一次
+    voiceDeviceId = '';
+    storeSet(MIC_KEY, '');
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } });
+    } catch (e2) {
+      return toast('拿不到麦克风：' + e2.message, true);
+    }
   }
+  listMics();                                 // 拿到权限后设备名才可见
   const AudioCtx = window.AudioContext || window.webkitAudioContext;
-  const ctx = new AudioCtx({ sampleRate: 16000 });
+  // 用设备默认采样率：强设 16k 在部分声卡上会录出一段静音（"没有声音"就是这么来的）
+  const ctx = new AudioCtx();
+  if (ctx.state === 'suspended') { try { await ctx.resume(); } catch (e) { /* 忽略 */ } }
   const source = ctx.createMediaStreamSource(stream);
   const proc = ctx.createScriptProcessor(4096, 1, 1);
   const chunks = [];
-  proc.onaudioprocess = (ev) => { chunks.push(new Float32Array(ev.inputBuffer.getChannelData(0))); };
+  let peak = 0;
+  let lastUi = 0;
+  const startedAt = Date.now();
+  proc.onaudioprocess = (ev) => {
+    const ch = new Float32Array(ev.inputBuffer.getChannelData(0));
+    chunks.push(ch);
+    for (let i = 0; i < ch.length; i++) {
+      const a = Math.abs(ch[i]);
+      if (a > peak) peak = a;
+    }
+    const now = Date.now();
+    if (now - lastUi < 250) return;
+    lastUi = now;
+    const secs = ((now - startedAt) / 1000).toFixed(1);
+    const hint = $('#edVoiceHint');
+    if (!hint) return;
+    hint.textContent = peak > 0.01
+      ? '正在录 ' + secs + ' 秒 · 电平 ' + Math.round(peak * 100) + '%'
+      : '正在录 ' + secs + ' 秒 · 还没听到声音，看一下麦克风';
+  };
   source.connect(proc);
   proc.connect(ctx.destination);
 
   voiceRec = {
     ctx, stream, proc, chunks,
+    peak: () => peak,
     timer: setTimeout(async () => {
       const r = stopVoiceIfRecording();
       if (r) await finishVoice(r);
@@ -396,17 +465,32 @@ async function recordVoice() {
   };
   voiceRecording = true;
   $('#edVoice').textContent = '◉ 正在录…（再点结束）';
-  $('#edVoiceHint').textContent = '说话中，约 ' + VOICE_SECONDS + ' 秒';
+  $('#edVoiceHint').textContent = '说话中，约 ' + VOICE_SECONDS + ' 秒 · 等电平动起来';
 }
 
 async function finishVoice(r) {
   const sampleRate = r.ctx.sampleRate || 16000;
+  const total = r.chunks.reduce((n, c) => n + c.length, 0);
+  const secs = total / sampleRate;
+  const peak = r.peak ? r.peak() : 0;
+  const ownerVoice = !!(editing && editing.owner);
+  const label = (ownerVoice ? '◉ 重录主人声纹（' : '◉ 重录声纹（') + VOICE_SECONDS + ' 秒）';
+  if (secs < 1 || peak < 0.01) {
+    // 服务端 PEAK_MIN=300（约 -40dB），这里先挡一道，免得保存时才报"没有声音"
+    pendingVoice = null;
+    $('#edVoice').textContent = label;
+    $('#edVoiceHint').textContent =
+      '这段几乎没有声音（' + secs.toFixed(1) + ' 秒 · 电平 ' + Math.round(peak * 100) + '%）：'
+      + '换个麦克风，或检查 Windows 的默认输入设备，再录一次。';
+    toast('没录到声音：换个麦克风再试', true);
+    return;
+  }
   const wav = floatToWav(r.chunks, sampleRate);
   const blob = new Blob([wav], { type: 'audio/wav' });
   pendingVoice = await blobToDataURL(blob);
-  const ownerVoice = !!(editing && editing.owner);
-  $('#edVoice').textContent = (ownerVoice ? '◉ 重录主人声纹（' : '◉ 重录声纹（') + VOICE_SECONDS + ' 秒）';
-  $('#edVoiceHint').textContent = '已录 ' + (blob.size / 32000).toFixed(1) + ' 秒，保存时一起写入。';
+  $('#edVoice').textContent = label;
+  $('#edVoiceHint').textContent = '已录 ' + secs.toFixed(1) + ' 秒（电平 '
+    + Math.round(peak * 100) + '%），保存时一起写入。';
 }
 
 /* ---------------- 绑定 ---------------- */
