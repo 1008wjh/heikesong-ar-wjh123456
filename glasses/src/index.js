@@ -401,44 +401,47 @@ function stopScroll() {
 }
 // ---------- 录音：持续听，按 3.5 秒切片送识别 ----------
 //
-// 平台的语音会话是"一次最多 60 秒、64 帧缓冲"，所以"一直听"不能靠一条长会话，
-// 只能：① 每 40ms 把帧泵出来（不泵就丢音）② 每 3.5 秒切一片送 /api/voice/scan
-// ③ 会话到 55 秒主动轮换一条新的（中间有毫秒级空档，对识别无影响）。
+// 平台的语音会话是"一次最多 60 秒、64 帧缓冲"，所以"一直听"不能靠一条长会话：
+// ① 每 40ms 把帧泵出来（不泵就丢音）
+// ② 每 15 秒切一片：第一片拿去认人，之后的每一片直接进这段对话
+// ③ 会话到 55 秒主动轮换一条新的（中间有毫秒级空档，对识别无影响）
+// ④ 边切边传，不在内存里堆整段（要支持 30 分钟）
 
-const SLICE_MS = 3500;          // 每片多长：太短认不准，太长反馈慢
-const SLICE_MIN_MS = 1000;      // 停止时最后一片不足这个数就丢掉
+const SLICE_MS = 15000;         // 一片 15 秒：够听清一句话，也让"认人"不用等太久
+const SLICE_MIN_MS = 3000;      // 停止时最后一片不足这个数就丢掉
 const MAX_SESSION_MS = 55000;   // 平台上限 60 秒，提前换会话
-const MAX_LISTEN_MS = 5 * 60 * 1000;   // 兜底：连续听 5 分钟自动停
-const ARCHIVE_PACK_SAMPLES = 16000 * 28;   // 送去做转写的批次：28 秒一段
+const MAX_LISTEN_MS = 30 * 60 * 1000;   // 兜底：连续听 30 分钟自动停
 const AUTO_ARCHIVE = process.env.MEMORYLENS_ARCHIVE !== "0";   // 停止后把整段对话整理进档案
 
-let capture = null;   // {session,chunks,samples,startedAt,sessionStartedAt,slices,queue,busy,lastCard,stopped,dropped}
+let capture = null;   // {session,chunks,samples,queue,busy,personId,personName,sessionId,slices,sent,lastCard,stopped,dropped}
 
 function clockOf(ms) {
   const s = Math.max(0, Math.floor(ms / 1000));
   return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
 }
 
+function listenLine() {
+  const c = capture;
+  const tail = c.sent ? " · " + c.sent + " 段" : "";
+  return "在听 " + clockOf(Date.now() - c.startedAt) + tail;
+}
+
 // 只刷"状态行 + 底栏"；卡片内容由切片结果负责画，避免每 400ms 把卡片冲掉
 function paintListening() {
   if (!capture) return;
-  const secs = clockOf(Date.now() - capture.startedAt);
-  const tail = capture.slices ? " · 已认 " + capture.slices + " 次" : "";
-  retained.status.setText("在听 " + secs + tail);
+  retained.status.setText(listenLine());
   if (!capture.lastCard) {
     putText(retained.name, "在听…");
     putText(retained.role, "直接说话就行，不用按键");
     putText(retained.sim, "");
     const hint = [
-      "说一句「我是 XXX」我就认人",
-      "没人说话我会一直听着",
-      "再按「确认」停止",
+      "前 15 秒用来认人",
+      "认出来就一直记这段对话",
+      "按「返回」结束并入库",
     ];
     retained.info.forEach((t, i) => putText(t, hint[i] || ""));
-    putText(retained.foot, "确认 停止 · 返回 也停止");
-  } else {
-    putText(retained.foot, "确认 停止 · 返回 也停止");
   }
+  putText(retained.foot, "确认 详情 · 返回 结束");
 }
 
 function openSession() {
@@ -447,7 +450,7 @@ function openSession() {
   try {
     session = input.requestVoiceInput({ mode: "audio" });
   } catch (e) {
-    stopListening("开不了麦克风 · " + (e && e.message));
+    stopAndArchive("开不了麦克风 · " + (e && e.message));
     return;
   }
   capture.session = session;
@@ -464,8 +467,6 @@ function pump() {
       const buf = Buffer.from(ev.data);
       c.chunks.push(buf);
       c.samples += ev.sampleCount;
-      // 同时留一份整段录音：停止后要送去转写+析出，不能只留最近一片
-      if (c.keepSamples < 16000 * 300) { c.keep.push(buf); c.keepSamples += ev.sampleCount; }
     } else if (ev.type === "end") {
       // 平台把这条会话关了：换一条接着听（保留已累积的缓冲）
       if (!c.stopped) { openSession(); return; }
@@ -478,7 +479,7 @@ function pump() {
     if (!c.stopped) { openSession(); return; }
   }
   if (Date.now() - c.startedAt >= MAX_LISTEN_MS) {
-    stopListening("听满 5 分钟 · 自动停了");
+    stopAndArchive("听满 30 分钟 · 自动停了");
     return;
   }
   c.pumpTimer = setTimeout(pump, 40);
@@ -494,76 +495,67 @@ function cutSlice(c) {
   drain(c);
 }
 
+// 队列里只有一种东西：一段 WAV。
+// 还没认人时，这段先拿去认人；认出来之后，所有段都直接进这段对话。
 async function drain(c) {
   if (c.busy) return;
   c.busy = true;
   try {
     while (c.queue.length) {
       const wav = c.queue.shift();
-      let res;
-      try {
-        res = await postJson("/api/voice/scan", { audio: wav });
-      } catch (e) {
-        // 连不上：这一段先落盘，联网后由 outbox 补传
-        if (!outbox.push(wav)) c.dropped += 1;
+      if (!c.personId) {
+        await identify(c, wav);
         continue;
       }
-      const f = res && res.faces && res.faces[0];
-      if (!f) continue;
-      c.slices += 1;
-      c.lastCard = f;
-      c.lastRev = res.rev;
-      c.lastMs = res.ms;
-      paintCard(f, res.rev, res.ms);   // 认出来就换卡片
-      paintListening();                // 再把状态行/底栏盖回"在听"
+      await pushChunk(c, wav);
     }
   } finally {
     c.busy = false;
   }
 }
 
-// 停止后把整段对话送去转写 + 析出，最后写进那个人的档案。
-// 认不出人就不做（没有档案可写），太短也不做（转不出东西）。
-async function archiveConversation(c) {
-  const pid = c.lastCard.person_id;
-  const name = c.lastCard.name || "他";
-  paintIdle("整理这段对话…");
-  let sid = null;
+async function identify(c, wav) {
+  let res;
   try {
-    const started = await postJson("/api/converse/start", { person_id: pid });
-    sid = started && started.session;
-    if (!sid) throw new Error("开会话失败");
-    let buf = [];
-    let bufSamples = 0;
-    let packs = 0;
-    const flushPack = async () => {
-      if (!bufSamples) return;
-      const wav = toWav(buf, bufSamples * 2);
-      buf = [];
-      bufSamples = 0;
-      await postJson("/api/converse/chunk", { session: sid, audio: wav });
-      packs += 1;
-      paintIdle("整理这段对话 · 已转 " + packs + " 段");
-    };
-    for (const part of c.keep) {
-      buf.push(part);
-      bufSamples += part.length / 2;
-      if (bufSamples >= ARCHIVE_PACK_SAMPLES) await flushPack();
-    }
-    await flushPack();
-    const analyzed = await postJson("/api/converse/analyze", { session: sid });
-    const items = (analyzed && analyzed.items) || [];
-    if (!items.length) {
-      paintIdle("这段没析出要点 · 只留了转写");
-      return;
-    }
-    const saved = await postJson("/api/converse/save", { session: sid, items });
-    paintIdle("已记入 " + name + " · " + ((saved && saved.saved) || items.length) + " 条");
+    // auto_add：陌生人直接建号（陌生人A、陌生人B…），否则这整段话没有归属
+    res = await postJson("/api/voice/scan", { audio: wav, auto_add: true });
   } catch (e) {
-    // 模型没配 / 断网：至少把音频留着，别整段丢掉
-    let kept = 0;
-    for (const part of c.keep) if (outbox.push(toWav([part], part.length))) kept += 1;
-    paintIdle(kept ? "没配上模型 · 录音已存本地" : "整理失败 · " + (e && e.message));
+    if (!outbox.push(wav)) c.dropped += 1;
+    return;
+  }
+  const f = res && res.faces && res.faces[0];
+  if (!f || !f.person_id) return;
+  c.personId = f.person_id;
+  c.personName = f.name || "他";
+  c.slices += 1;
+  c.lastCard = f;
+  c.lastRev = res.rev;
+  c.lastMs = res.ms;
+  paintCard(f, res.rev, res.ms);   // 认出来就换卡片
+  paintListening();                // 再把状态行/底栏盖回"在听"
+  c.queue.unshift(wav);            // 这一片也要进对话，别漏掉开头那 15 秒
+  if (AUTO_ARCHIVE) await ensureSession(c);
+}
+
+async function ensureSession(c) {
+  if (c.sessionId) return true;
+  try {
+    const r = await postJson("/api/converse/start", { person_id: c.personId });
+    c.sessionId = (r && r.session) || null;
+  } catch (e) {
+    c.sessionId = null;
+  }
+  return !!c.sessionId;
+}
+
+async function pushChunk(c, wav) {
+  if (!AUTO_ARCHIVE) return;                       // 只认人、不入库的用法
+  if (!(await ensureSession(c))) { if (!outbox.push(wav)) c.dropped += 1; return; }
+  try {
+    await postJson("/api/converse/chunk", { session: c.sessionId, audio: wav });
+    c.sent += 1;
+  } catch (e) {
+    if (!outbox.push(wav)) c.dropped += 1;
   }
 }
 
@@ -582,10 +574,10 @@ function startListening() {
   }
   capture = {
     session: null, chunks: [], samples: 0,
-    keep: [], keepSamples: 0,
     startedAt: Date.now(), sessionStartedAt: 0,
-    slices: 0, queue: [], busy: false, lastCard: null, stopped: false, dropped: 0,
-    pumpTimer: null,
+    slices: 0, sent: 0, queue: [], busy: false,
+    personId: "", personName: "", sessionId: null,
+    lastCard: null, stopped: false, dropped: 0, pumpTimer: null,
   };
   viewMode = "idle";
   complexRows = null;
@@ -593,13 +585,13 @@ function startListening() {
   paintListening();
 }
 
-function stopListening(msg) {
+// 按「返回」：收尾最后一片 → 等队列传完 → 让模型析出要点 → 写进那个人的档案
+async function stopAndArchive(msg) {
   const c = capture;
   if (!c) return;
   c.stopped = true;
   if (c.pumpTimer) clearTimeout(c.pumpTimer);
   try { if (c.session) c.session.finish(); } catch (e) { /* 已经结束 */ }
-  // 最后不足一片的也别浪费：够 1 秒就送出去
   const bytes = c.samples * 2;
   if (bytes >= 16000 * 2 * (SLICE_MIN_MS / 1000)) {
     c.queue.push(toWav(c.chunks, bytes));
@@ -607,17 +599,29 @@ function stopListening(msg) {
   c.samples = 0;
   c.chunks = [];
   capture = null;
-  drain(c);                          // 用局部引用，队列不会因为 capture 置空而丢
-  // 停下来的画面留在"最后认出的人"上，比退回空白页有用
-  if (c.lastCard) {
-    stopNote = Date.now() + 6000;         // 底栏先显示"已停止"，6 秒后回到常态提示
-    paintCard(c.lastCard, c.lastRev, c.lastMs);
-  } else {
-    paintIdle(msg || "已停止 · 这次没认出来");
+  const revAtStop = shownRev;
+  putText(retained.foot, "收尾 · 传剩余录音…");
+  await drain(c);
+  if (!c.personId) {
+    if (shownRev === revAtStop) paintIdle(msg || "没认出人 · 这段没入库");
+    return;
   }
-  // 认出是谁了，就把这段整段录音整理进他的档案（转写 + 析出要点 + 落库）
-  if (AUTO_ARCHIVE && c.lastCard && c.lastCard.person_id && c.keepSamples >= 16000 * 4) {
-    archiveConversation(c).catch(() => { /* archiveConversation 内部已经提示过 */ });
+  if (!AUTO_ARCHIVE || !c.sessionId) {
+    if (shownRev === revAtStop) paintIdle("这段结束了 · 按一下再开一段");
+    return;
+  }
+  paintIdle("整理 " + c.personName + " 这段…");
+  try {
+    const analyzed = await postJson("/api/converse/analyze", { session: c.sessionId });
+    const items = (analyzed && analyzed.items) || [];
+    if (!items.length) {
+      paintIdle("没析出要点 · 转写已存");
+      return;
+    }
+    const saved = await postJson("/api/converse/save", { session: c.sessionId, items });
+    paintIdle("已记入 " + c.personName + " · " + ((saved && saved.saved) || items.length) + " 条");
+  } catch (e) {
+    paintIdle("整理失败 · " + (e && e.message));
   }
 }
 
@@ -629,12 +633,14 @@ function handleNavigation() {
   do {
     try { nav = input.takeNavigationAction(); } catch (e) { nav = null; }
     if (nav === "activate") {
-      if (capture) stopListening();                                   // 在听 → 停
-      else if (viewMode === "simple" || viewMode === "complex") toggleDetail();
-      else startListening();                                          // 空白 → 开始持续听
+      if (capture) {
+        // 录音中按「确认」= 看这个人的详细信息（再按一次收起），不打断录音
+        if (capture.lastCard) toggleDetail();
+      } else if (viewMode === "simple" || viewMode === "complex") toggleDetail();
+      else startListening();                                          // 空白 → 开始听
     } else if (nav === "back") {
       if (capture) {
-        stopListening("已取消");
+        stopAndArchive();                                             // 录音中按「返回」= 结束并入库
       } else if (viewMode !== "idle") {
         clearView();        // 清屏：回到"按一下开始听"
       }
@@ -693,7 +699,17 @@ function tick() {
   const now = Date.now();
   if (now - lastPaintAt < 400) return;
   lastPaintAt = now;
-  if (capture) { paintListening(); return; }   // 在听的时候只刷计时，别把卡片冲掉
+  if (capture) {
+    // 在听的时候：详情页照常显示，但状态行继续走计时
+    if (complexRows) {
+      paintComplex(lastScene && lastScene.name ? lastScene.name : capture.personName);
+      retained.status.setText(listenLine());
+      putText(retained.foot, "确认 收起 · 返回 结束");
+    } else {
+      paintListening();
+    }
+    return;
+  }
   if (!lastScene) return;
   if (complexRows) paintComplex(lastScene.card ? lastScene.card.name : "");
   else if (lastScene.card) paintCard(lastScene.card, lastScene.rev, lastScene.ms);
@@ -737,17 +753,16 @@ App.createApp((lifecycle) => {
 
   if (lifecycle === AppLifecycle.ON_BACKGROUND) {
     background = true;
-    stopListening("已切到后台");
+    stopAndArchive("已切到后台");
     stopTimers();
   }
 
   if (lifecycle === AppLifecycle.ON_DESTROY) {
     background = true;
-    stopListening("已退出");
+    stopAndArchive("已退出");
     stopTimers();
     retained.board = undefined;
     retained.root = undefined;
     retained.window = undefined;
   }
 });
-

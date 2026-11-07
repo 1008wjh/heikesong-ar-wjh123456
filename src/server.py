@@ -91,6 +91,19 @@ def shrink(img):
     return img, scale
 
 
+def _next_stranger_name():
+    """给自动入库的陌生人起个名字：陌生人A、陌生人B……（用完 26 个再编号）"""
+    used = {p.get("name", "") for p in store.people()}
+    for i in range(26):
+        name = "陌生人" + chr(ord("A") + i)
+        if name not in used:
+            return name
+    n = 27
+    while ("陌生人" + str(n)) in used:
+        n += 1
+    return "陌生人" + str(n)
+
+
 def crop_face(img, box, side=240, margin=0.45):
     """从整张图里裁出这张脸（带点边距），做成控制台列表用的小图。"""
     x, y, w, h = [float(v) for v in box[:4]]
@@ -166,6 +179,12 @@ class Handler(BaseHTTPRequestHandler):
             with _LAST_LOCK:
                 snapshot = dict(_LAST)
             return self._json({"ok": True, **snapshot})
+        if path == "/api/latest/reset":
+            # 调试用：把"眼镜上现在显示的那条"清掉，方便验证下一次推送
+            with _LAST_LOCK:
+                _LAST.update({"rev": _LAST["rev"] + 1, "faces": [], "at": time.time(), "ms": 0, "kind": ""})
+                rev = _LAST["rev"]
+            return self._json({"ok": True, "rev": rev})
         if path.startswith("/api/card/") and path.endswith("/full"):
             pid = path[len("/api/card/"):-len("/full")].strip("/")
             return self._card_full(pid)
@@ -265,6 +284,21 @@ class Handler(BaseHTTPRequestHandler):
             card = cards.build_card(full, sim, voice.THRESHOLD)
             card["status"] = "known"
             card["person_id"] = person["id"]
+        elif body.get("auto_add"):
+            # 陌生人：直接建号入库（眼镜端一次录音就锁定一个人，不然这整段话无处可放）
+            # 注意只写声纹，别把 192 维的声纹塞进人脸底片里，否则下次人脸匹配会维度不匹配
+            person = store.save(
+                name=_next_stranger_name(),
+                role="陌生人 · 眼镜端自动建的",
+                info=["语音自动入库，回头改个名字", "", ""],
+            )
+            store.add_voice(person["id"], emb)
+            person = [p for p in store.people() if p["id"] == person["id"]][0]
+            card = cards.build_card(person, 1.0, voice.THRESHOLD)
+            card["status"] = "known"
+            card["person_id"] = person["id"]
+            card["created"] = True
+            print(f"[voice] auto-added {person['name']} ({person['id']})")
         else:
             card = {
                 "status": "unknown", "name": "陌生人", "role": "", "similarity": sim,
