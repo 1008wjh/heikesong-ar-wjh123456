@@ -179,16 +179,25 @@ python tools\try_face.py test\biden.jpg      # unknown 陌生人
 | 环节 | 谁做的 | 说明 |
 |---|---|---|
 | 录音 | 浏览器 `getUserMedia` | 全局录音；没麦克风就**直接把原文粘进文本框**，一样能分析 |
-| 转写 | MiMo `mimo-v2.5-asr` | 服务端收 WAV 分片，累积成 transcript |
-| 析出 | MiMo `mimo-v2.6-pro` | 只输出结构化 JSON：`summary` + 最多 6 条 `{key, value, quote}` |
+| 转写 | 本地 paraformer（默认）/ MiMo `mimo-v2.5-asr` / 任意 OpenAI 兼容 ASR | 服务端收 WAV 分片，累积成 transcript |
+| 析出 | 任意 OpenAI 兼容 chat：MiMo `mimo-v2.6-pro`、**DeepSeek `deepseek-chat`**、OpenAI… | 只输出结构化 JSON：`summary` + 最多 6 条 `{key, value, quote}` |
 | 落库 | `store.merge_facts()` | 并进 `complex["对话要点"]`，原文留在 `conversations`（最多 20 条） |
 
-**必须先配 Key**，否则这个模块会直接告诉你"用不了"（不会假装能跑）：
+**转写和析出分开配**，因为厂商能力不对等——DeepSeek 有对话、没有语音识别：
 
 ```powershell
+# A. 全用小米 MiMo
 $env:MIMO_API_KEY = "sk-..."
+
+# B. 转写用本地模型（不要 Key）+ 析出用 DeepSeek
+powershell -File tools\get_asr_model.ps1
+$env:DEEPSEEK_API_KEY = "sk-..."
+$env:AR_LLM_PRESET = "deepseek"
+
 python src\server.py
 ```
+
+配了一半也照样能用一半：只配本地转写没配文本模型时，横幅会说"能录音能转写，只是「分析」按不动"。
 
 ![模块 02](test/conv_module.png)
 

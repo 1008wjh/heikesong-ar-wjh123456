@@ -407,18 +407,26 @@ async function loadConvLlm() {
   }
   const banner = $('#convBanner');
   if (banner) {
-    if (!conv.llm.available) {
-      banner.hidden = false;
-      banner.innerHTML = '没配 <code>MIMO_API_KEY</code>：录音、转写、分析都用不了。'
-        + '在启动前设这个环境变量再重启服务，就能用了（模型 ' + (conv.llm.model || 'mimo') + '）。';
-    } else if (conv.llm.stub) {
+    const asrOk = conv.llm.asrAvailable !== false;
+    if (conv.llm.stub) {
       banner.hidden = false;
       banner.textContent = '当前是 stub 模式（AR_LLM_STUB=1），返回的是假数据，只用于测试。';
+    } else if (!asrOk) {
+      banner.hidden = false;
+      banner.innerHTML = '没有可用的转写通道：放一份本地模型到 <code>models/asr/</code>，'
+        + '或设 <code>AR_ASR_KEY</code> 用云端转写。';
+    } else if (!conv.llm.available) {
+      banner.hidden = false;
+      banner.innerHTML = '转写用 <b>' + (conv.llm.asrProvider === 'local' ? '本地模型' : conv.llm.asr)
+        + '</b>，但没配文本模型 Key（<code>AR_LLM_KEY</code> / <code>MIMO_API_KEY</code> / <code>DEEPSEEK_API_KEY</code>）：'
+        + '能录音能转写，只是「分析」按不动。';
     } else {
       banner.hidden = true;
     }
   }
-  if (conv.person) $('#convRec').disabled = !conv.llm.available;
+  if (conv.person) $('#convRec').disabled = !asrOk;
+  const an = $('#convAnalyze');
+  if (an) an.disabled = !conv.llm.available || !($('#convText') && $('#convText').value.trim());
 }
 
 function convFiltered() {
@@ -577,7 +585,7 @@ async function convStop() {
   convSecs();
   await convFlush(true);
   convState(conv.serverText ? '录音结束，可以点「分析这段对话」' : '这次没听到内容');
-  $('#convAnalyze').disabled = !conv.serverText.trim();
+  $('#convAnalyze').disabled = !conv.llm || !conv.llm.available || !conv.serverText.trim();
 }
 
 async function convAnalyze() {
@@ -688,7 +696,7 @@ function convBindOnce() {
   if ($('#convText')) {
     // 手打/粘贴也要能直接分析：有字就把按钮点亮
     $('#convText').oninput = () => {
-      $('#convAnalyze').disabled = !$('#convText').value.trim();
+      $('#convAnalyze').disabled = !conv.llm || !conv.llm.available || !$('#convText').value.trim();
     };
   }
   if ($('#convRec')) $('#convRec').onclick = convStart;
