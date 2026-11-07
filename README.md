@@ -137,6 +137,7 @@ python src/server.py        # 打开 http://127.0.0.1:8765
 | `docs/07-IrisView-工具包.md` | 亮亮视野开发包：是什么、命令、本机踩的坑、我们的接法 |
 | `tools/enroll.py` | 命令行批量导脸：`python tools/enroll.py 张三 photos/zhangsan/` |
 | `tools/hud_preview.py` | 按眼镜端坐标把 HUD 画成 PNG：`python tools/hud_preview.py voice huihui_b` |
+| `tools/try_voice.py` | 拿一条 WAV 直接测声纹：`python tools/try_voice.py test/voice/huihui_b.wav` |
 | `tools/cdp_*.js` | 调试用：通过 Edge DevTools 协议查 DOM / 截图 / 敲键 / 跑端到端脚本 |
 | `start.bat` | 一键启动（找 Python、装依赖、开浏览器） |
 
