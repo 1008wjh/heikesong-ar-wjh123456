@@ -549,6 +549,17 @@ function makeFakeSession() {
   };
 }
 
+// 关掉当前会话、等平台回收完再开下一条（end 事件之后必须留出这段时间）
+function restartSession(c, delay) {
+  try { if (c.session) c.session.finish(); } catch (e) { /* 已经结束 */ }
+  c.session = null;
+  if (c.stopped) return;
+  setTimeout(() => {
+    if (!capture || capture.stopped || capture.session) return;
+    openSession();
+  }, delay || 400);
+}
+
 function openSession() {
   if (!capture) return;
   // 上一会话可能还没被平台回收（"麦克风繁忙"多半就是它）——先显式收掉
@@ -560,12 +571,40 @@ function openSession() {
   try {
     session = FAKE_MIC ? makeFakeSession() : input.requestVoiceInput({ mode: "audio" });
   } catch (e) {
-    stopAndArchive("开不了麦克风 · " + (e && e.message));
+    const msg = String((e && e.message) || e || "");
+    if (/end event|consume/i.test(msg)) {
+      // 平台还在回收上一条会话：不结束这一段，稍后重试
+      setTimeout(() => { if (capture && !capture.stopped) openSession(); }, 800);
+      return;
+    }
+    stopAndArchive("开不了麦克风 · " + (msg.length > 18 ? msg.slice(0, 18) : msg));
     return;
   }
   capture.session = session;
   capture.sessionStartedAt = Date.now();
   pump();
+}
+
+function peakOf(data) {
+  if (!data) return 0;
+  let view = null;
+  if (typeof ArrayBuffer !== "undefined" && data instanceof ArrayBuffer) {
+    view = new Int16Array(data);
+  } else if (ArrayBuffer.isView(data)) {
+    if (data.BYTES_PER_ELEMENT === 2) {
+      view = new Int16Array(data.buffer, data.byteOffset, Math.floor(data.byteLength / 2));
+    } else {
+      view = new Int16Array(data.buffer, data.byteOffset, Math.floor(data.byteLength / 2));
+    }
+  } else {
+    return 0;
+  }
+  let max = 0;
+  for (let i = 0; i < view.length; i++) {
+    const v = view[i] < 0 ? -view[i] : view[i];
+    if (v > max) max = v;
+  }
+  return max;
 }
 
 function pump() {
@@ -578,18 +617,23 @@ function pump() {
       const buf = Buffer.from(ev.data);
       c.chunks.push(buf);
       c.samples += ev.sampleCount;
-      // 用 PCM 绝对值的峰值估音量，画音量条用
-      let peak = 0;
-      for (let i = 0; i + 1 < buf.length; i += 2) {
-        const v = Math.abs(buf.readInt16LE(i));
-        if (v > peak) peak = v;
+      // 用 PCM 绝对值的峰值估音量，画音量条用。
+      // 平台给的不一定是 Uint8Array：有可能是 Int16Array 或 ArrayBuffer，
+      // 直接按 int16 视图读，避免"有声音但波形不动"。
+      const peak = peakOf(ev.data);
+      if (!c.__fmt) {
+        c.__fmt = 1;
+        console.log("[audio] type=" + (ev.data && ev.data.constructor && ev.data.constructor.name) +
+          " bytes=" + (ev.data && ev.data.byteLength) + " samples=" + ev.sampleCount + " peak=" + peak);
       }
       c.level = Math.min(1, Math.sqrt(peak / 9000));
       c.peaks.push(c.level);
       if (c.peaks.length > 24) c.peaks.shift();
     } else if (ev.type === "end") {
-      // 平台把这条会话关了：换一条接着听（保留已累积的缓冲）
-      if (!c.stopped) { openSession(); return; }
+      // 平台把这条会话关了：换一条接着听（保留已累积的缓冲）。
+      // 注意：不能在收到 end 的同一拍里 requestVoiceInput —— 平台还没回收上一条会话，
+      // 会报 "must consume the previous voice session's end event before requesting another"。
+      if (!c.stopped) { restartSession(c); return; }
       return;
     }
   }
@@ -601,8 +645,7 @@ function pump() {
   const elapsed = Date.now() - sliceStart;
   if (c.samples >= 16000 * (target / 1000) && elapsed >= Math.min(target, 5000)) cutSlice(c);
   if (Date.now() - c.sessionStartedAt >= MAX_SESSION_MS) {
-    try { c.session.finish(); } catch (e) { /* 已经结束 */ }
-    if (!c.stopped) { openSession(); return; }
+    if (!c.stopped) { restartSession(c); return; }
   }
   if (Date.now() - c.startedAt >= MAX_LISTEN_MS) {
     stopAndArchive("听满 30 分钟 · 自动停了");
