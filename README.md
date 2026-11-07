@@ -1,6 +1,6 @@
 # MemoryLens · 记忆眼镜
 
-**[使用说明](使用说明.md)** · **[开发者文档](开发者文档.md)** · [IrisView 工具包](docs/07-IrisView-工具包.md)
+**[使用说明](使用说明.md)** · **[开发者文档](开发者文档.md)** · [IrisView 工具包](docs/07-IrisView-工具包.md) · [多人识别](docs/08-多人识别.md) · [安全审计](docs/09-安全审计.md) · [问题清单](docs/10-问题清单.md)
 
 > 见一个人，打个招呼，眼镜里浮出：他是谁、上次聊了什么、你答应过他什么。
 
@@ -19,6 +19,9 @@
 | **[使用说明](使用说明.md)** | 上手就跑：三条路（只看效果 / 跑模拟器 / 真机）、控制台、3 分钟演示、故障表 |
 | **[开发者文档](开发者文档.md)** | 协作开发：架构、数据模型、13 个接口、识别管线、7 条坑、扩展指南 |
 | [IrisView 工具包](docs/07-IrisView-工具包.md) | 亮亮视野开发包：命令、本机踩的坑、我们怎么接 |
+| **[多人识别](docs/08-多人识别.md)** | v3 多人会议：diarization 链路、模型选型（国际/国内）、`/api/v1/*` 契约、参数与局限 |
+| **[安全审计](docs/09-安全审计.md)** | 已修漏洞（路径穿越/任意文件读/DoS…）+ 未修的鉴权/TLS/隐私风险与处置顺序 |
+| **[问题清单](docs/10-问题清单.md)** | 30 项待处理问题的可执行清单：严重度、位置、影响、修法、验收、修复顺序 |
 
 ```powershell
 git clone git@github.com:1008wjh/heikesong-ar-wjh123456.git
@@ -113,6 +116,32 @@ python src/server.py        # 打开 http://127.0.0.1:8765
 
 信息一屏放 6 行，超了自动滚动（页脚显示 `1/2`）；`上/下` 留给手动翻页（预留）。
 
+### 多人会议（v3，进行中）
+
+v2 只回答"这是谁"；v3 回答"**这场会里有几个人、谁在什么时候说、哪些是我们认识的**"。
+
+链路：分片上传 → pyannote 分段 → CAM++ 逐段声纹 → 贪心聚类 → 簇质心映射人脉库（可再绑定实名）。
+全离线、断网可跑；35.8s 三人测试会议整场约 4.5s（CPU）。
+**只处理轮流说话**：重叠段默认整段丢弃（`dropped_overlap` 计数），不参与聚类。
+
+```bash
+# 1) 建会
+curl -s -X POST http://127.0.0.1:8765/api/v1/session/create \
+  -H "Content-Type: application/json" -d '{"title":"周会"}'
+# 2) 传分片（audio 可以是 base64 / dataURL / 本地绝对路径）
+curl -s -X POST http://127.0.0.1:8765/api/v1/audio/upload \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId":"s_xxx","seq":1,"audio":"D:\\audio\\chunk1.wav"}'
+# 3) 生成多人分离（返回 speakers / segments）
+curl -s -X POST http://127.0.0.1:8765/api/v1/session/s_xxx/finalize -d '{}'
+# 4) 把匿名 spk 绑成实名（enroll=true 顺带录入声纹）
+curl -s -X POST http://127.0.0.1:8765/api/v1/speaker/bind \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId":"s_xxx","spkId":"spk_0","name":"王姐","enroll":true}'
+```
+
+完整接口、模型选型（国际/国内）、参数与局限见 [docs/08-多人识别.md](docs/08-多人识别.md)。
+
 | 文件 | 作用 |
 |---|---|
 | `src/face.py` | 检测（YuNet）→ 5 点对齐 → ArcFace 512 维特征 → 余弦相似度 |
@@ -120,9 +149,15 @@ python src/server.py        # 打开 http://127.0.0.1:8765
 | `src/store.py` | 人脉库：JSON 读写、多张脸底片取最大相似度（阈值 0.40 可调）、声纹覆盖式更新；字段 name / role / info×3 / photo / simple / complex |
 | `src/cards.py` | 两档数据：`simple` 摊平成镜片上那几行，`complex` 供详情页；老数据自动迁移；可选调 MiMo 生成开场白 |
 | `src/server.py` | 零依赖 HTTP 服务（stdlib，不用装 FastAPI） |
+| `src/diarize.py` | v3 多人分离：pyannote 分段 + CAM++ 逐段声纹 + 自研聚类 + 实名映射（无模型时退回能量 VAD） |
+| `src/meeting.py` | v3 会议会话：分片落盘、合并、finalize、绑定实名、锚点回放、眼镜会议卡片 |
+| `src/asr.py` | v3 云端 ASR 预留适配层（aliyun/tencent/volcano/off），统一 `{spk_id,start,end,text}` 契约 |
 | `web/` | 眼镜视角 UI：预览 → 抓拍 → 冻结帧 + 框 + 左下角信息面板；右侧控制台增删改查 |
 | `test/smoke.py` | 管线冒烟测试（同人/不同人相似度） |
 | `test/voice_api_test.py` | 声纹接口 13 项（注册、同人换句、串号、latest、说得太短） |
+| `test/diarize_test.py` | v3 多人分离 25 项（聚类/二次合并/碎片并入/重叠清洗/静音 + 3 人会议零串号） |
+| `test/meeting_api_test.py` | v3 会议 API 53 项（独立端口/临时数据：分片、finalize、bind、锚点回放、删除、参数边界、预留 action） |
+| `test/security_test.py` | 安全回归 13 项（路径穿越、前缀绕过、本地文件读取、body/会议上限、正常静态文件） |
 | `test/api_test.py` | 端到端 14 项（识别、抗干扰、陌生人、录入、卡片 == 信息 1/2/3） |
 | `test/api_console.py` | 控制台接口 15 项（增删改查、换图、空名拒绝、照片 404） |
 | `test/e2e_console.js` | 真浏览器跑控制台 9 项（点新增、上传图、保存、编辑、删除） |

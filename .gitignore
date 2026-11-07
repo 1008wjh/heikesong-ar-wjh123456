@@ -30,3 +30,5 @@ deploy/cache/
 probe/
 # 眼镜端构建产物（包在 dist/ 里，dist 保留）
 glasses/dist/
+# 会议运行时数据（分片音频 / meta.json / 转写），不进仓库
+data/meetings/

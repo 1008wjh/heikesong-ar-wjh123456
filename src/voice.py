@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import os
+import threading
 import wave
 
 import numpy as np
@@ -24,20 +25,22 @@ MARGIN = float(os.environ.get("AR_VOICE_MARGIN", "0.08"))
 
 _extractor = None
 _lock = None
+_init_lock = threading.Lock()
 
 
 def _get_extractor():
-    """懒加载：第一次调用才把 28MB 模型读进内存。"""
+    """懒加载：第一次调用才把 28MB 模型读进内存。线程安全（服务端是多线程的）。"""
     global _extractor, _lock
     if _extractor is None:
-        import sherpa_onnx
-        import threading
+        with _init_lock:
+            if _extractor is None:
+                import sherpa_onnx
 
-        cfg = sherpa_onnx.SpeakerEmbeddingExtractorConfig(
-            model=MODEL, num_threads=2, debug=False, provider="cpu"
-        )
-        _extractor = sherpa_onnx.SpeakerEmbeddingExtractor(cfg)
-        _lock = threading.Lock()
+                cfg = sherpa_onnx.SpeakerEmbeddingExtractorConfig(
+                    model=MODEL, num_threads=2, debug=False, provider="cpu"
+                )
+                _lock = threading.Lock()
+                _extractor = sherpa_onnx.SpeakerEmbeddingExtractor(cfg)
     return _extractor
 
 

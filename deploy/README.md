@@ -24,18 +24,20 @@ docker compose up -d --build
 打开 <http://127.0.0.1:8765> 就是控制台；`curl http://127.0.0.1:8765/api/health` 应该回
 `{"ok": true, "threshold": 0.4, "people": 0}`。
 
-- 数据卷 `ml-data` 挂在 `/data`：`people.json` + `photos/` 都在里面，删容器不丢数据。
+- 数据卷 `ml-data` 挂在 `/data`：`people.json` + `photos/` + `meetings/` 都在里面，删容器不丢数据。
   想把本机现成的库直接挂进去，把 compose 里那行 `E:/ar-memory/data:/data` 的注释打开。
 - 模型打在镜像里（`models/` 41MB），**运行时不联网**。
 - 阈值走环境变量：`AR_MATCH_THRESHOLD`、`AR_VOICE_THRESHOLD`、`AR_VOICE_MARGIN`。
+  资源上限：`AR_MAX_BODY_BYTES`、`AR_MEETING_MAX_SECONDS`、`AR_MEETING_MAX_CHUNKS`。
 
 ### 之后搬去云上
 
 同一份镜像，差别只有三件事：
 
 1. **改成 HTTPS**：眼镜端和网页都在公网，别明文传 wav。前面挂一层 Nginx/Caddy 就行。
-2. **限制上传大小**：一句话 4 秒 ≈ 128KB，但接口允许 30 秒，Nginx 给 `client_max_body_size 8m`。
+2. **限制上传大小**：服务端已有 `AR_MAX_BODY_BYTES`（默认 16MB），Nginx 再给 `client_max_body_size 8m` 兜一层。
 3. **加个鉴权**：至少给 `/api/*` 加个 `X-Token`，不然谁都能往你的人脉库里塞脸。
+4. **关掉本地文件路径**：公网/反代部署设 `AR_ALLOW_LOCAL_FILES=0`（详见 `docs/09-安全审计.md`）。
 
 ## 2. 眼镜工具链（打包 / 跑模拟器）
 

@@ -17,7 +17,10 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import asr  # noqa: E402
 import cards  # noqa: E402
+import diarize  # noqa: E402
+import meeting  # noqa: E402
 import voice  # noqa: E402
 from face import FaceEngine  # noqa: E402
 from store import MATCH_THRESHOLD, Store  # noqa: E402
@@ -27,8 +30,20 @@ WEB = os.path.join(ROOT, "web")
 PORT = int(os.environ.get("AR_PORT", "8765"))
 MAX_SIDE = 960  # 送进检测前先缩放，CPU 上快 3 倍
 
+# ---- 资源上限：防超大盘内存/磁盘；本地演示够用，正式部署可按需调 ----
+MAX_BODY_BYTES = int(os.environ.get("AR_MAX_BODY_BYTES", str(16 * 1024 * 1024)))
+MAX_AUDIO_BYTES = int(os.environ.get("AR_MAX_AUDIO_BYTES", str(64 * 1024 * 1024)))
+MAX_IMAGE_BYTES = int(os.environ.get("AR_MAX_IMAGE_BYTES", str(16 * 1024 * 1024)))
+# 本机请求允许传本地文件路径（方便调试）；远端只能用 base64/dataURL。
+ALLOW_LOCAL_FILES = os.environ.get("AR_ALLOW_LOCAL_FILES", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+class RequestTooLarge(ValueError):
+    pass
+
 store = Store()
 engine = FaceEngine()
+meetings = meeting.MeetingStore(people_store=store)
 
 # 最近一次识别结果。手机抓拍 → 这里 → 眼镜轮询取走。
 # 眼镜端（IrisView 应用）没有摄像头，只能"看"这里的最新一帧结果。
@@ -46,34 +61,58 @@ MIME = {
 }
 
 
-def decode_image(payload):
-    """接受 dataURL / 纯 base64 / 本地路径，统一变成 BGR ndarray。"""
+def _as_bool(value, default=False):
+    """把 JSON/表单里的 true/"false"/1 统一成 bool（避免 "false" 被当成 True）。"""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value).strip().lower() in ("1", "true", "yes", "on", "y")
+
+
+def decode_image(payload, allow_local=False):
+    """接受 dataURL / 纯 base64 / 本地路径，统一变成 BGR ndarray。
+
+    本地路径默认只允许本机请求（allow_local=True），防止远端用绝对路径/UNC
+    读取服务器上的任意文件。远端请改用 base64/dataURL。
+    """
     if not payload:
         raise ValueError("没有图片")
-    if os.path.exists(payload):
+    if allow_local and os.path.exists(payload):
+        if os.path.getsize(payload) > MAX_IMAGE_BYTES:
+            raise ValueError("图片过大")
         img = cv2.imread(payload)
         if img is None:
-            raise ValueError("路径读不到图片: " + payload)
+            raise ValueError("路径读不到图片")
         return img
     if "," in payload[:100] and payload.startswith("data:"):
         payload = payload.split(",", 1)[1]
     raw = base64.b64decode(payload)
+    if len(raw) > MAX_IMAGE_BYTES:
+        raise ValueError("图片过大")
     img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
     if img is None:
         raise ValueError("图片解码失败")
     return img
 
 
-def decode_audio(payload):
+def decode_audio(payload, allow_local=False):
     """接受 dataURL / 纯 base64 / 本地路径，统一变成 wav 字节。"""
     if not payload:
         raise ValueError("没有音频")
-    if os.path.exists(payload):
+    if allow_local and os.path.exists(payload):
+        if os.path.getsize(payload) > MAX_AUDIO_BYTES:
+            raise ValueError("音频过大")
         with open(payload, "rb") as f:
             return f.read()
     if payload.startswith("data:"):
         payload = payload.split(",", 1)[1]
-    return base64.b64decode(payload)
+    raw = base64.b64decode(payload)
+    if len(raw) > MAX_AUDIO_BYTES:
+        raise ValueError("音频过大")
+    return raw
 
 
 def shrink(img):
@@ -137,14 +176,27 @@ def _as_dict(value):
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "MemoryLens/0.1"
+    timeout = 30  # 慢连接/半截请求不能无限占线程
 
     def log_message(self, fmt, *args):  # 只打印 API 调用，静态文件太吵
         if "/api/" in (args[0] if args else ""):
             sys.stderr.write("[%s] %s\n" % (time.strftime("%H:%M:%S"), fmt % args))
 
+    def _local(self):
+        """本地文件路径只对本机请求开放（远端只能用 base64/dataURL）。"""
+        host = (self.client_address or ("",))[0]
+        return ALLOW_LOCAL_FILES and host in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+
     # ---------- 路由 ----------
 
     def do_GET(self):
+        try:
+            self._get()
+        except Exception as e:  # GET 也要返回 JSON，不能直接断连接让客户端 RemoteDisconnected
+            traceback.print_exc()
+            return self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+
+    def _get(self):
         path = self.path.split("?")[0]
         query = parse_qs(self.path.split("?")[1]) if "?" in self.path else {}
         if path == "/api/photo":
@@ -162,6 +214,19 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/card/") and path.endswith("/full"):
             pid = path[len("/api/card/"):-len("/full")].strip("/")
             return self._card_full(pid)
+        if path == "/api/v1/sessions":
+            return self._json({"ok": True, "sessions": meetings.list()})
+        if path == "/api/v1/audio/play":
+            return self._v1_play(query)
+        if path.startswith("/api/v1/session/"):
+            rest = path[len("/api/v1/session/"):].strip("/")
+            parts = rest.split("/")
+            if len(parts) == 1:
+                return self._json({"ok": True, **meetings.get(parts[0])})
+            if len(parts) == 2 and parts[1] == "transcript":
+                return self._json({"ok": True, **meetings.transcript(parts[0])})
+            if len(parts) == 2 and parts[1] == "card":
+                return self._json({"ok": True, **meetings.latest_card(parts[0])})
         return self._static(path)
 
     def do_POST(self):
@@ -184,8 +249,38 @@ class Handler(BaseHTTPRequestHandler):
                 return self._note(body)
             if path == "/api/remove":
                 return self._json({"ok": store.remove(body.get("person_id", ""))})
+            # ---------- 多人会议：v1 接口（本地《开发者文档》的端云契约） ----------
+            if path == "/api/v1/session/create":
+                return self._v1_create(body)
+            if path == "/api/v1/audio/upload":
+                return self._v1_upload(body)
+            if path.startswith("/api/v1/session/") and path.endswith("/finalize"):
+                sid = path[len("/api/v1/session/"):-len("/finalize")].strip("/")
+                body["sessionId"] = sid
+                return self._v1_finalize(body)
+            if path == "/api/v1/speaker/bind":
+                return self._v1_bind(body)
+            if path == "/api/v1/action/trigger":
+                return self._v1_action(body)
+            # 单段音频直接分离（不建会议，给 glasses/调试用）
+            if path == "/api/diarize":
+                return self._diarize_once(body)
             return self._json({"ok": False, "error": "未知接口"}, 404)
+        except RequestTooLarge as e:
+            return self._json({"ok": False, "error": str(e)}, 413)
         except Exception as e:  # 任何异常都返回给前端看，黑客松现场方便排查
+            traceback.print_exc()
+            return self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+
+    def do_DELETE(self):
+        path = self.path.split("?")[0]
+        try:
+            if path.startswith("/api/v1/session/"):
+                sid = path[len("/api/v1/session/"):].strip("/")
+                if sid and "/" not in sid:
+                    return self._json({"ok": True, **meetings.delete(sid)})
+            return self._json({"ok": False, "error": "未知接口"}, 404)
+        except Exception as e:
             traceback.print_exc()
             return self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
 
@@ -193,7 +288,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _scan(self, body):
         t0 = time.time()
-        img = decode_image(body.get("image"))
+        img = decode_image(body.get("image"), self._local())
         small, scale = shrink(img)
         faces = engine.scan(small)
         out = []
@@ -227,7 +322,7 @@ class Handler(BaseHTTPRequestHandler):
     def _voice_scan(self, body):
         """眼镜端送来一段语音（16k 单声道 wav），判断"这是谁在说话"。"""
         t0 = time.time()
-        samples = voice.read_wav(decode_audio(body.get("audio")))
+        samples = voice.read_wav(decode_audio(body.get("audio"), self._local()))
         if voice.seconds(samples) < voice.MIN_SECONDS:
             card = {
                 "kind": "voice", "status": "short", "name": "没听清",
@@ -264,7 +359,7 @@ class Handler(BaseHTTPRequestHandler):
             pid = found[0]["id"] if found else ""
         if not pid:
             raise ValueError("要指定 id 或 name")
-        samples = voice.read_wav(decode_audio(body.get("audio")))
+        samples = voice.read_wav(decode_audio(body.get("audio"), self._local()))
         if voice.seconds(samples) < voice.MIN_SECONDS:
             raise ValueError("声音太短，至少说 1 秒")
         person = store.add_voice(pid, voice.embed(samples))
@@ -283,6 +378,82 @@ class Handler(BaseHTTPRequestHandler):
             _LAST["kind"] = "voice"
             payload["rev"] = _LAST["rev"]
         return self._json(payload)
+
+    # ---------- 多人会议（v1 端云契约，先本地实现 + 预留云端位） ----------
+
+    def _v1_create(self, body):
+        meta = meetings.create(body.get("title", ""), body.get("userId", ""))
+        return self._json({"ok": True, **meta})
+
+    def _v1_upload(self, body):
+        sid = (body.get("sessionId") or "").strip()
+        data = decode_audio(body.get("audio") or body.get("data") or "", self._local())
+        return self._json({"ok": True, **meetings.add_chunk(sid, data, body.get("seq"))})
+
+    def _v1_finalize(self, body):
+        sid = (body.get("sessionId") or "").strip()
+        meta = meetings.finalize(sid, with_asr=_as_bool(body.get("asr"), True))
+        self._push_meeting_card(sid)
+        return self._json({"ok": True, **meta})
+
+    def _v1_bind(self, body):
+        sid = (body.get("sessionId") or "").strip()
+        spk = (body.get("spkId") or body.get("spk_id") or "").strip()
+        meta = meetings.bind_speaker(
+            sid, spk,
+            body.get("personId") or body.get("person_id") or "",
+            body.get("name") or "",
+            _as_bool(body.get("enroll"), False),
+        )
+        return self._json({"ok": True, **meta})
+
+    def _v1_action(self, body):
+        """按键指令：summary / ask / mark。当前只做参数与状态，LLM/RAG 接入后填结果。"""
+        action = (body.get("actionType") or body.get("action") or "").strip()
+        if action not in ("summary", "ask", "mark"):
+            raise ValueError("actionType 只能是 summary / ask / mark")
+        sid = (body.get("sessionId") or "").strip()
+        if sid:
+            meetings.get(sid)  # 不存在会抛错
+        task_id = "task_%d" % int(time.time() * 1000)
+        return self._json({
+            "ok": True, "taskId": task_id, "state": "reserved",
+            "actionType": action, "sessionId": sid,
+            "detail": "接口已预留；接入 LLM/RAG 后在此返回 summary_card / answer_card",
+        })
+
+    def _diarize_once(self, body):
+        samples = voice.read_wav(decode_audio(body.get("audio"), self._local()))
+        result = diarize.diarize(samples, store.voice_index())
+        result.pop("_centroids", None)
+        return self._json({"ok": True, **result})
+
+    def _push_meeting_card(self, sid):
+        card = meetings.latest_card(sid)
+        card["kind"] = "meeting"
+        with _LAST_LOCK:
+            _LAST["rev"] += 1
+            _LAST["faces"] = [card]
+            _LAST["at"] = time.time()
+            _LAST["ms"] = 0
+            _LAST["kind"] = "meeting"
+        return card
+
+    def _v1_play(self, query):
+        sid = (query.get("sessionId") or [""])[0]
+        try:
+            ts = max(0.0, float((query.get("timestamp") or ["0"])[0]))
+            before = min(30.0, max(0.0, float((query.get("before") or ["3"])[0])))
+            after = min(30.0, max(0.0, float((query.get("after") or ["3"])[0])))
+        except (TypeError, ValueError):
+            raise ValueError("timestamp / before / after 必须是数字")
+        data = meetings.audio_slice(sid, ts, before, after)
+        self.send_response(200)
+        self.send_header("Content-Type", "audio/wav")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
 
     def _card_full(self, pid):
         """眼镜上按「确认」时拉这个：复杂数据摊平成一行行。"""
@@ -315,7 +486,7 @@ class Handler(BaseHTTPRequestHandler):
         embedding, crop = None, None
         image = body.get("image") or ""
         if image:
-            img = decode_image(image)
+            img = decode_image(image, self._local())
             small, _ = shrink(img)
             faces = engine.scan(small)
             if not faces:
@@ -352,7 +523,7 @@ class Handler(BaseHTTPRequestHandler):
         name = (body.get("name") or "").strip()
         if not name:
             raise ValueError("name 不能为空")
-        img = decode_image(body.get("image") or body.get("image_path"))
+        img = decode_image(body.get("image") or body.get("image_path"), self._local())
         small, scale = shrink(img)
         faces = engine.scan(small)
         if not faces:
@@ -394,7 +565,15 @@ class Handler(BaseHTTPRequestHandler):
     # ---------- 基础设施 ----------
 
     def _read_json(self):
-        n = int(self.headers.get("Content-Length") or 0)
+        raw_length = self.headers.get("Content-Length")
+        try:
+            n = int(raw_length or 0)
+        except (TypeError, ValueError):
+            raise ValueError("非法 Content-Length")
+        if n < 0:
+            raise ValueError("非法 Content-Length")
+        if n > MAX_BODY_BYTES:
+            raise RequestTooLarge(f"请求体超过上限 {MAX_BODY_BYTES} 字节")
         raw = self.rfile.read(n) if n else b"{}"
         # utf-8-sig：容忍 Windows 工具（PowerShell Set-Content 等）写入的 BOM
         return json.loads(raw.decode("utf-8-sig")) if raw.strip() else {}
@@ -421,11 +600,23 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _static(self, path):
+    @staticmethod
+    def _safe_static(path):
+        """把 URL 路径映射到 web/ 下的真实文件；越界/软链逃逸返回 None。"""
         if path in ("/", ""):
             path = "/index.html"
-        full = os.path.abspath(os.path.join(WEB, path.lstrip("/")))
-        if not full.startswith(WEB) or not os.path.isfile(full):
+        web = os.path.realpath(WEB)
+        full = os.path.realpath(os.path.join(web, path.lstrip("/").replace("\\", "/")))
+        try:
+            if os.path.commonpath([full, web]) != web:
+                return None
+        except ValueError:  # 不同盘符
+            return None
+        return full if os.path.isfile(full) else None
+
+    def _static(self, path):
+        full = self._safe_static(path)
+        if full is None:
             return self._json({"ok": False, "error": "not found"}, 404)
         with open(full, "rb") as f:
             data = f.read()
