@@ -263,6 +263,8 @@ function splitLines(text, budget) {
 }
 
 function paintIdle(msg) {
+  // 录音期间屏幕必须一直是「在听」：任何路径想画待机都直接忽略
+  if (capture) return;
   stopScroll();
   viewMode = "idle";
   complexRows = null;
@@ -449,12 +451,25 @@ function listenLine() {
 
 // 只刷"状态行 + 底栏"；卡片内容由切片结果负责画，避免每 400ms 把卡片冲掉
 let listenSig = "";
+// 把最近 24 帧的音量画成一条"波形"：▁▂▃▄▅▆▇ 七档
+const BARS = " .:-=+*#";
+function levelBar() {
+  const ps = (capture && capture.peaks) || [];
+  if (!ps.length) return "";
+  let out = "";
+  for (const v of ps.slice(-12)) {
+    const i = Math.min(7, Math.max(0, Math.round(v * 7)));
+    out += BARS[i];
+  }
+  return out;
+}
+
 function paintListening() {
   if (!capture) return;
   const held = capture.lastCard && capture.showUntil && Date.now() < capture.showUntil;
   const c0 = held ? capture.lastCard : null;
   // 整屏指纹：文字没变就整帧跳过（否则每 400ms 重设一遍，镜片上会闪）
-  const sig = listenLine() + "|" + (c0
+  const sig = listenLine() + "|" + (c0 ? "" : levelBar()) + "|" + (c0
     ? [c0.name, c0.role, c0.status, c0.similarity, (c0.lines || []).join("~")].join("|")
     : "none");
   if (sig === listenSig) return;
@@ -479,12 +494,14 @@ function paintListening() {
     putText(retained.name, "在听…");
     putText(retained.role, silent ? "点「确认采集」" : "直接说话就行，不用按键");
     putText(retained.sim, " ");
+    const bar = levelBar();
     const hint = [
       "55 秒出一片 · 先认人",
-      "认出来就一直记这段对话",
+      bar || "（等声音…）",
       "按「返回」结束并入库",
     ];
     retained.info.forEach((t, i) => putText(t, hint[i] || ""));
+    paintedRows = "";
   }
   putText(retained.foot, "确认 详情 · 返回 结束");
 }
@@ -517,6 +534,15 @@ function pump() {
       const buf = Buffer.from(ev.data);
       c.chunks.push(buf);
       c.samples += ev.sampleCount;
+      // 用 PCM 绝对值的峰值估音量，画音量条用
+      let peak = 0;
+      for (let i = 0; i + 1 < buf.length; i += 2) {
+        const v = Math.abs(buf.readInt16LE(i));
+        if (v > peak) peak = v;
+      }
+      c.level = Math.min(1, peak / 12000);
+      c.peaks.push(c.level);
+      if (c.peaks.length > 24) c.peaks.shift();
     } else if (ev.type === "end") {
       // 平台把这条会话关了：换一条接着听（保留已累积的缓冲）
       if (!c.stopped) { openSession(); return; }
@@ -606,6 +632,8 @@ async function startListening(mode) {
   capture = {
     lastCard: null,
     showUntil: 0,
+    level: 0,          // 最近一帧的音量（0..1）
+    peaks: [],         // 最近 N 帧的音量，用来画音量条
     session: null, chunks: [], samples: 0,    startedAt: Date.now(), sessionStartedAt: 0,
     slices: 0, sent: 0, queue: [], busy: false,
     mode: mode === "meeting" ? "meeting" : "single",
