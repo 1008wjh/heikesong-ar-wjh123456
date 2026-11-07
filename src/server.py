@@ -462,6 +462,7 @@ class Handler(BaseHTTPRequestHandler):
                 pass
         card = {
             "kind": "agent",
+            "session": session,
             "status": "known" if view.get("person") else "unknown",
             "name": view.get("person") or "对话",
             "role": view.get("role") or "",
@@ -744,6 +745,21 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print(f"MemoryLens 已启动: http://127.0.0.1:{PORT}  (阈值 {MATCH_THRESHOLD}, 库中 {len(store.people())} 人)")
+
+    def _warm_models():
+        """后台预加载声纹/分轨模型：不让重启后第一次「识别人」卡十几秒。"""
+        t0 = time.time()
+        try:
+            print(f"[warmup] 声纹模型就绪 {voice.warmup():.1f}s")
+        except Exception as e:
+            print(f"[warmup] 声纹模型加载失败: {e}")
+        try:
+            print(f"[warmup] 分轨模型就绪 {diar.warmup():.1f}s")
+        except Exception as e:
+            print(f"[warmup] 分轨模型加载失败: {e}")
+        print(f"[warmup] 全部就绪，共 {time.time() - t0:.1f}s")
+
+    threading.Thread(target=_warm_models, name="warmup", daemon=True).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

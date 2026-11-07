@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import io
 import os
+import threading
+import time
 import wave
 
 import numpy as np
@@ -27,22 +29,35 @@ AUTOADD_MAX = float(os.environ.get("AR_VOICE_AUTOADD_MAX", "0.62"))
 MARGIN = float(os.environ.get("AR_VOICE_MARGIN", "0.08"))
 
 _extractor = None
-_lock = None
+_lock = threading.Lock()        # 推理锁
+_init_lock = threading.Lock()   # 模型加载锁
 
 
 def _get_extractor():
     """懒加载：第一次调用才把 28MB 模型读进内存。"""
-    global _extractor, _lock
-    if _extractor is None:
-        import sherpa_onnx
-        import threading
+    global _extractor
+    if _extractor is not None:
+        return _extractor
+    with _init_lock:
+        if _extractor is None:
+            import sherpa_onnx
 
-        cfg = sherpa_onnx.SpeakerEmbeddingExtractorConfig(
-            model=MODEL, num_threads=2, debug=False, provider="cpu"
-        )
-        _extractor = sherpa_onnx.SpeakerEmbeddingExtractor(cfg)
-        _lock = threading.Lock()
+            cfg = sherpa_onnx.SpeakerEmbeddingExtractorConfig(
+                model=MODEL, num_threads=2, debug=False, provider="cpu"
+            )
+            _extractor = sherpa_onnx.SpeakerEmbeddingExtractor(cfg)
     return _extractor
+
+
+def warmup() -> float:
+    """预加载声纹模型，返回加载耗时秒数（服务启动时后台调用）。
+
+    不预加载的话，重启后第一次「识别人」要等模型加载，实测 ~10 秒，
+    眼镜上看起来就像"卡住了"。
+    """
+    t0 = time.time()
+    _get_extractor()
+    return round(time.time() - t0, 2)
 
 
 def read_wav(data: bytes) -> np.ndarray:

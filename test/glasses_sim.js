@@ -12,7 +12,6 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-process.env.MEMORYLENS_FIRST_SLICE_MS = process.env.MEMORYLENS_FIRST_SLICE_MS || "15000";
 process.env.MEMORYLENS_IDENTIFY_MS = process.env.MEMORYLENS_IDENTIFY_MS || "9000";
 const Module = require("node:module");
 
@@ -260,7 +259,7 @@ function wavFramesLoop(name, seconds) {
   navQueue.push("back");
   await sleep(700);
 
-  // 1) 按一下 → 开始听：前 15 秒切片认人，认出后卡片浮出
+  // 1) 按一下 → 开始听：单人模式不自动切片，屏幕上只有「识别人」
   feed = { frames: wavFramesLoop("huihui_b", 240), perTick: 120 };
   navQueue.push("activate");
   await waitUntil(() => hud().some((v) => v.includes("单人")), 6000);
@@ -294,16 +293,19 @@ function wavFramesLoop(name, seconds) {
   check("返回键结束录音", !hud().some((v) => v.includes("在听 00:")), JSON.stringify(lines));
   check("结束后回到待机", lines.some((v) => v.includes("按一下")), JSON.stringify(lines));
 
-  // 4) 陌生声音 → 提示没听过（持续听模式下也要能出"陌生人"）
+  // 4) 陌生声音 → 录一段认人，自动建号入库（沿用同一套「识别人」流程）
   feed = { frames: wavFramesLoop("zira_a", 240), perTick: 120 };
   navQueue.push("activate");
   await sleep(500);
   check("先出单人/多人选择", hud().some((v) => v.includes("单人")), JSON.stringify(hud()));
   navQueue.push("activate");
+  await waitUntil(() => hud().some((v) => v.includes("在听")), 8000);
+  navQueue.push("activate");            // 确认 → 录一段找人
   await waitUntil(() => hud().some((v) => v.includes("陌生人")), 30000);
   lines = hud();
   check("陌生声音自动建号（陌生人A）", lines.some((v) => v.includes("陌生人")), JSON.stringify(lines));
   check("自动建号带说明", lines.some((v) => v.includes("自动建") || v.includes("自动入库")), JSON.stringify(lines));
+  check("第二段不沿用上一段的人", !lines.some((v) => v.includes("王姐")), JSON.stringify(lines));
   navQueue.push("back");            // 结束这段（陌生人）录音
   await waitUntil(() => hud().some((v) => v.includes("按一下")), 25000);
 

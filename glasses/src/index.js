@@ -452,9 +452,7 @@ const SLICE_MIN_MS = 5000;      // 停止时最后一片不足这个数就丢掉
 const MAX_LISTEN_MS = 30 * 60 * 1000;   // 兜底：连续听 30 分钟自动停
 const AUTO_ARCHIVE = process.env.MEMORYLENS_ARCHIVE !== "0";   // 停止后把整段对话整理进档案
 
-let capture = null;
-let prevIdentified = null;
-let identifiedNow = null;   // 本段已认出的人（不依赖 capture 引用）   // {session,chunks,samples,queue,busy,personId,personName,sessionId,slices,sent,lastCard,stopped,dropped}
+let capture = null;   // {session,chunks,samples,queue,busy,personId,personName,sessionId,slices,sent,lastCard,stopped,dropped}
 
 // 在听页每秒改一次文字会让整块面板重绘（镜片上就是闪），所以按 10 秒取整
 function clockOf(ms, step) {
@@ -544,8 +542,8 @@ function paintListening(msg) {
     retained.info.slice(0, 3).forEach((t) => putText(t, " "));
   }
 
-  // 下半区：还没认出人 → 只给一个「识别人」；认出之后 → 三个预设按钮
-  if (!(capture.identified || identifiedNow)) {
+  // 下半区：单人还没认出人 → 只给一个「识别人」；认出之后（多人会议不需要认人）→ 三个预设按钮
+  if (!capture.identified && capture.mode !== "meeting") {
     const secs = capture.identifying ? Math.min(20, Math.round((Date.now() - capture.identAt) / 1000)) : 0;
     putText(retained.info[3], "> 识别人");
     putText(retained.info[4], capture.identifying ? (secs + "/20 秒") : "录 20 秒来找人");
@@ -713,11 +711,11 @@ function pump() {
   // 所以再要求这一片至少经过 Math.min(target, 3s) 的真实时间。
   const sliceStart = c.sliceStart || c.startedAt;
   const elapsed = Date.now() - sliceStart;
-  // 单人：只有第一片自动切（认人），之后按确认手动触发；
+  // 单人：不自动切片，一切由「识别人 / 三个按钮 + 确认」手动驱动；
   // 多人：第一片 15 秒认人，之后每 55 秒自动切一片（会议是免手操作场景）。
-  const shouldCut = c.sent === 0
-    ? (FIRST_SLICE_MS > 0 && c.samples >= 16000 * (FIRST_SLICE_MS / 1000) && elapsed >= 5000)
-    : (c.mode === "meeting" && c.samples >= 16000 * (SLICE_MS / 1000) && elapsed >= 5000);
+  const cutAfterMs = c.sent === 0 && FIRST_SLICE_MS > 0 ? FIRST_SLICE_MS : SLICE_MS;
+  const shouldCut = c.mode === "meeting"
+    && c.samples >= 16000 * (cutAfterMs / 1000) && elapsed >= 5000;
   if (shouldCut) cutSlice(c);
   if (Date.now() - c.sessionStartedAt >= MAX_SESSION_MS) {
     if (!c.stopped) { restartSession(c); return; }
@@ -787,9 +785,8 @@ async function drain(c) {
 
 async function startListening(mode) {
   if (capture || background) return;
-  // 新一段开始：清掉上一段认出的人，否则第二段会沿用上一个人
-  prevIdentified = null;
-  identifiedNow = null;
+  // 新的一段：capture 是全新的对象，identified 从头就是 null，
+  // 不会沿用上一段的人（上一段的异步结果由 capture!==c 的守卫挡掉）。
   listenSig = "";
   // 上一段刚结束时会话还没被平台释放，立刻再申请就会报"麦克风繁忙"
   const cool = 2200 - (Date.now() - (endedAt || 0));
@@ -859,6 +856,7 @@ async function identify(c, wav) {
     if (!outbox.push(wav)) c.dropped += 1;
     return;
   }
+  if (capture && capture !== c) return;   // 这一段已经结束、又开了新的一段：旧结果不要画上去
   c.sent += 1;
   const v = (res && res.view) || null;
   if (!v) return;
@@ -902,6 +900,7 @@ async function pushChunk(c, wav, manual, preset) {
       session: c.agentSession, audio: wav, auto_add: true, mode: c.mode,
       manual: !!manual, preset: preset || "", person_id: c.personId || "",
     }, 30000);
+    if (capture && capture !== c) return;   // 换段了：这段的回复不能盖到新的一段上
     c.sent += 1;
     const v = (res && res.view) || null;
     c.thinkingUntil = 0;
@@ -1309,6 +1308,7 @@ function startIdentify(c) {
   c.identifying = true;
   c.identAt = Date.now();
   c.identChunks = [];
+  presetIdx = 0;
   retained.status.setText("识别人 0/20");
   paintListening("对着对方说两句 · 20 秒");
 }
@@ -1325,16 +1325,17 @@ async function finishIdentify(c) {
   retained.status.setText("在想…");
   try {
     const r = await postJson("/api/voice/identify", { audio: wav }, 60000);
-        if (r && r.status === "known") {
+    // 识别期间用户可能已经结束这一段、甚至开了新的一段：结果只归它自己的 capture
+    if (capture !== c) return;
+    if (r && r.status === "known") {
       c.identified = { id: r.person_id, name: r.name };
-      prevIdentified = c.identified;
-      identifiedNow = c.identified;
       c.personId = r.person_id;
       c.personName = r.name;
       c.lastCard = r.card || null;
       c.showUntil = Date.now() + PRESET_HOLD_MS;
       if (c.lastCard) paintCard(c.lastCard, { ms: 0 });
-      retained.status.setText("认出 " + r.name);
+      // 认出来之后立刻重画下半区：三个预设按钮要在这一帧就换上去
+      paintListening("认出 " + r.name);
     } else if (r && r.status === "only_owner") {
       paintListening("只听到你自己");
     } else if (r && r.status === "no_owner") {
@@ -1343,14 +1344,13 @@ async function finishIdentify(c) {
       paintListening("没认出对方");
     }
   } catch (e) {
-    paintListening("识别人失败 · 再试一次");
+    if (capture === c) paintListening("识别人失败 · 再试一次");
   }
 }
 
 function submitPreset() {
   const c = capture;
   if (!c || c.stopped) return;
-  if (!c.personId && identifiedNow) { c.personId = identifiedNow.id; c.personName = identifiedNow.name; }
   if (!c.personId) { paintListening("还在认人 · 再说两句"); return; }
   const bytes = (c.samples || 0) * 2;
   if (bytes < 16000 * 2 * 1.5) { paintListening("再说两句再提交"); return; }
@@ -1419,6 +1419,9 @@ async function poll() {
       // 正在听：只更新数据，渲染交给 paintListening()（否则会在两屏之间来回跳）
       // 只收这一段开始之后产生的卡片；上一段留下的（比如「陌生人A」）不能一进来就顶上来
       if ((data.at || 0) < capture.startedAt) return;
+      // 更硬的隔离：上一段晚到的归档/回复带着旧的 session，不能画到这一段上
+      // （否则第二段会一直显示第一段认出的那个人和 SIM 1.00）
+      if (c0.session && c0.session !== capture.agentSession) return;
       capture.lastCard = c0;
       capture.lastRev = data.rev;
       capture.lastMs = data.ms;

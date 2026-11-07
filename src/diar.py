@@ -2,6 +2,7 @@
 """说话人分离：把一段"我和对方"的录音拆成两个簇，供"只认对方"用。"""
 import os
 import threading
+import time
 
 import numpy as np
 import sherpa_onnx
@@ -43,6 +44,17 @@ def _get():
             )
             _diar = sherpa_onnx.OfflineSpeakerDiarization(cfg)
     return _diar
+
+
+def warmup() -> float:
+    """预加载分轨模型，返回加载耗时秒数（服务启动时后台调用）。
+
+    不预加载的话，重启后第一次「识别人」要等模型加载（实测十几秒），
+    眼镜上看起来就像"没认出对方"。
+    """
+    t0 = time.time()
+    _get()
+    return round(time.time() - t0, 2)
 
 
 def split(samples):
