@@ -445,7 +445,7 @@ function stopScroll() {
 // ④ 边切边传，不在内存里堆整段（要支持 30 分钟）
 
 const SLICE_MS = Number(process.env.MEMORYLENS_SLICE_MS || 55000);
-const FIRST_SLICE_MS = Number(process.env.MEMORYLENS_FIRST_SLICE_MS || 15000);
+const FIRST_SLICE_MS = Number(process.env.MEMORYLENS_FIRST_SLICE_MS || 0);
 const SILENT_PEAK = 60;      // 整片峰值低于这个数就认为麦克风没进声音   // 第一片短一点，先认人         // 一片 55 秒：正好卡在平台 60 秒会话上限之前
 const MAX_SESSION_MS = 59000;   // 平台 60 秒硬上限，留 1 秒余量再让平台自己 end
 const SLICE_MIN_MS = 5000;      // 停止时最后一片不足这个数就丢掉
@@ -714,7 +714,7 @@ function pump() {
   // 单人：只有第一片自动切（认人），之后按确认手动触发；
   // 多人：第一片 15 秒认人，之后每 55 秒自动切一片（会议是免手操作场景）。
   const shouldCut = c.sent === 0
-    ? (c.samples >= 16000 * (FIRST_SLICE_MS / 1000) && elapsed >= 5000)
+    ? (FIRST_SLICE_MS > 0 && c.samples >= 16000 * (FIRST_SLICE_MS / 1000) && elapsed >= 5000)
     : (c.mode === "meeting" && c.samples >= 16000 * (SLICE_MS / 1000) && elapsed >= 5000);
   if (shouldCut) cutSlice(c);
   if (Date.now() - c.sessionStartedAt >= MAX_SESSION_MS) {

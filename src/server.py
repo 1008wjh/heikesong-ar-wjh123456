@@ -349,9 +349,16 @@ class Handler(BaseHTTPRequestHandler):
 
         sim_val, person, sim_owner, spk = best
         if not person or sim_val < voice.THRESHOLD:
-            return {"ok": True, "status": "unknown", "clusters": lines, "similarity": round(sim_val, 3),
-                    "card": {"kind": "voice", "status": "unknown",
-                             "lines": ["没听过这个声音", "去控制台「+ 新增人物」录入"]}}
+            # 陌生人：直接建号入库（带这一簇的声纹），之后就能被认出来
+            name = _next_stranger_name()
+            rec = store.save(name=name, role="陌生人", info=["眼镜端自动建的，回头改个名字"])
+            store.add_voice(rec["id"], clusters[spk]["emb"])
+            person = store.get(rec["id"]) or rec
+            sim_val = max(sim_val, 0.0)
+            card = cards.build_card(person, 1.0, voice.THRESHOLD)
+            return {"ok": True, "status": "known", "created": True,
+                    "person_id": person["id"], "name": person["name"],
+                    "similarity": 1.0, "clusters": lines, "card": card}
         card = cards.build_card(person, sim_val, voice.THRESHOLD)
         return {"ok": True, "status": "known", "person_id": person["id"], "name": person["name"],
                 "similarity": round(sim_val, 3), "clusters": lines, "card": card}

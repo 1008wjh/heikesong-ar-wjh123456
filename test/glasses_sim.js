@@ -12,6 +12,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+process.env.MEMORYLENS_FIRST_SLICE_MS = process.env.MEMORYLENS_FIRST_SLICE_MS || "15000";
 const Module = require("node:module");
 
 const BACKEND = process.env.MEMORYLENS_BACKEND || "http://127.0.0.1:8765";
