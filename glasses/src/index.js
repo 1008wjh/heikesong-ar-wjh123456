@@ -510,10 +510,10 @@ function statusWithBar(line) {
   return line + " " + (quiet ? "····" : levelBar(6));
 }
 
-function paintListening(msg) {
+function paintListening(msg, holdMs) {
   hideModeSel();
   if (!capture) return;
-  if (msg) { capture.msg = msg; capture.msgUntil = Date.now() + 4000; }
+  if (msg) { capture.msg = msg; capture.msgUntil = Date.now() + (holdMs || 4000); }
   const thinking = capture.thinkingUntil && Date.now() < capture.thinkingUntil ? "在想…" : "";
   const flash = !thinking && capture.msg && Date.now() < capture.msgUntil ? capture.msg : "";
   const held = capture.lastCard && capture.showUntil && Date.now() < capture.showUntil;
@@ -729,6 +729,8 @@ function pump() {
       return;
     }
   }
+  // 到点就收尾：不能只靠音频帧触发 —— 没麦克风或完全静音时永远等不到
+  if (c.identifying && Date.now() - c.identAt >= IDENTIFY_MS) finishIdentify(c);
   // 光看字节数不够：平台可能一口气把缓冲全塞过来，0.2 秒就"攒够 55 秒"，
   // 于是刚进单人模式就立刻切一片去认人（实测会凭空冒出「陌生人A」）。
   // 所以再要求这一片至少经过 Math.min(target, 3s) 的真实时间。
@@ -1347,7 +1349,13 @@ async function finishIdentify(c) {
   c.identChunks = [];
   c.chunks = [];            // 认人用的音频不要混进后面的提词切片
   c.samples = 0;
-  if (!chunks.length) { paintListening("没录到声音"); return; }
+  if (!chunks.length) {
+    // 整段没有音频：提示 3 秒，然后回到「识别人」页，再按确认就是重新录
+    c.identified = null;
+    c.buttonsAt = 0;
+    paintListening("没录到声音 · 3 秒后回到识别人", 3000);
+    return;
+  }
   const wav = toWav(chunks, chunks.reduce((n, b) => n + b.length, 0));
   retained.status.setText("在想…");
   try {

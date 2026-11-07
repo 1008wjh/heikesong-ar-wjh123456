@@ -352,6 +352,29 @@ function wavFramesLoop(name, seconds) {
   await sleep(400);
   check("返回键关掉键盘", !hud().some((v) => v.includes("【")), JSON.stringify(hud()));
 
+  // 6) 没有音频（模拟器没麦克风 / 设备静音）：识别人到点也要收尾，
+  //    提示 3 秒后回到「识别人」页，再按确认可以重新录。
+  feed = null;
+  navQueue.push("activate");
+  await waitUntil(() => hud().some((v) => v.includes("单人")), 6000);
+  navQueue.push("activate");
+  await waitUntil(() => hud().some((v) => v.includes("在听")), 8000);
+  navQueue.push("activate");            // 开始识别人，但一帧音频都没有
+  await waitUntil(() => hud().some((v) => v.includes("识别人")), 6000);
+  await waitUntil(() => hud().some((v) => v.includes("没录到声音")), 18000);
+  check("没有音频也会到点收尾（不卡在 N/20）",
+    hud().some((v) => v.includes("没录到声音")), JSON.stringify(hud()));
+  await sleep(3600);
+  check("提示 3 秒后回到识别人页",
+    hud().some((v) => v.includes("识别人")) && !hud().some((v) => v.includes("没录到声音")),
+    JSON.stringify(hud()));
+  navQueue.push("activate");            // 再按确认：重新开始录
+  await waitUntil(() => hud().some((v) => v.includes("对着对方说两句") || v.includes("识别人 ")), 6000);
+  check("再按确认可以重新录",
+    hud().some((v) => v.includes("对着对方说两句") || v.includes("识别人 ")), JSON.stringify(hud()));
+  navQueue.push("back");                // 结束这段（没有音频）
+  await waitUntil(() => hud().some((v) => v.includes("按一下")), 20000);
+
   // 收尾：自动建号是异步的（归档还在跑），等一会儿再清两次
   for (let pass = 0; pass < 2; pass++) {
     await sleep(1500);
