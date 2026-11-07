@@ -559,6 +559,7 @@ function startListening(mode) {
     return;
   }
   capture = {
+    lastCard: null,
     session: null, chunks: [], samples: 0,
     startedAt: Date.now(), sessionStartedAt: 0,
     slices: 0, sent: 0, queue: [], busy: false,
@@ -891,8 +892,15 @@ async function poll() {
       return;
     }
     const c0 = faces[0];
-    if (c0.kind === "agent" && (!capture || Date.now() - endedAt < 15000)) {
-      // 上一段晚到的对话结果：不画，也不吃掉 rev（后面的人脸结果还要用这个 rev 上屏）
+    if (c0.kind === "agent" && !capture && Date.now() - endedAt < 15000) {
+      // 上一段晚到的对话结果：不在待机时画，免得盖住当前画面
+      return;
+    }
+    if (capture) {
+      // 正在听：只更新数据，渲染交给 paintListening()（否则会在两屏之间来回跳）
+      capture.lastCard = c0;
+      capture.lastRev = data.rev;
+      capture.lastMs = data.ms;
       return;
     }
     paintCard(c0, data.rev, data.ms);
