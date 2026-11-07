@@ -23,6 +23,7 @@ import calllog  # noqa: E402
 import cards  # noqa: E402
 import llm  # noqa: E402
 import presets as presets_store  # noqa: E402
+import settings as settings_store  # noqa: E402
 import voice  # noqa: E402
 from face import FaceEngine  # noqa: E402
 from store import MATCH_THRESHOLD, Store  # noqa: E402
@@ -182,6 +183,8 @@ class Handler(BaseHTTPRequestHandler):
             with _LAST_LOCK:
                 snapshot = dict(_LAST)
             return self._json({"ok": True, **snapshot})
+        if path == "/api/settings":
+            return self._json({"ok": True, **settings_store.get_settings()})
         if path == "/api/presets":
             return self._json({"ok": True, "items": presets_store.list_presets()})
         if path == "/api/agent/status":
@@ -221,6 +224,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._agent_feed(body)
             if path == "/api/agent/archive":
                 return self._agent_archive(body)
+            if path == "/api/settings/save":
+                try:
+                    got = settings_store.save_settings(body)
+                except Exception as e:
+                    return self._json({"ok": False, "error": str(e)}, 400)
+                return self._json({"ok": True, **got})
             if path == "/api/presets/save":
                 try:
                     items = presets_store.save_presets(body.get("items"))

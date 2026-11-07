@@ -422,6 +422,9 @@ async function loadPresets() {
     const data = await res.json();
     presets.items = (data.items || []).map((x) => ({ id: x.id, label: x.label, prompt: x.prompt }));
     renderPresets();
+    const cfg = await (await fetch('/api/settings')).json();
+    if ($('#holdSec')) $('#holdSec').value = cfg.hold_sec || 30;
+    if ($('#firstHoldSec')) $('#firstHoldSec').value = cfg.first_hold_sec || 9;
   } catch (e) {
     if ($('#presetMsg')) $('#presetMsg').textContent = '读不到预设：' + e.message;
   }
@@ -466,6 +469,16 @@ async function savePresets() {
     });
     const data = await res.json();
     if (!data.ok) throw new Error(data.error || '保存失败');
+    const cfgRes = await fetch('/api/settings/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        hold_sec: Number(($('#holdSec') || {}).value || 30),
+        first_hold_sec: Number(($('#firstHoldSec') || {}).value || 9),
+      }),
+    });
+    const cfg = await cfgRes.json();
+    if (!cfg.ok) throw new Error(cfg.error || '时长保存失败');
     presets.items = data.items || presets.items;
     renderPresets();
     if ($('#presetMsg')) $('#presetMsg').textContent = '已保存 · 眼镜下次启动生效';

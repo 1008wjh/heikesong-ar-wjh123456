@@ -765,7 +765,7 @@ code {
 .presets {
   grid-column: 2 / -1;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   gap: var(--gap);
   min-height: 0;
 }
@@ -802,3 +802,12 @@ code {
   padding: 7px 9px;
 }
 .preset-prompt { font-size: 12.5px; }
+.pres-time {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 12px 20px;
+  font-size: 13px;
+}
+.pres-time label { display: flex; align-items: center; gap: 6px; }
+.pres-time .num { width: 64px; padding: 6px 8px; }

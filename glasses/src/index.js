@@ -28,8 +28,8 @@ const HTTP_TIMEOUT_MS = 1500;
 const MAX_SAMPLES = 16000 * 60;   // 平台单会话上限 60 秒；55 秒片不能被 30 秒常量截断
 const OUTBOX_RETRY_MS = 8000;  // 离线录音的重发间隔
 // 卡片（认人结果/55 秒建议）露一会儿就收起来，录音不停
-const HOLD_MS = 9000;                       // 第一片自动认人后：9 秒
-const PRESET_HOLD_MS = Number(process.env.MEMORYLENS_PRESET_HOLD_MS || 30000);  // 手动提交：30 秒      // 认人卡片在镜片上停留多久
+let HOLD_MS = 9000;                       // 第一片自动认人后：9 秒
+let PRESET_HOLD_MS = Number(process.env.MEMORYLENS_PRESET_HOLD_MS || 30000);  // 手动提交：30 秒      // 认人卡片在镜片上停留多久
 
 // 宿主注入的私有数据目录；没有（单测 / 无沙箱环境）就不落盘。
 const APP_DATA_DIR = process.env.FUSIONUI_APP_DATA_DIR;
@@ -990,6 +990,16 @@ let PRESETS = [
 let presetIdx = 0;
 
 // 按钮在后台可编辑，启动时拉一次（失败就用上面的默认三个）
+async function loadUiSettings() {
+  try {
+    const d = await getJson("/api/settings");
+    const hold = Number(d && d.hold_sec);
+    const first = Number(d && d.first_hold_sec);
+    if (hold >= 3) PRESET_HOLD_MS = Math.round(hold * 1000);
+    if (first >= 3) HOLD_MS = Math.round(first * 1000);
+  } catch (e) { /* 用默认值 */ }
+}
+
 async function loadPresetList() {
   try {
     const d = await getJson("/api/presets");
@@ -1386,6 +1396,7 @@ function start() {
   if (retained.window) return;
   buildHud();
   paintIdle("按一下开始听…");   // 先把空闲态画出来，别留控件的默认 "Text"
+  loadUiSettings().catch(() => {});
   loadPresetList().catch(() => {});
   poll();
   pollTimer = setInterval(poll, POLL_MS);

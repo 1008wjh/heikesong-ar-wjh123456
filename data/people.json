@@ -9969,7 +9969,13 @@
    ],
    "tags": [],
    "notes": [],
-   "talking_points": []
+   "talking_points": [],
+   "simple": {
+    "身份": "陌生人 · 眼镜端自动建的",
+    "信息1": "语音自动入库，回头改个名字"
+   },
+   "complex": {},
+   "conversations": []
   },
   {
    "id": "p_d4226e",
@@ -10183,7 +10189,13 @@
    ],
    "tags": [],
    "notes": [],
-   "talking_points": []
+   "talking_points": [],
+   "simple": {
+    "身份": "陌生人 · 眼镜端自动建的",
+    "信息1": "语音自动入库，回头改个名字"
+   },
+   "complex": {},
+   "conversations": []
   }
  ],
  "version": 1
