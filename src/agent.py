@@ -39,6 +39,7 @@ class AgentState(TypedDict, total=False):
     similarity: float
     items: list
     summary: str
+    next_actions: list   # 模型给的"下一步建议"（要声明在这里，否则 LangGraph 会丢掉）
     degraded: bool       # 走了规则兜底（模型不可用）
     notes: list          # 给界面的诊断行（比如"模型不可用，用规则抽取"）
     view: dict
@@ -56,6 +57,7 @@ class AgentState(TypedDict, total=False):
     slice_no: int
     window: str
     skipped_short: bool
+    manual: bool         # 用户按「确认」主动触发的那一片（第几片都要给建议）
 
 
 # ---------- 工具：匹配、抽取 ----------
@@ -282,7 +284,9 @@ def node_recommend(state: AgentState) -> dict:
     if state.get("mode") == "meeting":
         return {}
     # 第一片只做"认人 + 要点"；下一步建议从第二片起（也就是 55 秒那一片）才调模型
-    if int(state.get("slice_no") or 1) <= 1:
+    # 第一片只做"认人 + 要点"；下一步建议从第二片起才调模型。
+    # 例外：用户手动按「确认」触发的那一片（manual），第几片都要跑。
+    if int(state.get("slice_no") or 1) <= 1 and not state.get("manual"):
         return {}
     person = store_ref.get(state.get("person_id") or "") if state.get("person_id") else None
     profile = ""
@@ -357,12 +361,15 @@ def graph():
 
 
 def run_feed(session: str, text: str = "", audio: str = "", auto_add: bool = True,
-             mode: str = "") -> dict:
-    """跑一片。session 相同的片会落在同一个 thread 里（上下文自动保留）。"""
+             mode: str = "", manual: bool = False) -> dict:
+    """跑一片。session 相同的片会落在同一个 thread 里（上下文自动保留）。
+
+    manual=True：这片是用户按「确认」主动触发的，第几片都要跑"档案+转写→建议"。
+    """
     t0 = time.time()
     state: AgentState = {"session": session, "text": text, "audio": audio,
                          "auto_add": auto_add, "degraded": False, "notes": [],
-                         "mode": (mode or "").lower()}
+                         "mode": (mode or "").lower(), "manual": bool(manual)}
     cfg = {"configurable": {"thread_id": session}}
     try:
         out = graph().invoke(state, cfg)

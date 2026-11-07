@@ -674,13 +674,16 @@ function pump() {
       return;
     }
   }
-  const target = (c.sent || 0) === 0 ? FIRST_SLICE_MS : SLICE_MS;
+  const target = FIRST_SLICE_MS;
   // 光看字节数不够：平台可能一口气把缓冲全塞过来，0.2 秒就"攒够 55 秒"，
   // 于是刚进单人模式就立刻切一片去认人（实测会凭空冒出「陌生人A」）。
   // 所以再要求这一片至少经过 Math.min(target, 3s) 的真实时间。
   const sliceStart = c.sliceStart || c.startedAt;
   const elapsed = Date.now() - sliceStart;
-  if (c.samples >= 16000 * (target / 1000) && elapsed >= Math.min(target, 5000)) cutSlice(c);
+  // 只有第一片自动切（用来认人）；之后靠用户按确认手动触发，避免"到点就弹卡"
+  if ((c.sent || 0) === 0 && c.samples >= 16000 * (target / 1000) && elapsed >= Math.min(target, 5000)) {
+    cutSlice(c);
+  }
   if (Date.now() - c.sessionStartedAt >= MAX_SESSION_MS) {
     if (!c.stopped) { restartSession(c); return; }
   }
@@ -711,7 +714,8 @@ function cutSlice(c) {
     return;
   }
   if (bytes < 16000 * 2 * (SLICE_MIN_MS / 1000)) return;
-  c.queue.push(toWav(chunks, bytes));
+  c.queue.push({ wav: toWav(chunks, bytes), manual: !!c.manualNext });
+  c.manualNext = false;
   drain(c);
 }
 
@@ -722,12 +726,14 @@ async function drain(c) {
   c.busy = true;
   try {
     while (c.queue.length) {
-      const wav = c.queue.shift();
+      const item = c.queue.shift();
+      const wav = item && item.wav ? item.wav : item;
+      const manual = !!(item && item.manual);
       if (!c.personId) {
         await identify(c, wav);
         continue;
       }
-      await pushChunk(c, wav);
+      await pushChunk(c, wav, manual);
     }
   } finally {
     c.busy = false;
@@ -840,11 +846,12 @@ async function ensureSession(c) {
   return !!c.agentSession;
 }
 
-async function pushChunk(c, wav) {
-  // 之后每 55 秒一片：交给同一个智能体会话，它会拼档案 + 给下一步建议
+async function pushChunk(c, wav, manual) {
+  // 认人之后：每按一次确认 = 一次（manual）；老路径（55 秒自动）保留 manual=false
   try {
     const res = await postJson("/api/agent/feed", {
       session: c.agentSession, audio: wav, auto_add: true, mode: c.mode,
+      manual: !!manual,
     });
     c.sent += 1;
     const v = (res && res.view) || null;
@@ -879,7 +886,7 @@ async function stopAndArchive(msg) {
   await new Promise((resolve) => closeSession(closing, c, resolve));
   const bytes = c.samples * 2;
   if (bytes >= 16000 * 2 * (SLICE_MIN_MS / 1000)) {
-    c.queue.push(toWav(c.chunks, bytes));
+    c.queue.push({ wav: toWav(c.chunks, bytes), manual: true });
   }
   c.samples = 0;
   c.chunks = [];
@@ -1120,7 +1127,7 @@ function handleNavigation() {
   if (modeSelect) { navMode(act); return; }
   if (textMode) { navText(act); return; }
   if (capture) {
-    if (act === "activate") { toggleDetail(); return; }   // 录音中看详情，不打断
+    if (act === "activate") { manualAsk(); return; }      // 录音中按确认 = 让智能体基于这段对话回答
     if (act === "back") { stopAndArchive("结束了"); return; }
     if (act === "up") { openText("keys"); return; }
     if (act === "down") { openText("opts"); return; }
@@ -1134,6 +1141,24 @@ function handleNavigation() {
     return;
   }
   if (act === "back") { clearView(); return; }
+}
+
+// 录音中按一次确认：把"从上次发送到现在"的音频切下来，交给智能体回答
+function manualAsk() {
+  const c = capture;
+  if (!c) return;
+  if (!c.personId) {
+    paintListening("还在认人 · 再说两句");
+    return;
+  }
+  const bytes = (c.samples || 0) * 2;
+  if (bytes < 16000 * 2 * 2) {
+    paintListening("再说两句再按确认");
+    return;
+  }
+  c.manualNext = true;
+  cutSlice(c);
+  retained.status.setText("在想…");
 }
 
 function clearView() {
