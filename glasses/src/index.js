@@ -291,10 +291,17 @@ function paintIdle(msg) {
 }
 
 function paintOffline(err) {
-  stopScroll();
   const msg = String(err || "");
-  // 超时 ≠ 没连上：后端在跑、只是这次慢（长调用最容易撞上）
   const slow = /timeout|timed out|aborted|ETIMEDOUT/i.test(msg);
+  if (capture) {
+    // 正在听/正在想的时候后端偶尔慢：绝不能把整页换成"后台没连上"，
+    // 只在状态行闪一句，按钮/卡片都留在原地。
+    capture.msg = slow ? "后台有点慢 · 稍等" : "后台没连上 · 重试中";
+    capture.msgUntil = Date.now() + 2500;
+    paintListening();
+    return;
+  }
+  stopScroll();
   putText(retained.status, slow ? "后台在跑 · 这次慢" : "后台没连上");
   putText(retained.name, slow ? "再按一次" : "眼镜在线");
   putText(retained.role, " ");
@@ -516,7 +523,8 @@ function paintListening(msg) {
   const identTarget = Math.round(IDENTIFY_MS / 1000);
   const identSecs = capture.identifying
     ? Math.min(identTarget, Math.round((Date.now() - capture.identAt) / 1000)) : 0;
-  const head = thinking || flash
+  // 临时提示优先于「在想…」：后台偶尔慢的时候，让人知道还在跑，而不是以为卡死了
+  const head = flash || thinking
     || (capture.identifying ? ("识别人 " + identSecs + "/" + identTarget) : "")
     || (c0 ? ("回复 · " + left + "s") : statusWithBar(listenLine()));
   // 认出人之后先只显示档案，过几秒再出三个按钮；这段时间按键仍然有效
@@ -1459,6 +1467,10 @@ async function poll() {
       toggleDetail();
     }
   } catch (e) {
+    // 正在听/正在想，或者刚结束还在整理归档的时候，/api/latest 偶发超时
+    // （后端在跑 ASR/模型）是正常的：不要画整页报错，真正失败会由那次请求自己报。
+    const busyAfterStop = !capture && endedAt && Date.now() - endedAt < 45000;
+    if (capture || busyAfterStop) { console.log("[poll] " + ((e && e.message) || e)); return; }
     paintOffline(e && e.message);
   } finally {
     inFlight = false;

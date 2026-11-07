@@ -20,7 +20,7 @@ process.env.MEMORYLENS_BACKEND = BACKEND;
 
 // 这个脚本会通过后端改动 data/people.json；跑完还原，免得一直弄脏 git 工作区
 const DATA_FILE = path.join(__dirname, '..', 'data', 'people.json');
-const DATA_BACKUP = fs.existsSync(DATA_FILE) ? fs.readFileSync(DATA_FILE) : null;
+let DATA_BACKUP = fs.existsSync(DATA_FILE) ? fs.readFileSync(DATA_FILE) : null;
 function restoreData() {
   if (!DATA_BACKUP) return;
   try { fs.writeFileSync(DATA_FILE, DATA_BACKUP); } catch (e) { /* 被占用就算了 */ }
@@ -230,6 +230,8 @@ function wavFramesLoop(name, seconds) {
   for (const p of (await (await fetch(BACKEND + "/api/people")).json()).people) {
     if (p.name.startsWith("陌生人")) await postJson("/api/people/delete", { id: p.id });
   }
+  // 清完陌生人才拍快照：否则退出时 restoreData 会把上一轮残留的「陌生人A」写回来
+  if (fs.existsSync(DATA_FILE)) DATA_BACKUP = fs.readFileSync(DATA_FILE);
 
   const people0 = (await (await fetch(BACKEND + "/api/people")).json()).people;
   const idsBefore = new Set(people0.map((p) => p.id));
@@ -289,11 +291,25 @@ function wavFramesLoop(name, seconds) {
 
   // 1d) 按一次「提词」：应该真的发一次模型请求，并在镜片上出回复
   // （这段已经没新音频了，正好验证"没说话也能问模型"这条路）
+  // 顺带注入一次 /api/latest 超时：后端在跑长任务时轮询偶发超时，
+  // 不能在镜片上闪「后台没连上/这次慢」的整页。
+  const realFetch = global.fetch;
+  let injected = false;
+  global.fetch = (url, opts) => {
+    if (!injected && String(url).includes("/api/latest")) {
+      injected = true;
+      return Promise.reject(new Error("timeout"));
+    }
+    return realFetch(url, opts);
+  };
   navQueue.push("activate");
   await waitUntil(() => hud().some((v) => v.includes("在想")), 10000);
   check("按按钮会发起模型请求", hud().some((v) => v.includes("在想")), JSON.stringify(hud()));
+  await waitUntil(() => injected, 5000);
+  check("轮询超时不闪「后台」整页", !hud().some((v) => v.includes("后台")), JSON.stringify(hud()));
   await waitUntil(() => !hud().some((v) => v.includes("在想")), 40000);
   check("模型回复到达（在想… 消失）", !hud().some((v) => v.includes("在想")), JSON.stringify(hud()));
+  global.fetch = realFetch;
 
   // 1c) 按「返回」→ 结束这段录音（测试里关掉自动入库，所以停在卡片上）
   navQueue.push("back");
