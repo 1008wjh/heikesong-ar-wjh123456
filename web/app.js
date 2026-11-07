@@ -6,7 +6,7 @@
 const $ = (s) => document.querySelector(s);
 
 // 改代码就 +1，页脚会显示。看到 build 不是最新的，说明浏览器还在跑旧脚本。
-const BUILD = 21;
+const BUILD = 22;
 
 const state = { people: [], threshold: 0.4 };
 
@@ -1008,7 +1008,97 @@ function readAsDataURL(file) {
   });
 }
 
+/* ---------------- 对眼镜说一句（文本指令） ----------------
+   文本和语音共用同一个 agent session：这里发 /api/agent/feed，
+   眼镜端用现有轮询把新的卡片刷出来。 */
+const cmdBar = { session: '', busy: false };
+
+function cmdSetResult(text) {
+  const el = $('#cmdResult');
+  if (el) el.textContent = text;
+}
+
+async function cmdPoll() {
+  const bar = $('#cmdBar');
+  if (!bar) return;
+  try {
+    const d = await (await fetch('/api/latest')).json();
+    const fresh = d.kind === 'agent' && d.session
+      && Date.now() - Number(d.at || 0) < 30 * 60 * 1000;
+    cmdBar.session = fresh ? d.session : '';
+    const st = $('#cmdSession');
+    const btn = $('#cmdSend');
+    if (st) st.textContent = fresh ? ('在线 · ' + d.session) : '待机';
+    if (btn) btn.disabled = !cmdBar.session || cmdBar.busy;
+    const hint = $('#cmdResult');
+    if (fresh && hint && (!hint.textContent || hint.textContent.startsWith('先在眼镜上'))) {
+      hint.textContent = '会话在线 · 输入指令或点下面快捷按钮';
+    }
+    if (!fresh && !cmdBar.busy) {
+      cmdSetResult('先在眼镜上按确认开始一段对话，再在这里发指令。');
+    }
+  } catch (e) {
+    const st = $('#cmdSession');
+    if (st) st.textContent = '后台没连上';
+  }
+}
+
+async function cmdSend(text) {
+  if (!$('#cmdBar')) return;
+  const input = $('#cmdText');
+  const msg = String(text != null ? text : (input ? input.value : '')).trim();
+  if (!msg) { if (input) input.focus(); return; }
+  if (!cmdBar.session) {
+    cmdSetResult('当前没有正在进行的会话：先在眼镜上按确认。');
+    return;
+  }
+  if (cmdBar.busy) return;
+  cmdBar.busy = true;
+  const btn = $('#cmdSend');
+  if (btn) btn.disabled = true;
+  cmdSetResult('已发送 · 眼镜正在更新…');
+  try {
+    const res = await fetch('/api/agent/feed', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session: cmdBar.session, text: msg, mode: 'single', manual: true }),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || '发送失败');
+    const v = data.view || {};
+    const rows = (v.rows || []).slice(0, 2).join(' / ');
+    const tag = v.degraded ? '（模型兜底）' : '';
+    cmdSetResult([v.state || '完成', v.person || '—', rows].filter(Boolean).join(' · ') + tag);
+    if (input) input.value = '';
+    toast('已发给眼镜');
+  } catch (e) {
+    cmdSetResult('发送失败：' + e.message);
+    toast('发送失败：' + e.message, true);
+  } finally {
+    cmdBar.busy = false;
+    if (btn) btn.disabled = !cmdBar.session;
+  }
+}
+
+function cmdBind() {
+  const bar = $('#cmdBar');
+  if (!bar || bar.__bound) return;
+  bar.__bound = true;
+  if ($('#cmdSend')) $('#cmdSend').onclick = () => cmdSend();
+  if ($('#cmdText')) {
+    $('#cmdText').onkeydown = (e) => { if (e.key === 'Enter') cmdSend(); };
+  }
+  if (typeof bar.querySelectorAll === 'function') {
+    bar.querySelectorAll('[data-cmd]').forEach((b) => {
+      b.onclick = () => cmdSend(b.getAttribute('data-cmd'));
+    });
+  }
+  cmdPoll();
+  setInterval(cmdPoll, 2500);
+}
+
 /* ---------------- 启动 ---------------- */
 
 bind();
+cmdBind();
 loadPeople();
