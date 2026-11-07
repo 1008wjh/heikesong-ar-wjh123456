@@ -8,6 +8,8 @@ import json
 import os
 import sys
 import urllib.request
+import _data_guard
+_data_guard.snapshot()
 
 import cv2
 import numpy as np
@@ -19,7 +21,7 @@ PASS, FAIL = [], []
 
 def check(name, cond, detail=""):
     (PASS if cond else FAIL).append(name)
-    print(("  ✓ " if cond else "  ✗ ") + name + (f"   {detail}" if detail else ""))
+    print(("  PASS " if cond else "  FAIL ") + name + (f"   {detail}" if detail else ""))
 
 
 def post(path, body):

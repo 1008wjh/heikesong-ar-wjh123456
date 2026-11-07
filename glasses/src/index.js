@@ -21,6 +21,7 @@ const { createOutbox } = require("./outbox");
 
 // 眼镜连哪台电脑。模拟器上就是本机；真机换成同一局域网里跑 server.py 的那台。
 const BACKEND = process.env.MEMORYLENS_BACKEND || "http://127.0.0.1:8765";
+
 const POLL_MS = 700;        // 拉结果
 const NAV_MS = 120;         // 读按键/手势
 const HTTP_TIMEOUT_MS = 1500;
@@ -439,7 +440,7 @@ function stopScroll() {
 const SLICE_MS = Number(process.env.MEMORYLENS_SLICE_MS || 55000);
 const FIRST_SLICE_MS = Number(process.env.MEMORYLENS_FIRST_SLICE_MS || 15000);
 const SILENT_PEAK = 60;      // 整片峰值低于这个数就认为麦克风没进声音   // 第一片短一点，先认人         // 一片 55 秒：正好卡在平台 60 秒会话上限之前
-const MAX_SESSION_MS = 60500;   // 平台 60 秒上限；让平台自己 end，我们只兜底
+const MAX_SESSION_MS = 59000;   // 平台 60 秒硬上限，留 1 秒余量再让平台自己 end
 const SLICE_MIN_MS = 5000;      // 停止时最后一片不足这个数就丢掉
 const MAX_LISTEN_MS = 30 * 60 * 1000;   // 兜底：连续听 30 分钟自动停
 const AUTO_ARCHIVE = process.env.MEMORYLENS_ARCHIVE !== "0";   // 停止后把整段对话整理进档案
@@ -1141,7 +1142,7 @@ function handleNavigation() {
   if (!act) return;
   if (modeSelect) { navMode(act); return; }
   if (textMode) { navText(act); return; }
-  if (capture) {
+  if (capture && !capture.stopped) {
     if (act === "activate") { manualAsk(); return; }      // 录音中按确认 = 让智能体基于这段对话回答
     if (act === "back") { stopAndArchive("结束了"); return; }
     if (act === "up") { openText("keys"); return; }
@@ -1161,7 +1162,7 @@ function handleNavigation() {
 // 录音中按一次确认：把"从上次发送到现在"的音频切下来，交给智能体回答
 function manualAsk() {
   const c = capture;
-  if (!c) return;
+  if (!c || c.stopped) return;
   if (!c.personId) {
     paintListening("还在认人 · 再说两句");
     return;

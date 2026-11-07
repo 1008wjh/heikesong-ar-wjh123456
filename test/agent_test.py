@@ -11,6 +11,8 @@ import json
 import os
 import sys
 import urllib.request
+import _data_guard
+_data_guard.snapshot()
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VOICE = os.path.join(ROOT, "test", "voice")

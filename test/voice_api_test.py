@@ -8,6 +8,8 @@ import json
 import pathlib
 import sys
 import urllib.request
+import _data_guard
+_data_guard.snapshot()
 
 BASE = "http://127.0.0.1:8765"
 VOICE_DIR = pathlib.Path(__file__).parent / "voice"

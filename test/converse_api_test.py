@@ -13,6 +13,8 @@ import os
 import pathlib
 import sys
 import urllib.request
+import _data_guard
+_data_guard.snapshot()
 
 BASE = "http://127.0.0.1:8765"
 for i, a in enumerate(sys.argv):
