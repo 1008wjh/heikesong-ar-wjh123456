@@ -174,6 +174,17 @@ def test_auth():
                         {"Content-Type": "application/json", "X-API-Token": TOKEN,
                          "Origin": "http://evil.example"})
         check("Origin 不匹配 → 403", b" 403 " in resp.split(b"\r\n")[0], resp.split(b"\r\n")[0].decode("latin1"))
+
+        # 无 body 的 POST 也必须过 CSRF 检查（不然跨站表单可以直接触发 finalize）
+        resp = raw_post(f"/api/v1/session/{sid}/finalize", b"",
+                        {"X-API-Token": TOKEN, "Sec-Fetch-Site": "cross-site"})
+        check("无 body 的 POST 跨站 → 403", b" 403 " in resp.split(b"\r\n")[0],
+              resp.split(b"\r\n")[0].decode("latin1"))
+
+        # DELETE 同样要过 CSRF
+        status, _ = request("DELETE", BASE + f"/api/v1/session/{sid}",
+                            headers={"X-API-Token": TOKEN, "Sec-Fetch-Site": "cross-site"})
+        check("DELETE 跨站 → 403", status == 403, str(status))
     finally:
         stop_server()
 

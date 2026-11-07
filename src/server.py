@@ -228,6 +228,21 @@ class Handler(BaseHTTPRequestHandler):
     def _reject(self, code, message):
         return self._json({"ok": False, "error": message}, code)
 
+    def _check_csrf(self):
+        """所有写请求（含无 body 的 POST/DELETE）都要过这一关。
+
+        浏览器跨站请求会带 Sec-Fetch-Site: cross-site 或不同 Origin；
+        命令行/脚本通常不带这两个头，所以只拒绝"带了且不匹配"的情况。
+        """
+        site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+        if site == "cross-site":
+            raise ForbiddenRequest("cross-site request rejected")
+        origin = (self.headers.get("Origin") or "").strip()
+        if origin:
+            host = (self.headers.get("Host") or "").strip().lower()
+            if urlparse(origin).netloc.lower() != host:
+                raise ForbiddenRequest("origin mismatch")
+
     # ---------- 路由 ----------
 
     def do_GET(self):
@@ -284,6 +299,7 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/") and not self._authorized():
             return self._reject(401, "unauthorized")
         try:
+            self._check_csrf()
             body = self._read_json()
             if path == "/api/scan":
                 return self._scan(body)
@@ -346,11 +362,14 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/") and not self._authorized():
             return self._reject(401, "unauthorized")
         try:
+            self._check_csrf()
             if path.startswith("/api/v1/session/"):
                 sid = path[len("/api/v1/session/"):].strip("/")
                 if sid and "/" not in sid:
                     return self._json({"ok": True, **meetings.delete(sid)})
             return self._json({"ok": False, "error": "未知接口"}, 404)
+        except ForbiddenRequest as e:
+            return self._json({"ok": False, "error": str(e)}, 403)
         except ValueError as e:
             return self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
         except Exception as e:
@@ -738,16 +757,6 @@ class Handler(BaseHTTPRequestHandler):
             ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
             if ctype != "application/json":
                 raise UnsupportedMediaType("Content-Type 必须是 application/json")
-
-            # 基础 CSRF 防线：跨站请求/跨站 Origin 直接拒绝（浏览器通常会自动带这两个头）
-            site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
-            if site == "cross-site":
-                raise ForbiddenRequest("cross-site request rejected")
-            origin = (self.headers.get("Origin") or "").strip()
-            if origin:
-                host = (self.headers.get("Host") or "").strip().lower()
-                if urlparse(origin).netloc.lower() != host:
-                    raise ForbiddenRequest("origin mismatch")
 
         raw = self.rfile.read(n) if n else b"{}"
         # utf-8-sig：容忍 Windows 工具（PowerShell Set-Content 等）写入的 BOM

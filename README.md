@@ -164,7 +164,7 @@ curl -s -X POST http://127.0.0.1:8765/api/v1/speaker/bind \
 | `test/voice_api_test.py` | 声纹接口 13 项（注册、同人换句、串号、latest、说得太短） |
 | `test/diarize_test.py` | v3 多人分离 27 项（聚类/二次合并/碎片并入/重叠清洗/静音/加噪鲁棒 + 3 人会议零串号） |
 | `test/meeting_api_test.py` | v3 会议 API 55 项（独立端口/临时数据：分片、finalize、ASR、bind、锚点回放、删除、参数边界） |
-| `test/auth_test.py` | 鉴权/TLS/CSRF 15 项（401、Bearer/X-API-Token、HTTPS、text/plain 415、跨站 403） |
+| `test/auth_test.py` | 鉴权/TLS/CSRF 17 项（401、Bearer/X-API-Token、HTTPS、text/plain 415、跨站 403） |
 | `test/security_test.py` | 安全回归 13 项（路径穿越、前缀绕过、本地文件读取、body/会议上限、正常静态文件） |
 | `test/api_test.py` | 端到端 14 项（识别、抗干扰、陌生人、录入、卡片 == 信息 1/2/3） |
 | `test/api_console.py` | 控制台接口 15 项（增删改查、换图、空名拒绝、照片 404） |
@@ -287,7 +287,7 @@ curl -s -X POST http://127.0.0.1:8765/api/v1/session/create -H "Content-Type: ap
 - 批量导脸 `tools/enroll.py`；单张照片验证 `tools/try_face.py`；阈值现场可调（`AR_MATCH_THRESHOLD` / `AR_VOICE_THRESHOLD`）
 - 模块 02 对话分析：锁人 → 录音 → MiMo 转写/析出 → 勾选写入档案（`test/converse_api_test.py` 16 项）
 - 模块 03 多人会议：分段 + 逐段声纹 + 聚类 + 实名映射；控制台/眼镜都有入口；`test/diarize_test.py` 27 项、`test/meeting_api_test.py` 55 项
-- 安全：鉴权 / TLS / CSRF / 路径穿越 / 任意文件读取 / 请求体与会议上限；`test/auth_test.py` 15 项、`test/security_test.py` 13 项
+- 安全：鉴权 / TLS / CSRF / 路径穿越 / 任意文件读取 / 请求体与会议上限；`test/auth_test.py` 17 项、`test/security_test.py` 13 项
 - 容器化：后端与工具链两个镜像，模拟器能在容器里真跑（见 `deploy/`）
 - 文档：`使用说明.md`、`开发者文档.md`（原 `docs/00`、`docs/08`）
 
