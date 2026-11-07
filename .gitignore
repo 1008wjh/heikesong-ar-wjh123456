@@ -32,3 +32,5 @@ probe/
 glasses/dist/
 models/asr/
 env.local.bat
+
+simstate/
