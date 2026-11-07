@@ -6,7 +6,7 @@
 const $ = (s) => document.querySelector(s);
 
 // 改代码就 +1，页脚会显示。看到 build 不是最新的，说明浏览器还在跑旧脚本。
-const BUILD = 19;
+const BUILD = 20;
 
 const state = { people: [], threshold: 0.4 };
 
@@ -546,7 +546,7 @@ function setModule(name) {
   }
 }
 
-/* ---------------- 预设按钮（镜片主页那三个） ---------------- */
+/* ---------------- 预设（按钮 + 总提示词 + 时长） ---------------- */
 const presets = { items: [], busy: false, bound: false };
 
 function mk(tag, cls, text) {
@@ -566,6 +566,7 @@ async function loadPresets() {
     if ($('#holdSec')) $('#holdSec').value = cfg.hold_sec || 30;
     if ($('#firstHoldSec')) $('#firstHoldSec').value = cfg.first_hold_sec || 9;
     if ($('#identifySec')) $('#identifySec').value = cfg.identify_sec || 20;
+    if ($('#systemPrompt')) $('#systemPrompt').value = cfg.system_prompt || '';
   } catch (e) {
     if ($('#presetMsg')) $('#presetMsg').textContent = '读不到预设：' + e.message;
   }
@@ -617,13 +618,14 @@ async function savePresets() {
         hold_sec: Number(($('#holdSec') || {}).value || 30),
         first_hold_sec: Number(($('#firstHoldSec') || {}).value || 9),
         identify_sec: Number(($('#identifySec') || {}).value || 20),
+        system_prompt: (($('#systemPrompt') || {}).value || '').slice(0, 2000),
       }),
     });
     const cfg = await cfgRes.json();
     if (!cfg.ok) throw new Error(cfg.error || '时长保存失败');
     presets.items = data.items || presets.items;
     renderPresets();
-    if ($('#presetMsg')) $('#presetMsg').textContent = '已保存 · 眼镜下次启动生效';
+    if ($('#presetMsg')) $('#presetMsg').textContent = '已保存 · 按钮与时长下次启动生效，总提示词立即生效';
   } catch (e) {
     if ($('#presetMsg')) $('#presetMsg').textContent = '保存失败：' + e.message;
   } finally {

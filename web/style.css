@@ -795,6 +795,15 @@ code {
 
 .pres-body { padding: 16px 20px; overflow-y: auto; }
 
+/* 总提示词：按钮列表上面的一块，和下面的按钮区隔开 */
+.pres-sys {
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 3px solid var(--line);
+}
+.pres-sys .field.mono { min-height: 96px; }
+.pres-sys .tiny { margin: 6px 0 0; }
+
 .preset-row {
   display: grid;
   grid-template-columns: 28px 140px minmax(0, 1fr) 44px;

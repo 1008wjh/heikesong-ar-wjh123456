@@ -19,6 +19,7 @@ from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 import presets as presets_store
+import settings as settings_store
 
 # 主页面上的快捷预设：id -> {label, prompt, op, layout}
 # op=filter 只留待办；op=summary 摘要；op=next 出提词；op=recall 翻历史
@@ -391,23 +392,31 @@ def node_recommend(state: AgentState) -> dict:
     person = store_ref.get(state.get("person_id") or "") if state.get("person_id") else None
     profile = ""
     if person:
-        lines = cards.simple_lines(person, 6)
-        facts = (person.get("complex") or {}).get("对话要点") or {}
-        extra = ["%s: %s" % (k, v) for k, v in list(facts.items())[:6]]
+        # 简单数据（给镜片那版）+ 复杂数据（整份摊平）都拼进提示词；
+        # 复杂数据是给模型看的，不直接上镜片。
+        parts = list(cards.simple_lines(person, 6))
+        complex_ = person.get("complex") or {}
+        if isinstance(complex_, (dict, list)) and complex_:
+            try:
+                parts += cards.flatten(complex_)[:12]
+            except Exception:
+                pass
         # 最近两段对话的摘要也带上，模型才知道"上次聊到哪"
         for cv in (person.get("conversations") or [])[-2:]:
             sm = (cv or {}).get("summary") or ""
             if sm:
-                extra.append("上次聊到: " + sm[:60])
-        profile = " / ".join([x for x in lines + extra if x])[:800]
+                parts.append("上次聊到: " + sm[:60])
+        profile = " / ".join([str(x) for x in parts if str(x).strip()])[:1400]
     t0 = time.time()
     try:
         want = (presets_store.get(state.get("preset") or "") or {}).get("prompt") or ""
         dialog = (state.get("window") or state.get("text") or "")
         if want:
             dialog = "用户要求：" + want + "\n对话：\n" + dialog
+        system_prompt = settings_store.get_settings().get("system_prompt") or ""
         got = llm.recommend(dialog,
-                            state.get("person_name") or "", profile, state.get("items") or [])
+                            state.get("person_name") or "", profile, state.get("items") or [],
+                            system_prompt=system_prompt)
         nxt = got.get("next") or []
         return {"next_actions": nxt, "rec_ms": int((time.time() - t0) * 1000),
                 "summary": state.get("summary") or got.get("summary") or ""}

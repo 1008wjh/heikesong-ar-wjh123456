@@ -351,19 +351,28 @@ def pick_person(transcript, names):
     return None
 
 
-def recommend(transcript, person_name, profile, items):
-    """下一步该说什么：给三条「提词」（不是总结，是接下来能直接说出口的话）。"""
+def recommend(transcript, person_name, profile, items, system_prompt=""):
+    """下一步该说什么：给三条「提词」（不是总结，是接下来能直接说出口的话）。
+
+    system_prompt：控制台「预设」页里的总提示词，放在最前面定风格/结构；
+    后面仍接内置的格式要求，保证返回的 JSON 能解析。
+    """
     who = person_name or "一个刚认识的陌生人"
     facts = profile or "（没有档案）"
     done = "；".join("%s：%s" % (i.get("key", ""), i.get("value", "")) for i in (items or [])[:6]) or "（这段还没抽出要点）"
-    out = _chat_plain(
+    base = (
         "你是对话提词器，不是会议纪要。用户戴着眼镜正和对面的人面对面说话，"
         "需要的是「接下来我该说什么」，不是「刚才说了什么」。\n"
         "根据档案和刚才这段对话，给三条可以直接说出口的话，挑对方最可能接得住的方向："
         "追问细节、兑现承诺、或者接一个他刚提到的事。\n"
         "要求：每条不超过 12 个字；写成第一人称可以直接念出来的短句；"
         "不要出现「总结/建议/可以」这类词；不要解释；只输出 JSON。\n"
-        '格式：{"hint":"一句≤18字的接话提示","say":["可以说的1","可以说的2","可以说的3"]}',
+        '格式：{"hint":"一句≤18字的接话提示","say":["可以说的1","可以说的2","可以说的3"]}'
+    )
+    custom = (system_prompt or "").strip()
+    system = (custom + "\n\n" + base) if custom else base
+    out = _chat_plain(
+        system,
         "对面的人：%s\n档案：%s\n这段的要点：%s\n对话原文：%s" % (who, facts, done, (transcript or "")[-1200:]),
         max_tokens=200,
     )
