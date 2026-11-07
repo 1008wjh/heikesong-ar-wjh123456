@@ -287,6 +287,14 @@ function wavFramesLoop(name, seconds) {
   check("认出之后出现三个预设按钮",
     hud().some((v) => v.includes("提词")) || hud().some((v) => v.includes("待办")), JSON.stringify(hud()));
 
+  // 1d) 按一次「提词」：应该真的发一次模型请求，并在镜片上出回复
+  // （这段已经没新音频了，正好验证"没说话也能问模型"这条路）
+  navQueue.push("activate");
+  await waitUntil(() => hud().some((v) => v.includes("在想")), 10000);
+  check("按按钮会发起模型请求", hud().some((v) => v.includes("在想")), JSON.stringify(hud()));
+  await waitUntil(() => !hud().some((v) => v.includes("在想")), 40000);
+  check("模型回复到达（在想… 消失）", !hud().some((v) => v.includes("在想")), JSON.stringify(hud()));
+
   // 1c) 按「返回」→ 结束这段录音（测试里关掉自动入库，所以停在卡片上）
   navQueue.push("back");
   await waitUntil(() => hud().some((v) => v.includes("按一下")), 25000);

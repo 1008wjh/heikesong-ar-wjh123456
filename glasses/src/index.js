@@ -901,6 +901,8 @@ function agentCard(v) {
     layout: v.layout,
     options: v.options || [],
     degraded: !!v.degraded,
+    // pinned 的 1.00 不是"像"，是"沿用已认出的人"，别在镜片上显示成相似度
+    matched_by: v.matched_by || "",
   };
 }
 
