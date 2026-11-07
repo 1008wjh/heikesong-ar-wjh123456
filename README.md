@@ -8,6 +8,16 @@
 现在这一版是**跑在笔记本上的"云" + 浏览器里的"眼镜视角"**：
 摄像头随便换（笔记本 / 手机 / 模拟器），识别和卡片生成全在本地。
 
+仓库：<https://github.com/1008wjh/heikesong-ar-wjh123456>
+
+```powershell
+git clone git@github.com:1008wjh/heikesong-ar-wjh123456.git
+cd heikesong-ar-wjh123456
+```
+
+克隆下来 `models/` 里已经有三个模型（人脸两个 + 声纹一个，共约 41MB），
+**不用另外下**。只有亮亮视野的开发包不在仓库里（400+MB），要看 `docs/07`。
+
 ---
 
 ## 30 秒跑起来
@@ -17,7 +27,7 @@
 或者手动：
 
 ```powershell
-pip install opencv-python-headless onnxruntime numpy
+pip install opencv-python-headless onnxruntime numpy sherpa-onnx
 python src/server.py        # 然后打开 http://127.0.0.1:8765
 ```
 
