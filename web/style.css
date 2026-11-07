@@ -523,6 +523,16 @@ code {
 .json-2 .fld { margin-bottom: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; }
 .json-2 textarea { height: 100%; min-height: 120px; resize: none; }
 
+.opt {
+  font-weight: 400;
+  font-size: 9.5px;
+  letter-spacing: .18em;
+  padding: 1px 5px;
+  border: 1px solid var(--muted);
+  color: var(--muted);
+  vertical-align: 2px;
+}
+
 /* ---------- 按钮 ---------- */
 
 .btn {

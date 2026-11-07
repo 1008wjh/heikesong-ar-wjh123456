@@ -6,7 +6,7 @@
 const $ = (s) => document.querySelector(s);
 
 // 改代码就 +1，页脚会显示。看到 build 不是最新的，说明浏览器还在跑旧脚本。
-const BUILD = 13;
+const BUILD = 14;
 
 const state = { people: [], threshold: 0.4 };
 
@@ -204,7 +204,6 @@ function closeEditor() {
 async function savePerson() {
   const name = $('#edName').value.trim();
   if (!name) { $('#edName').focus(); return toast('先填名字', true); }
-  if (!editing && !pendingImage) return toast('新增需要上传一张正脸照，否则认不出他', true);
 
   const body = {
     id: editing ? editing.id : '',
@@ -239,7 +238,9 @@ async function savePerson() {
     btn.textContent = '保存';
     closeEditor();
     await loadPeople();
-    toast('已保存：' + name + voiceNote + (r.faces > 1 ? `（图里 ${r.faces} 张脸，取了最大那张）` : ''));
+    toast('已保存：' + name + voiceNote
+      + (!pendingImage && !pendingVoice && !editing ? '（没照片没声纹，先靠控制台记录）' : '')
+      + (r.faces > 1 ? `（图里 ${r.faces} 张脸，取了最大那张）` : ''));
   } catch (e) {
     toast('保存失败：' + e.message, true);
   } finally {
