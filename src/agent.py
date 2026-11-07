@@ -74,15 +74,16 @@ def tool_voice_match(state: AgentState) -> dict:
         return {"matched_by": "none"}
     try:
         emb = voice.embed_wav(decode_audio_ref(audio))
-    except Exception as e:                                    # 音频坏了不该中断整段
-        return {"matched_by": "none", "notes": ["音频解析失败：%s" % e]}
+    except Exception as e:                                    # 音频坏了/静音不该中断整段
+        return {"matched_by": "none", "notes": ["%s" % e]}
     person, sim, _margin = voice.match(emb, store_ref.voice_index())
     if person:
         return {"person_id": person["id"], "person_name": person["name"],
                 "similarity": round(float(sim), 3), "matched_by": "voice", "_emb": emb}
     # 只有真听到人说话才建号：静音/噪声不该凭空造出「陌生人A」
     heard = (state.get("text") or "").strip()
-    if state.get("auto_add") and len(heard) >= 2:
+    # 只有"明显不像库里任何人"才建号；0.62~0.72 之间属于"有点像但不敢认"，宁可不建
+    if state.get("auto_add") and len(heard) >= 2 and float(sim) < voice.AUTOADD_MAX:
         name = next_stranger_name(store_ref)
         created = store_ref.save(name=name, role="陌生人 · 眼镜端自动建的",
                                  info=["语音自动入库，回头改个名字", "", ""])
@@ -218,6 +219,9 @@ def node_identify(state: AgentState) -> dict:
     merged = {k: v for k, v in out.items() if not k.startswith("_")}
     if not merged.get("person_id"):
         merged.update(tool_semantic_match({**state, **merged}))
+    if not merged.get("person_id"):
+        # 没有配对的两人，不要让上一片的 person_* 通过 MemorySaver 漏进来
+        merged.update({"person_id": None, "person_name": "", "similarity": -1.0})
     return merged
 
 

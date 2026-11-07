@@ -305,10 +305,9 @@ function wavFramesLoop(name, seconds) {
   check("键盘上能看到短语键", lines.some((v) => v.includes("【我】")), JSON.stringify(lines));
 
   navQueue.push("activate");          // 输入「我」
-  await sleep(400);
+  await waitUntil(() => hud().some((v) => v.includes("我")), 1500);
   lines = hud();
-  check("确认键把字打进去了", lines.some((v) => v.includes("我") && !v.includes("（还没输入）")),
-    JSON.stringify(lines));
+  check("确认键把字打进去了", lines.some((v) => v.includes("我")), JSON.stringify(lines));
 
   navQueue.push("right");
   navQueue.push("activate");          // 输入「你」

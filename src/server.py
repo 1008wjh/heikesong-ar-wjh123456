@@ -290,6 +290,14 @@ class Handler(BaseHTTPRequestHandler):
             }
             return self._push_voice([card], int((time.time() - t0) * 1000))
 
+        if voice.is_silent(samples):
+            card = {
+                "kind": "voice", "status": "silent", "name": "没声音",
+                "role": "", "similarity": -1,
+                "lines": ["这段基本是静音", "检查麦克风或再说近一点"],
+            }
+            return self._push_voice([card], int((time.time() - t0) * 1000))
+
         emb = voice.embed(samples)
         person, sim, margin = voice.match(emb, store.voice_index())
         print(f"[voice] {voice.seconds(samples):.1f}s sim={sim:+.3f} margin={margin:+.3f} "

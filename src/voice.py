@@ -20,6 +20,10 @@ SAMPLE_RATE = 16000
 MIN_SECONDS = 1.0          # 短于这个时长，特征不稳，直接判"没听清"
 MAX_SECONDS = 30.0         # 再长也不提升，截断省时间
 THRESHOLD = float(os.environ.get("AR_VOICE_THRESHOLD", "0.72"))
+# 低于这个"最响一帧"就当没说话（int16 幅值）。会场底噪常在 200 以下
+PEAK_MIN = float(os.environ.get("AR_VOICE_PEAK_MIN", "300"))
+# 陌生声音评分低于这个值才允许自动建号，避免把"像但不确定"的人建重复
+AUTOADD_MAX = float(os.environ.get("AR_VOICE_AUTOADD_MAX", "0.62"))
 MARGIN = float(os.environ.get("AR_VOICE_MARGIN", "0.08"))
 
 _extractor = None
@@ -65,11 +69,24 @@ def resample(x: np.ndarray, src: int, dst: int) -> np.ndarray:
     return np.interp(pos, np.arange(x.size), x).astype(np.float32)
 
 
+def peak(samples: np.ndarray) -> float:
+    """最响那一帧的幅值（int16 量级），用来判断"是不是真有人在说话"。"""
+    if samples.size == 0:
+        return 0.0
+    return float(np.max(np.abs(samples)) * 32768.0)
+
+
+def is_silent(samples: np.ndarray, peak_min: float = None) -> bool:
+    return peak(samples) < (PEAK_MIN if peak_min is None else peak_min)
+
+
 def embed(samples: np.ndarray) -> np.ndarray:
     """一段 float32 波形 -> 192 维单位向量。"""
     ex = _get_extractor()
     if samples.size == 0:
         raise ValueError("空音频")
+    if is_silent(samples):
+        raise ValueError("这段没有声音")
     limit = int(MAX_SECONDS * SAMPLE_RATE)
     if samples.size > limit:
         samples = samples[:limit]

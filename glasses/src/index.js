@@ -25,7 +25,9 @@ const POLL_MS = 700;        // 拉结果
 const NAV_MS = 120;         // 读按键/手势
 const HTTP_TIMEOUT_MS = 1500;
 const MAX_SAMPLES = 16000 * 30;
-const OUTBOX_RETRY_MS = 8000;   // 离线录音的重发间隔
+const OUTBOX_RETRY_MS = 8000;
+// 卡片（认人结果/55 秒建议）露一会儿就收起来，录音不停
+const HOLD_MS = 9000;   // 离线录音的重发间隔
 
 // 宿主注入的私有数据目录；没有（单测 / 无沙箱环境）就不落盘。
 const APP_DATA_DIR = process.env.FUSIONUI_APP_DATA_DIR;
@@ -421,7 +423,7 @@ function stopScroll() {
 // ③ 会话到 55 秒主动轮换一条新的（中间有毫秒级空档，对识别无影响）
 // ④ 边切边传，不在内存里堆整段（要支持 30 分钟）
 
-const SLICE_MS = 55000;         // 一片 55 秒：正好卡在平台 60 秒会话上限之前
+const SLICE_MS = Number(process.env.MEMORYLENS_SLICE_MS || 55000);         // 一片 55 秒：正好卡在平台 60 秒会话上限之前
 const MAX_SESSION_MS = 59000;   // 会话再长就换一个，避免撞平台上限
 const SLICE_MIN_MS = 5000;      // 停止时最后一片不足这个数就丢掉
 const MAX_LISTEN_MS = 30 * 60 * 1000;   // 兜底：连续听 30 分钟自动停
@@ -449,7 +451,8 @@ function listenLine() {
 let listenSig = "";
 function paintListening() {
   if (!capture) return;
-  const c0 = capture.lastCard;
+  const held = capture.lastCard && capture.showUntil && Date.now() < capture.showUntil;
+  const c0 = held ? capture.lastCard : null;
   // 整屏指纹：文字没变就整帧跳过（否则每 400ms 重设一遍，镜片上会闪）
   const sig = listenLine() + "|" + (c0
     ? [c0.name, c0.role, c0.status, c0.similarity, (c0.lines || []).join("~")].join("|")
@@ -457,9 +460,9 @@ function paintListening() {
   if (sig === listenSig) return;
   listenSig = sig;
   retained.status.setText(listenLine());
-  if (capture.lastCard && !complexRows) {
+  if (c0 && !complexRows) {
     // 认出来之后：名字/身份/信息行保持卡片内容，别被"在听"的提示冲掉
-    const card = capture.lastCard;
+    const card = c0;
     putText(retained.name, card.name || "陌生人");
     putText(retained.role, card.layout === "notice" ? "多人对话 · 没入库" : (card.role || ""));
     putText(retained.sim, card.status !== "unknown" && typeof card.similarity === "number"
@@ -471,7 +474,7 @@ function paintListening() {
     putText(retained.foot, "确认 详情 · 返回 结束");
     return;
   }
-  if (!capture.lastCard) {
+  if (!c0) {
     const silent = capture.samples === 0 && Date.now() - capture.startedAt > 3000;
     putText(retained.name, "在听…");
     putText(retained.role, silent ? "点「确认采集」" : "直接说话就行，不用按键");
@@ -585,6 +588,7 @@ function startListening(mode) {
   }
   capture = {
     lastCard: null,
+    showUntil: 0,
     session: null, chunks: [], samples: 0,    startedAt: Date.now(), sessionStartedAt: 0,
     slices: 0, sent: 0, queue: [], busy: false,
     mode: mode === "meeting" ? "meeting" : "single",
@@ -618,6 +622,7 @@ async function identify(c, wav) {
   if (!c.personId) return;
   c.slices += 1;
   c.lastCard = agentCard(v);
+  c.showUntil = Date.now() + HOLD_MS;
   c.lastRev = res.rev;
   c.lastMs = v.ms || 0;
   shownRev = res.rev;

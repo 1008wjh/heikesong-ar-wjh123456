@@ -135,7 +135,7 @@ function rows() {
   console.log("按确认后:", rows().join(" / "));
 
   navQueue.push("activate");                 // 选单人 → 开录
-  for (let i = 1; i <= 24; i++) {
+  for (let i = 1; i <= Number(process.env.TRACE_SECS || 24); i++) {
     await new Promise((r) => setTimeout(r, 1000));
     console.log(String(i).padStart(2) + "s:", rows().join(" / "));
   }
