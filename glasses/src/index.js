@@ -453,15 +453,24 @@ function listenLine() {
 let listenSig = "";
 // 把最近 24 帧的音量画成一条"波形"：▁▂▃▄▅▆▇ 七档
 const BARS = " .:-=+*#";
-function levelBar() {
+function levelBar(n) {
   const ps = (capture && capture.peaks) || [];
   if (!ps.length) return "";
+  const width = n || 12;
   let out = "";
-  for (const v of ps.slice(-12)) {
+  for (const v of ps.slice(-width)) {
     const i = Math.min(7, Math.max(0, Math.round(v * 7)));
     out += BARS[i];
   }
   return out;
+}
+
+// 卡片占屏时，把 6 格迷你条拼到状态行后面，保证任何时候都看得见音量
+function statusWithBar(line) {
+  const ps = (capture && capture.peaks) || [];
+  if (!ps.length) return line;
+  const quiet = ps.slice(-6).every((v) => v < 0.03);
+  return line + " " + (quiet ? "····" : levelBar(6));
 }
 
 function paintListening() {
@@ -474,7 +483,7 @@ function paintListening() {
     : "none");
   if (sig === listenSig) return;
   listenSig = sig;
-  retained.status.setText(listenLine());
+  retained.status.setText(statusWithBar(listenLine()));
   if (c0 && !complexRows) {
     // 认出来之后：名字/身份/信息行保持卡片内容，别被"在听"的提示冲掉
     const card = c0;
@@ -1027,7 +1036,7 @@ function tick() {
     // 在听的时候：详情页照常显示，但状态行继续走计时
     if (complexRows) {
       paintComplex(lastScene && lastScene.name ? lastScene.name : capture.personName);
-      retained.status.setText(listenLine());
+      retained.status.setText(statusWithBar(listenLine()));
       putText(retained.foot, "确认 收起 · 返回 结束");
     } else {
       paintListening();
