@@ -263,6 +263,7 @@ function splitLines(text, budget) {
 }
 
 function paintIdle(msg) {
+  hideModeSel();
   // 录音期间屏幕必须一直是「在听」：任何路径想画待机都直接忽略
   if (capture) return;
   stopScroll();
@@ -290,6 +291,7 @@ function paintOffline(err) {
 }
 
 function paintCard(card, rev, ms) {
+  hideModeSel();
   const known = card.status !== "unknown";
   const kind = card.kind === "voice" ? "听到" : "看到";
   // 智能体链路会直接给状态（待命/处理中/待确认/完成/异常），优先用它
@@ -474,6 +476,7 @@ function statusWithBar(line) {
 }
 
 function paintListening() {
+  hideModeSel();
   if (!capture) return;
   const held = capture.lastCard && capture.showUntil && Date.now() < capture.showUntil;
   const c0 = held ? capture.lastCard : null;
@@ -815,6 +818,7 @@ function keyRowsView() {
 }
 
 function paintText() {
+  hideModeSel();
   if (!textMode) return;
   if (textMode.kind === "opts") {
     putText(retained.status, "建议 · 上下选");
@@ -916,15 +920,55 @@ function closeMode() {
   paintIdle("按一下开始 · 先选单人还是多人");
 }
 
+// 平台自带 Select（下拉/选项）——模式选择不再用一排 Text 手搓
+let modeSel = null;
+let modeSelTried = false;
+
+function ensureModeSel() {
+  if (modeSelTried) return modeSel;
+  modeSelTried = true;
+  try {
+    if (!ui || !ui.Select || typeof ui.Select.create !== "function") return null;
+    const s = ui.Select.create();
+    s.setParent(retained.board);
+    s.setIgnoreLayout(true);
+    s.setPosition([8, 126, 0]);
+    s.setSize([300, 44, 0]);
+    s.setOptions(MODE_ITEMS.map((m) => m.label));
+    s.getLocalStyle().setTextColor(COL.white);
+    modeSel = s;
+  } catch (e) {
+    modeSel = null;
+  }
+  return modeSel;
+}
+
+function hideModeSel() {
+  if (modeSel) {
+    try { modeSel.setHidden(true); } catch (e) { /* 旧版本没有 hidden */ }
+  }
+}
+
 function paintMode() {
   if (!modeSelect) return;
   putText(retained.status, "选模式 · 左右选 · 确认进入");
   putText(retained.name, "开始记录");
   putText(retained.role, "先选这一段是什么");
   putText(retained.sim, " ");
-  const rows = MODE_ITEMS.map((m, i) => (i === modeSelect.index ? "【" + m.label + "】" : "  " + m.label));
-  retained.info.forEach((t, i) => putText(t, rows[i] || ""));
-  retained.info[2] && putText(retained.info[2], MODE_ITEMS[modeSelect.index].hint);
+  const sel = ensureModeSel();
+  if (sel) {
+    // 有原生组件就用它：选项、选中态、高亮都由平台画
+    try {
+      sel.setSelectedIndex(modeSelect.index);
+      sel.setHidden(false);
+    } catch (e) { /* 忽略 */ }
+    retained.info.forEach((t) => putText(t, " "));
+    putText(retained.info[0], MODE_ITEMS[modeSelect.index].hint);
+  } else {
+    const rows = MODE_ITEMS.map((m, i) => (i === modeSelect.index ? "【" + m.label + "】" : "  " + m.label));
+    retained.info.forEach((t, i) => putText(t, rows[i] || ""));
+    putText(retained.info[2], MODE_ITEMS[modeSelect.index].hint);
+  }
   putText(retained.foot, "确认进入 · 返回关掉");
 }
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 构建/打包 probe 应用（只用于排障）
 set -euo pipefail
-KIT=/mnt/c/Users/Lenovo/Downloads/IrisView-Developer-Kit-v1.0.0-LLVISION-v2/IrisView-Developer-Kit-v1.0.0-LLVISION-v2/IrisView-Developer-Kit-v1.0.0
+KIT=/mnt/e/ar-memory/IrisView-Developer-Kit-v1.0.0-LLVISION-v2/IrisView-Developer-Kit-v1.0.0-LLVISION-v2/IrisView-Developer-Kit-v1.0.0
 export FUSIONUI_DEVELOPER_KIT_ROOT="$KIT"
 export PATH="$HOME/tools/node-v24.13.0-linux-x64/bin:$PATH"
 cd /mnt/e/ar-memory
