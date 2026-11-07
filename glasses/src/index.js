@@ -809,7 +809,7 @@ function navText(act) {
 let modeSelect = null;   // {index:0|1}
 
 const MODE_ITEMS = [
-  { key: "single", label: "单人", hint: "和对面一个人聊 · 15 秒认人" },
+  { key: "single", label: "单人", hint: "一个人聊 · 15 秒认人" },
   { key: "meeting", label: "多人", hint: "三个人以上 · 只转写不入库" },
 ];
 
