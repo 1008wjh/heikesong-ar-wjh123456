@@ -383,8 +383,11 @@ async function listMics() {
   } catch (e) {
     return;
   }
-  if (!mics.length) return;
   sel.innerHTML = '';
+  const def = document.createElement('option');
+  def.value = '';
+  def.textContent = '系统默认（跟随系统）';
+  sel.appendChild(def);
   mics.forEach((d, i) => {
     const o = document.createElement('option');
     o.value = d.deviceId;
@@ -395,7 +398,7 @@ async function listMics() {
   sel.onchange = () => {
     voiceDeviceId = sel.value || '';
     storeSet(MIC_KEY, voiceDeviceId);
-    toast('已切换麦克风');
+    toast(voiceDeviceId ? '已切换麦克风' : '已切回系统默认麦克风');
   };
 }
 
