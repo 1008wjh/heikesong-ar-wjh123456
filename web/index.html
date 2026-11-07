@@ -3,111 +3,167 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>MemoryLens · 记忆库控制台</title>
-<link rel="stylesheet" href="style.css?v=13" />
+<title>MEMORYLENS · 人物数据管理</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Archivo:wght@400;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="style.css?v=14" />
 </head>
 <body>
 
-<header class="top">
-  <div class="brand">
-    <span class="logo">ML</span>
-    <div>
-      <h1>MemoryLens</h1>
-      <p class="sub">记忆库控制台 · 录入、编辑、删除</p>
-    </div>
-  </div>
-  <div class="top-right">
-    <span id="count" class="chip">库中 0 人</span>
-    <span id="thresholdTag" class="chip ghost">阈值 0.40</span>
-    <span id="build" class="build">build …</span>
-  </div>
-</header>
+<div class="frame">
 
-<main class="shell">
-
-  <aside class="sidebar">
-    <div class="side-tools">
-      <input id="search" class="search" placeholder="搜索名字 / 身份" />
-      <button id="btnAdd" class="btn primary">+ 新增人物</button>
+  <!-- 报头：不对称三格 -->
+  <header class="masthead">
+    <div class="cell mast">
+      <svg class="motif" viewBox="0 0 120 120" aria-hidden="true">
+        <path d="M8 96 L96 8 L120 32 L32 120 Z" fill="var(--accent)" />
+        <circle cx="96" cy="24" r="20" fill="none" stroke="var(--ink)" stroke-width="6" />
+        <circle cx="96" cy="24" r="8" fill="var(--ink)" />
+      </svg>
+      <h1>MEMORYLENS</h1>
+      <p class="mast-sub">人物数据管理<span class="sep">/</span>PEOPLE DATA</p>
     </div>
-    <ul id="people" class="people"></ul>
-    <p class="side-foot">数据只存在这台机器上（data/people.json，照片在 data/photos/）。<br />所有录入都经过本人同意。</p>
-  </aside>
+
+    <div class="cell stats">
+      <div class="stat">
+        <span class="stat-k">库中</span>
+        <b id="count" class="stat-v">0 人</b>
+      </div>
+      <div class="stat">
+        <span class="stat-k">阈值</span>
+        <b id="thresholdTag" class="stat-v">0.40</b>
+      </div>
+      <div class="stat stat-build">
+        <span class="stat-k">构建</span>
+        <b id="build" class="stat-v">…</b>
+      </div>
+    </div>
+
+    <div class="cell cta">
+      <button id="btnAdd" class="btn-cta">
+        <span>＋ 新增人物</span>
+        <svg viewBox="0 0 40 16" aria-hidden="true"><path d="M0 6h26V0l14 8-14 8v-6H0z" fill="currentColor" /></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- 主体：模块栏 / 人脉库 / 编辑区 -->
+  <nav class="rail" aria-label="模块">
+    <p class="rail-head">模块</p>
+    <button class="mod is-active" aria-current="page">
+      <span class="mod-n">01</span>
+      <span class="mod-t">人物数据</span>
+    </button>
+    <button class="mod" disabled title="待开发">
+      <span class="mod-n">02</span>
+      <span class="mod-t">声纹库</span>
+    </button>
+    <button class="mod" disabled title="待开发">
+      <span class="mod-n">03</span>
+      <span class="mod-t">识别日志</span>
+    </button>
+    <button class="mod" disabled title="待开发">
+      <span class="mod-n">04</span>
+      <span class="mod-t">设置</span>
+    </button>
+    <p class="rail-foot">数据只在本机<br />data/people.json</p>
+  </nav>
+
+  <section class="listcol" aria-label="人脉库">
+    <div class="cell list-head">
+      <h2>人脉库</h2>
+      <span class="rule" aria-hidden="true"></span>
+    </div>
+    <div class="cell list-search">
+      <input id="search" class="field" placeholder="搜索名字 / 身份" aria-label="搜索名字或身份" />
+    </div>
+    <div class="cell listbody">
+      <ul id="people" class="people"></ul>
+    </div>
+  </section>
 
   <section class="content">
 
-    <div id="empty" class="empty">
-      <div class="empty-art">◍</div>
-      <h2>选一个人，或者新建一个</h2>
-      <p>左边是人脉库。点任意一行可以编辑：照片、名字、身份、三条信息，以及给眼镜用的两档 JSON 数据。</p>
-      <button class="btn primary" id="btnAdd2">+ 新增人物</button>
+    <div id="empty" class="cell empty">
+      <div class="empty-type">
+        <p class="kicker">尚未选择</p>
+        <h2>选一个人<br />或者新建一个</h2>
+        <p class="empty-p">左边是人脉库。点任意一行可以编辑：照片、名字、身份、三条信息，以及给眼镜用的两档 JSON 数据。</p>
+        <button class="btn" id="btnAdd2">＋ 新增人物</button>
+      </div>
+      <svg class="empty-motif" viewBox="0 0 200 200" aria-hidden="true">
+        <path d="M0 200 L200 0 L200 46 L46 200 Z" fill="var(--accent3)" />
+        <path d="M60 200 L200 60 L200 92 L92 200 Z" fill="var(--accent)" />
+      </svg>
     </div>
 
     <div id="editor" class="editor" hidden>
 
       <div class="ed-head">
-        <div>
+        <div class="cell ed-title">
+          <p class="kicker">人物档案</p>
           <h2 id="edTitle">新增人物</h2>
-          <p id="edMeta" class="meta">还没保存 · 保存后才会出现在镜片上</p>
+          <p id="edMeta" class="meta">还没保存</p>
         </div>
-        <div class="ed-head-acts">
-          <button id="edDelete" class="btn danger ghost" hidden>删除这个人</button>
-          <button id="edCancel" class="btn ghost">取消</button>
-          <button id="edSave" class="btn primary">保存</button>
+        <div class="cell ed-acts">
+          <button id="edDelete" class="btn btn-del" hidden>删除</button>
+          <button id="edCancel" class="btn">取消</button>
+          <button id="edSave" class="btn btn-save">保存</button>
         </div>
       </div>
 
-      <div class="cards">
-
-        <section class="card photo-card">
+      <div class="ed-row">
+        <div class="cell photo-cell">
           <h3>照片</h3>
-          <img id="edPhoto" class="ed-photo" alt="" />
-          <label for="edFile" class="btn ghost block">上传照片</label>
+          <img id="edPhoto" class="ed-photo" alt="人物照片" />
+          <label for="edFile" class="btn btn-block">上传照片</label>
           <input id="edFile" type="file" accept="image/*" hidden />
-          <p class="hint" id="edPhotoHint">正脸、光线均匀、别戴帽子。换照片会重新算底片。</p>
-        </section>
+          <p class="hint" id="edPhotoHint">正脸、光线均匀。换照片会重新算底片。</p>
+        </div>
 
-        <section class="card grow-card">
+        <div class="cell info-cell">
           <h3>基本信息</h3>
-          <label class="fld"><span>名字</span><input id="edName" placeholder="王姐" /></label>
-          <label class="fld"><span>身份 / 关系</span><input id="edRole" placeholder="产品经理 · 前同事" /></label>
-          <div class="fld-row">
-            <label class="fld"><span>信息 1</span><input id="ed1" placeholder="答应下周给报价单" /></label>
-            <label class="fld"><span>信息 2</span><input id="ed2" placeholder="养了一只叫豆豆的猫" /></label>
-            <label class="fld"><span>信息 3</span><input id="ed3" placeholder="（可选）" /></label>
+          <label class="fld"><span>名字</span><input id="edName" class="field" placeholder="王姐" /></label>
+          <label class="fld"><span>身份 / 关系</span><input id="edRole" class="field" placeholder="产品经理 · 前同事" /></label>
+          <div class="fld-3">
+            <label class="fld"><span>信息 1</span><input id="ed1" class="field" placeholder="答应下周给报价单" /></label>
+            <label class="fld"><span>信息 2</span><input id="ed2" class="field" placeholder="养了一只叫豆豆的猫" /></label>
+            <label class="fld"><span>信息 3</span><input id="ed3" class="field" placeholder="（可选）" /></label>
           </div>
-          <p class="hint">这三条会直接出现在镜片的简单卡片上，一行一条，别写太长。</p>
-        </section>
-
-        <section class="card voice-card">
-          <h3>声纹</h3>
-          <button id="edVoice" class="btn ghost" type="button">◉ 录声纹（3 秒）</button>
-          <p class="hint" id="edVoiceHint">说一句「我是 XXX」，眼镜就能听声认人。</p>
-        </section>
-
+          <p class="hint">这三条直接出现在镜片的简单卡片上，一行一条。</p>
+        </div>
       </div>
 
-      <section class="card json-card">
-        <h3>两档数据</h3>
-        <p class="hint">简单数据在镜片上直接显示；复杂数据要按「确认」才展开（走 <code>GET /api/card/&lt;id&gt;/full</code>）。空着就不显示。</p>
-        <div class="json-row">
-          <label class="fld">
-            <span>简单数据（JSON · 镜片上直接显示）<button type="button" class="mini" data-fmt="#edSimple">格式化</button></span>
-            <textarea id="edSimple" rows="5" spellcheck="false" placeholder='{"身份":"队友","上次见面":"上周三"}'></textarea>
-          </label>
-          <label class="fld">
-            <span>复杂数据（JSON · 按「确认」才展开）<button type="button" class="mini" data-fmt="#edComplex">格式化</button></span>
-            <textarea id="edComplex" rows="5" spellcheck="false" placeholder='{"家庭":{"宠物":"一只猫"},"历史":["2025 展会认识"]}'></textarea>
-          </label>
+      <div class="ed-row ed-row-split">
+        <div class="cell voice-cell">
+          <h3>声纹</h3>
+          <button id="edVoice" class="btn btn-block" type="button">◉ 录声纹（3 秒）</button>
+          <p class="hint" id="edVoiceHint">说一句「我是 XXX」，眼镜就能听声认人。</p>
         </div>
-      </section>
+
+        <div class="cell json-cell">
+          <h3>两档数据</h3>
+          <p class="hint">简单数据在镜片上直接显示；复杂数据按「确认」才展开（<code>GET /api/card/&lt;id&gt;/full</code>）。</p>
+          <div class="json-2">
+            <label class="fld">
+              <span>简单数据 · JSON <button type="button" class="mini" data-fmt="#edSimple">格式化</button></span>
+              <textarea id="edSimple" class="field mono" rows="6" spellcheck="false" placeholder='{"身份":"队友","上次见面":"上周三"}'></textarea>
+            </label>
+            <label class="fld">
+              <span>复杂数据 · JSON <button type="button" class="mini" data-fmt="#edComplex">格式化</button></span>
+              <textarea id="edComplex" class="field mono" rows="6" spellcheck="false" placeholder='{"家庭":{"宠物":"一只猫"},"历史":["2025 展会认识"]}'></textarea>
+            </label>
+          </div>
+        </div>
+      </div>
 
     </div>
   </section>
-</main>
+</div>
 
 <div id="toast" class="toast" hidden></div>
 
-<script src="app.js?v=13"></script>
+<script src="app.js?v=14"></script>
 </body>
 </html>
