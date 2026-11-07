@@ -6,7 +6,7 @@
 const $ = (s) => document.querySelector(s);
 
 // 改代码就 +1，页脚会显示。看到 build 不是最新的，说明浏览器还在跑旧脚本。
-const BUILD = 20;
+const BUILD = 21;
 
 const state = { people: [], threshold: 0.4 };
 
@@ -498,7 +498,9 @@ async function finishVoice(r) {
 
 /* ---------------- 绑定 ---------------- */
 
-/* ---------------- 模块 02：单人对话分析 ---------------- */
+/* ---------------- 模块 02（旧）：单人对话分析 ----------------
+   网页端入口已移除（赛题不需要对外暴露这个页面）；后端 /api/converse/* 仍保留，
+   供脚本或其他端调用。下面这段 JS 不再被页面调用，留着是为了不破坏旧接口的演示脚本。 */
 
 const CONV_CHUNK_MS = 6000;   // 每 6 秒切一段送上去转写，避免一次性传几分钟音频
 const CONV_MIN_FRAMES = 3;    // 攒够 3 帧（约 0.2s）才切，避免碎片
@@ -521,25 +523,17 @@ const conv = {
 };
 
 function setModule(name) {
-  const onConv = name === 'conv';
   const onPreset = name === 'preset';
-  const showPeople = !onConv && !onPreset;
-  const convEl = $('#conv');
-  if (convEl) convEl.hidden = !onConv;
+  const showPeople = !onPreset;
   if ($('#presets')) $('#presets').hidden = !onPreset;
   if ($('#contentPeople')) $('#contentPeople').hidden = !showPeople;
   if ($('#listcol')) $('#listcol').hidden = !showPeople;
-  [['#modPeople', showPeople], ['#modConv', onConv], ['#modPreset', onPreset]].forEach(([sel, on]) => {
+  [['#modPeople', showPeople], ['#modPreset', onPreset]].forEach(([sel, on]) => {
     const el = $(sel);
     if (!el) return;
     el.classList.toggle('is-active', !!on);
     el.setAttribute('aria-current', on ? 'page' : 'false');
   });
-  if (onConv) {
-    convBindOnce();
-    renderConvPeople();
-    loadConvLlm();
-  }
   if (onPreset) {
     presetBindOnce();
     loadPresets();
@@ -967,7 +961,6 @@ function bind() {
   if ($('#btnAdd')) $('#btnAdd').onclick = add;
   if ($('#btnAdd2')) $('#btnAdd2').onclick = add;
   if ($('#modPeople')) $('#modPeople').onclick = () => setModule('people');
-  if ($('#modConv')) $('#modConv').onclick = () => setModule('conv');
   if ($('#modPreset')) $('#modPreset').onclick = () => setModule('preset');
   if ($('#search')) $('#search').oninput = renderPeople;
   if ($('#edCancel')) $('#edCancel').onclick = closeEditor;

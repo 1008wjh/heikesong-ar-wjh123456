@@ -55,16 +55,12 @@
       <span class="mod-n">01</span>
       <span class="mod-t">人物数据</span>
     </button>
-    <button class="mod" id="modConv" data-mod="conv">
-      <span class="mod-n">02</span>
-      <span class="mod-t">对话分析</span>
-    </button>
     <button class="mod" id="modPreset" data-mod="preset">
-      <span class="mod-n">03</span>
+      <span class="mod-n">02</span>
       <span class="mod-t">预设</span>
     </button>
     <button class="mod" disabled title="待开发">
-      <span class="mod-n">04</span>
+      <span class="mod-n">03</span>
       <span class="mod-t">设置</span>
     </button>
     <p class="rail-foot">数据只在本机<br />data/people.json</p>
@@ -163,11 +159,11 @@
     </div>
   </section>
 
-  <!-- 模块 02：单人对话 → 大模型析出要点 -->
+  <!-- 模块 02：预设（按钮 / 总提示词 / 显示时长） -->
   <section class="presets" id="presets" hidden>
       <div class="cell pres-head">
         <div>
-          <p class="kicker">模块 03</p>
+          <p class="kicker">模块 02</p>
           <h2>预设</h2>
           <p class="empty-p">镜片主页上的三个按钮、每个按钮的提示词、以及给回答模型的总提示词，都在这里改。</p>
         </div>
@@ -203,58 +199,10 @@
       </div>
     </section>
 
-    <section class="conv" id="conv" hidden>
-
-    <div class="cell conv-pick">
-      <p class="kicker">第一步</p>
-      <h2 class="conv-h2">锁定一个人</h2>
-      <p class="hint">只做单人对话。多人谈话是另一个模块，不在这里。</p>
-      <input id="convSearch" class="field" placeholder="搜索名字 / 身份" aria-label="搜索要锁定的人" />
-      <ul id="convPeople" class="conv-list"></ul>
-    </div>
-
-    <div class="cell conv-head">
-      <div class="conv-who">
-        <p class="kicker">第二步 · 全局录音</p>
-        <h2 id="convTitle">还没锁定人物</h2>
-        <p id="convMeta" class="meta">从左边锁一个人，再按开始</p>
-      </div>
-      <div class="conv-acts">
-        <button id="convRec" class="btn btn-save" disabled>◉ 开始录音</button>
-        <button id="convStop" class="btn" hidden>■ 停止</button>
-      </div>
-    </div>
-
-    <div class="cell conv-main">
-      <div class="conv-banner" id="convBanner" hidden></div>
-      <label class="fld conv-fld">
-        <span>转写 <b id="convSecs" class="conv-secs">待机</b></span>
-        <textarea id="convText" class="field mono" spellcheck="false"
-          placeholder="录音时会一段一段出字；也可以直接把对话原文粘进来试"></textarea>
-      </label>
-      <div class="conv-foot">
-        <span id="convState" class="hint">选一个人 → 开始录音 → 停下来点分析</span>
-        <span class="conv-foot-btns">
-          <button id="convClear" class="btn mini-btn">清空</button>
-          <button id="convAnalyze" class="btn btn-save" disabled>分析这段对话</button>
-        </span>
-      </div>
-
-      <div id="convResult" class="conv-result" hidden>
-        <p class="kicker">第三步 · 分析结果</p>
-        <p id="convSummary" class="conv-summary"></p>
-        <ul id="convItems" class="conv-items"></ul>
-        <div class="conv-save-row">
-          <span id="convSaveHint" class="hint">勾上的才会写进档案</span>
-          <button id="convSave" class="btn btn-save" disabled>写入档案</button>
-        </div>
-      </div>
-    </div>
-  </section>
 </div>
 
 <div id="toast" class="toast" hidden></div>
 
-<script src="app.js?v=20"></script>
+<script src="app.js?v=21"></script>
 </body>
 </html>
