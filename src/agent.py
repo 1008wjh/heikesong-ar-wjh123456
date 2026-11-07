@@ -260,7 +260,8 @@ def node_render(state: AgentState) -> dict:
     person = store_ref.get(state.get("person_id") or "") if state.get("person_id") else None
     if first_slice and person:
         # 第一片只负责“认人 + 回档案”，不要用 AI 总结盖掉数据库里已有的内容
-        db_rows = cards.simple_lines(person, 6)
+        db_rows = [person.get("role") or "未填身份"]
+        db_rows += [x for x in (person.get("info") or []) if str(x).strip()][:4]
         rows = db_rows
         state_name = "完成"
         hints = []

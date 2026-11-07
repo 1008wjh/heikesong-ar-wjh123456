@@ -866,6 +866,7 @@ async function pushChunk(c, wav, manual) {
     }, 30000);
     c.sent += 1;
     const v = (res && res.view) || null;
+    c.thinkingUntil = 0;
     if (!v) return;
     if (v.person_id) { c.personId = v.person_id; c.personName = v.person; }
     if (v.rows && v.rows.length) {
@@ -882,6 +883,7 @@ async function pushChunk(c, wav, manual) {
 }
 
 async function stopAndArchive(msg) {
+  if (capture) capture.thinkingUntil = 0;
   if (capture) {
     capture.stopped = true;
     putText(retained.status, "收尾 · 传剩余录音…");

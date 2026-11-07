@@ -261,19 +261,16 @@ function wavFramesLoop(name, seconds) {
   check("切片后认出王姐", lines.includes("王姐"), JSON.stringify(lines));
   check("卡片带相似度", lines.some((v) => v.includes("SIM")), JSON.stringify(lines));
   check("HUD 出现身份", lines.some((v) => v.startsWith("产品经理")), JSON.stringify(lines));
-  check("HUD 出两条信息（窄列会自动折行，只要求首行与第二条标题出现）",
-    lines.join("").includes("日期") && lines.join("").includes("跟进"), JSON.stringify(lines));
+  check("第一片回的是数据库内容（身份 + 信息，不是 AI 总结）",
+    lines.join("").includes("产品经理") && (lines.join("").includes("报价单") || lines.join("").includes("豆豆")),
+    JSON.stringify(lines));
 
   // 1b) 录音中按「确认」→ 看详情，不打断录音；再按一次收起
   navQueue.push("activate");
-  await sleep(600);
+  await waitUntil(() => hud().some((v) => v.includes("在想")), 6000);
   lines = hud();
-  check("录音中按确认看详情", lines.some((v) => v.includes("详情")), JSON.stringify(lines));
-  check("详情页可以看", lines.some((v) => v.includes("王姐")), JSON.stringify(lines));
-  navQueue.push("activate");
-  await sleep(600);
-  lines = hud();
-  check("再按一次收起回卡片", lines.includes("王姐") && !lines.some((v) => v.startsWith("详情")), JSON.stringify(lines));
+  check("录音中按确认 → 智能体开始想（状态行 在想…）",
+    lines.some((v) => v.includes("在想")), JSON.stringify(lines));
 
   // 1c) 按「返回」→ 结束这段录音（测试里关掉自动入库，所以停在卡片上）
   navQueue.push("back");
