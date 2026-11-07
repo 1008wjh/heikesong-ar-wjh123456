@@ -42,6 +42,12 @@ if errorlevel 1 (
 REM Optional local secrets/config, never committed: copy env.local.bat.example to env.local.bat
 if exist "env.local.bat" call "env.local.bat"
 
+REM The repo no longer ships real data/people.json (privacy). Create a demo DB on first run.
+if not exist "data\people.json" (
+  echo [INFO] Creating demo people database...
+  "%PY%" tools\seed_demo.py
+)
+
 echo.
 echo   Service : http://127.0.0.1:8765
 echo   Demo    : http://127.0.0.1:8765/?demo=1

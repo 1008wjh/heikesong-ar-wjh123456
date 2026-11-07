@@ -137,8 +137,9 @@ curl -s -X POST http://127.0.0.1:8765/api/v1/session/create \
 curl -s -X POST http://127.0.0.1:8765/api/v1/audio/upload \
   -H "Content-Type: application/json" \
   -d '{"sessionId":"s_xxx","seq":1,"audio":"D:\\audio\\chunk1.wav"}'
-# 3) 生成多人分离（返回 speakers / segments）
-curl -s -X POST http://127.0.0.1:8765/api/v1/session/s_xxx/finalize -d '{}'
+# 3) 生成多人分离（返回 speakers / segments；服务端开了 token 时每条命令再加 -H "X-API-Token: ..."）
+curl -s -X POST http://127.0.0.1:8765/api/v1/session/s_xxx/finalize \
+  -H "Content-Type: application/json" -d '{}'
 # 4) 把匿名 spk 绑成实名（enroll=true 顺带录入声纹）
 curl -s -X POST http://127.0.0.1:8765/api/v1/speaker/bind \
   -H "Content-Type: application/json" \
@@ -264,7 +265,7 @@ python src\server.py
 
 ```powershell
 # 命令行也能跑（详见 docs/08）
-curl -s -X POST http://127.0.0.1:8765/api/v1/session/create -H "Content-Type: application/json" -d '{\"title\":\"周会\"}'
+curl -s -X POST http://127.0.0.1:8765/api/v1/session/create -H "Content-Type: application/json" -d '{"title":"周会"}'
 ```
 
 **只做轮流说话**：两人同时说话会被当垃圾丢弃，不尝试拆分。设计、模型选型、参数见 [docs/08](docs/08-多人识别.md)。
