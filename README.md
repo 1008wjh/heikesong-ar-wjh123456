@@ -168,6 +168,36 @@ python tools\try_face.py test\biden.jpg      # unknown 陌生人
 照片存 `data/photos/<id>.jpg`，取用走 `GET /api/photo?id=`；记录存在 `data/people.json`。
 改完刷新页面立刻生效，不用重启服务。录过声纹的人在列表里带一个青色「声」标；同一个人重录会**覆盖**旧声纹（不像人脸可以多张底片）。
 
+### 模块 02 · 对话分析（单人）
+
+左边模块栏的第二个模块。锁一个人 → 录这一段对话 → 大模型析出"他答应了什么、偏好、近况" → 你勾选后写进档案。
+
+```
+锁定王姐 → ◉ 开始录音（每 6 秒自动转写一段）→ ■ 停止 → 分析这段对话 → 勾选 → 写入档案
+```
+
+| 环节 | 谁做的 | 说明 |
+|---|---|---|
+| 录音 | 浏览器 `getUserMedia` | 全局录音；没麦克风就**直接把原文粘进文本框**，一样能分析 |
+| 转写 | MiMo `mimo-v2.5-asr` | 服务端收 WAV 分片，累积成 transcript |
+| 析出 | MiMo `mimo-v2.6-pro` | 只输出结构化 JSON：`summary` + 最多 6 条 `{key, value, quote}` |
+| 落库 | `store.merge_facts()` | 并进 `complex["对话要点"]`，原文留在 `conversations`（最多 20 条） |
+
+**必须先配 Key**，否则这个模块会直接告诉你"用不了"（不会假装能跑）：
+
+```powershell
+$env:MIMO_API_KEY = "sk-..."
+python src\server.py
+```
+
+![模块 02](test/conv_module.png)
+
+结果长这样，每条都带原话依据，勾上才会写进档案：
+
+![分析结果](test/conv_result.png)
+
+刻意没做的两件事：**多人分离**（另一个模块在做）、**自动写库**（模型会有幻觉，必须人工勾选）。
+
 ---
 
 ## 做到哪一步了
@@ -183,8 +213,9 @@ python tools\try_face.py test\biden.jpg      # unknown 陌生人
 
 **D3 · 演示与兜底（已完成）**
 - 批量导脸 `tools/enroll.py`；单张照片验证 `tools/try_face.py`；阈值现场可调（`AR_MATCH_THRESHOLD` / `AR_VOICE_THRESHOLD`）
+- 模块 02 对话分析：锁人 → 录音 → MiMo 转写/析出 → 勾选写入档案（`test/converse_api_test.py` 16 项）
 - 容器化：后端与工具链两个镜像，模拟器能在容器里真跑（见 `deploy/`）
-- 文档：`docs/00` 使用说明、`docs/08` 开发者文档
+- 文档：`使用说明.md`、`开发者文档.md`（原 `docs/00`、`docs/08`）
 
 ---
 

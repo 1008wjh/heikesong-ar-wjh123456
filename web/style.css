@@ -627,6 +627,130 @@ code {
   .fld-3, .json-2 { grid-template-columns: 1fr; }
 }
 
+/* ---------- 模块 02：对话分析 ---------- */
+
+.conv {
+  grid-column: 2 / -1;
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: var(--gap);
+  min-height: 0;
+}
+
+.conv-pick {
+  grid-row: 1 / span 2;
+  display: grid;
+  grid-template-rows: auto auto auto auto minmax(0, 1fr);
+  gap: 10px;
+  min-height: 0;
+}
+
+.conv-h2 { font-size: 24px; }
+
+.conv-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  min-height: 0;
+  border-top: 6px solid var(--line);
+}
+
+.conv-list li {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 4px;
+  border-bottom: 2px solid var(--line);
+  cursor: pointer;
+}
+
+.conv-list li:hover { background: var(--surface); }
+.conv-list li img, .conv-list li .dot {
+  width: 42px; height: 42px; object-fit: cover; display: block; background: var(--surface);
+}
+.conv-list li .nm { font-weight: 600; font-size: 13px; }
+.conv-list li .rl { font-size: 11px; color: var(--muted); }
+.conv-list li .lock {
+  font-size: 9.5px; letter-spacing: .18em; text-transform: uppercase;
+  border: 1px solid currentColor; padding: 2px 6px;
+}
+.conv-list li.is-locked { background: var(--accent); color: var(--on-accent); }
+.conv-list li.is-locked .rl { color: var(--on-accent); }
+
+.conv-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+}
+
+.conv-acts { display: flex; gap: 8px; }
+
+.conv-main {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  gap: 12px;
+  min-height: 0;
+}
+
+.conv-banner {
+  border: 6px solid var(--line);
+  background: var(--accent);
+  color: var(--on-accent);
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.conv-banner code { background: transparent; border-bottom: 2px solid currentColor; }
+
+.conv-fld { margin: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; }
+.conv-fld textarea {
+  height: 100%;
+  min-height: 180px;
+  resize: none;
+  font-size: 13px;
+  line-height: 1.75;
+}
+
+.conv-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  border-top: 2px solid var(--line);
+  padding-top: 10px;
+}
+.conv-foot-btns { display: flex; gap: 8px; }
+
+.conv-result {
+  border-top: 6px solid var(--line);
+  padding-top: 14px;
+  display: grid;
+  gap: 10px;
+}
+.conv-summary { margin: 0; font-size: 15px; }
+.conv-items { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; }
+.conv-items li {
+  display: grid;
+  grid-template-columns: 22px 86px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  font-size: 13px;
+}
+.conv-items .k { font-size: 10.5px; letter-spacing: .12em; color: var(--muted); }
+.conv-items .q { color: var(--muted); font-size: 11.5px; }
+.conv-save-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.conv-secs { font-weight: 400; color: var(--muted); margin-left: 8px; font-size: 11px; }
+.mini-btn { padding: 6px 12px; font-size: 11.5px; }
+
+@media (max-width: 1080px) {
+  .conv { grid-template-columns: 1fr; grid-template-rows: auto auto auto; }
+  .conv-pick { grid-row: auto; max-height: 300px; }
+}
+
 /* ---------- 动效开关 ---------- */
 
 @media (prefers-reduced-motion: reduce) {

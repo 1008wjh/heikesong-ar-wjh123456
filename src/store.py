@@ -29,6 +29,7 @@ PHOTO_DIR = os.path.join(os.path.dirname(os.path.abspath(PEOPLE_PATH)), "photos"
 # 相似度阈值：0.40 对 MobileFaceNet 偏松一点，现场好过；太高会"认不出熟人"
 MATCH_THRESHOLD = float(os.environ.get("AR_MATCH_THRESHOLD", "0.40"))
 MAX_INFO = 3
+MAX_CONV = 20          # 每个人最多留多少条对话记录
 
 
 class Store:
@@ -89,6 +90,10 @@ class Store:
                 changed = True
             if "complex" not in p:
                 p["complex"] = {}
+                changed = True
+            if "conversations" not in p:
+                # 对话分析模块留下的记录：[{at, transcript, summary, items}]
+                p["conversations"] = []
                 changed = True
             p["info"] = list(p.get("info") or [])[:MAX_INFO]
 
@@ -284,6 +289,46 @@ class Store:
                 return None
             p["last_met"] = time.strftime("%Y-%m-%d")
             p["meet_count"] = int(p.get("meet_count", 0)) + 1
+            self._save()
+            return self._public(p)
+
+    # ---------- 对话分析 ----------
+
+    def merge_facts(self, pid, items, transcript="", summary=""):
+        """把「对话里提取出来的要点」并进档案。
+
+        - 要点进 complex["对话要点"]（dict，同 key 覆盖，保留最新一条）
+        - 原文和摘要进 conversations（最多留 MAX_CONV 条）
+        - 不碰 embeddings / voice_embeddings，也不改 simple（simple 是给镜片直显的，得人工确认）
+        """
+        with self._lock:
+            p = self._raw(pid)
+            if not p:
+                return None
+            facts = p.setdefault("complex", {}).setdefault("对话要点", {})
+            if not isinstance(facts, dict):
+                facts = {}
+                p["complex"]["对话要点"] = facts
+            for it in items or []:
+                key = str(it.get("key") or "其他").strip()[:8]
+                val = str(it.get("value") or "").strip()[:40]
+                if val:
+                    facts[key] = val
+
+            convs = p.setdefault("conversations", [])
+            convs.append(
+                {
+                    "at": _now(),
+                    "summary": _clean(summary or ""),
+                    "transcript": _clean(transcript or ""),
+                    "items": [
+                        {"key": str(i.get("key") or ""), "value": str(i.get("value") or "")}
+                        for i in (items or [])
+                    ],
+                }
+            )
+            p["conversations"] = convs[-MAX_CONV:]
+            p["last_met"] = time.strftime("%Y-%m-%d")
             self._save()
             return self._public(p)
 

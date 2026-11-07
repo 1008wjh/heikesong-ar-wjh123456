@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 import traceback
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 
@@ -18,6 +19,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cards  # noqa: E402
+import llm  # noqa: E402
 import voice  # noqa: E402
 from face import FaceEngine  # noqa: E402
 from store import MATCH_THRESHOLD, Store  # noqa: E402
@@ -34,6 +36,11 @@ engine = FaceEngine()
 # 眼镜端（IrisView 应用）没有摄像头，只能"看"这里的最新一帧结果。
 _LAST = {"rev": 0, "faces": [], "at": 0, "ms": 0, "kind": ""}
 _LAST_LOCK = threading.Lock()
+
+# 对话分析（模块 02）的会话：只活在内存里，服务重启就没了
+_CONV = {}
+_CONV_LOCK = threading.Lock()
+_CONV_MAX_CHUNKS = 200
 
 MIME = {
     ".html": "text/html; charset=utf-8",
@@ -162,6 +169,8 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/card/") and path.endswith("/full"):
             pid = path[len("/api/card/"):-len("/full")].strip("/")
             return self._card_full(pid)
+        if path == "/api/converse/llm":
+            return self._json({"ok": True, **llm.status()})
         return self._static(path)
 
     def do_POST(self):
@@ -178,6 +187,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._save_person(body)
             if path == "/api/people/delete":
                 return self._delete_person(body)
+            if path == "/api/converse/start":
+                return self._conv_start(body)
+            if path == "/api/converse/chunk":
+                return self._conv_chunk(body)
+            if path == "/api/converse/text":
+                return self._conv_text(body)
+            if path == "/api/converse/analyze":
+                return self._conv_analyze(body)
+            if path == "/api/converse/save":
+                return self._conv_save(body)
             if path == "/api/enroll":
                 return self._enroll(body)
             if path == "/api/note":
@@ -347,6 +366,92 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 pass
         return self._json({"ok": True})
+
+    # ---------- 模块 02：单人对话 → 大模型析出要点 ----------
+
+    def _conv_start(self, body):
+        pid = (body.get("person_id") or "").strip()
+        if not pid:
+            raise ValueError("先锁定一个人")
+        person = store.get(pid)
+        if not person:
+            return self._json({"ok": False, "error": "没有这个人"}, 404)
+        sid = "c_" + uuid.uuid4().hex[:10]
+        with _CONV_LOCK:
+            _CONV[sid] = {
+                "id": sid,
+                "person_id": pid,
+                "name": person.get("name", ""),
+                "started": time.time(),
+                "chunks": 0,
+                "transcript": "",
+                "analyzed": None,
+            }
+        return self._json({"ok": True, "session": sid,
+                           "person": {"id": pid, "name": person.get("name", ""),
+                                      "role": person.get("role", "")},
+                           "llm": llm.status()})
+
+    def _conv_get(self, body):
+        sid = (body.get("session") or "").strip()
+        with _CONV_LOCK:
+            s = _CONV.get(sid)
+        if not s:
+            raise ValueError("会话不存在或服务重启过，重新开一段")
+        return sid, s
+
+    def _conv_chunk(self, body):
+        sid, s = self._conv_get(body)
+        audio = decode_audio(body.get("audio"))
+        if not audio:
+            raise ValueError("这段音频是空的")
+        text = llm.transcribe(audio)
+        with _CONV_LOCK:
+            s["chunks"] += 1
+            if s["chunks"] > _CONV_MAX_CHUNKS:
+                raise ValueError("这段对话太长了，先停下来分析一下")
+            s["transcript"] = (s["transcript"] + ("\n" if s["transcript"] else "") + text)
+            transcript = s["transcript"]
+        return self._json({"ok": True, "text": text, "transcript": transcript,
+                           "seconds": round(time.time() - s["started"], 1)})
+
+    def _conv_text(self, body):
+        """手动补一句/改一句：转写有错时用，或者在没麦克风的机器上试。"""
+        sid, s = self._conv_get(body)
+        text = (body.get("text") or "").strip()
+        if not text and body.get("replace"):
+            raise ValueError("内容是空的")
+        with _CONV_LOCK:
+            if body.get("replace"):
+                s["transcript"] = text
+            else:
+                s["transcript"] = (s["transcript"] + ("\n" if s["transcript"] else "") + text)
+            transcript = s["transcript"]
+        return self._json({"ok": True, "transcript": transcript})
+
+    def _conv_analyze(self, body):
+        sid, s = self._conv_get(body)
+        person = store.get(s["person_id"]) or {"name": s["name"]}
+        with _CONV_LOCK:
+            transcript = s["transcript"]
+        result = llm.analyze(transcript, person)
+        with _CONV_LOCK:
+            s["analyzed"] = result
+        return self._json({"ok": True, "transcript": transcript, **result})
+
+    def _conv_save(self, body):
+        sid, s = self._conv_get(body)
+        items = body.get("items")
+        with _CONV_LOCK:
+            analyzed = s.get("analyzed") or {}
+            transcript = s["transcript"]
+        if items is None:
+            items = analyzed.get("items") or []
+        summary = body.get("summary", analyzed.get("summary", ""))
+        person = store.merge_facts(s["person_id"], items, transcript=transcript, summary=summary)
+        if not person:
+            return self._json({"ok": False, "error": "这个人已经被删了"}, 404)
+        return self._json({"ok": True, "person": person, "saved": len(items)})
 
     def _enroll(self, body):
         name = (body.get("name") or "").strip()

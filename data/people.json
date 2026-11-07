@@ -563,7 +563,8 @@
      "2026-03 一起吃过饭"
     ],
     "待办": "寄球衣"
-   }
+   },
+   "conversations": []
   },
   {
    "id": "p_f7e963",
@@ -1103,7 +1104,8 @@
    "simple": {
     "身份": "测试图"
    },
-   "complex": {}
+   "complex": {},
+   "conversations": []
   },
   {
    "id": "p_a0debb",
@@ -6269,7 +6271,8 @@
    "simple": {
     "身份": "政客"
    },
-   "complex": {}
+   "complex": {},
+   "conversations": []
   },
   {
    "id": "p_0c1a41",
@@ -7326,7 +7329,8 @@
    "simple": {
     "信息1": "我的朋友"
    },
-   "complex": {}
+   "complex": {},
+   "conversations": []
   },
   {
    "id": "p_8264d6",
@@ -7546,7 +7550,8 @@
     "信息1": "答应下周给报价单",
     "信息2": "养了一只叫豆豆的猫"
    },
-   "complex": {}
+   "complex": {},
+   "conversations": []
   }
  ],
  "version": 1

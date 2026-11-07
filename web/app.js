@@ -6,7 +6,7 @@
 const $ = (s) => document.querySelector(s);
 
 // 改代码就 +1，页脚会显示。看到 build 不是最新的，说明浏览器还在跑旧脚本。
-const BUILD = 14;
+const BUILD = 15;
 
 const state = { people: [], threshold: 0.4 };
 
@@ -358,6 +358,346 @@ async function finishVoice(r) {
 
 /* ---------------- 绑定 ---------------- */
 
+/* ---------------- 模块 02：单人对话分析 ---------------- */
+
+const CONV_CHUNK_MS = 6000;   // 每 6 秒切一段送上去转写，避免一次性传几分钟音频
+const CONV_MIN_FRAMES = 3;    // 攒够 3 帧（约 0.2s）才切，避免碎片
+
+const conv = {
+  llm: null,
+  person: null,
+  session: null,
+  serverText: '',
+  running: false,
+  ctx: null,
+  stream: null,
+  proc: null,
+  buf: [],
+  flushing: false,
+  startedAt: 0,
+  ticker: null,
+  chunkTimer: null,
+  items: [],
+};
+
+function setModule(name) {
+  const onConv = name === 'conv';
+  const convEl = $('#conv');
+  if (!convEl) return;
+  convEl.hidden = !onConv;
+  if ($('#contentPeople')) $('#contentPeople').hidden = onConv;
+  if ($('#listcol')) $('#listcol').hidden = onConv;
+  if ($('#modPeople')) $('#modPeople').classList.toggle('is-active', !onConv);
+  if ($('#modConv')) $('#modConv').classList.toggle('is-active', onConv);
+  if ($('#modConv')) $('#modConv').setAttribute('aria-current', onConv ? 'page' : 'false');
+  if (onConv) {
+    convBindOnce();
+    renderConvPeople();
+    loadConvLlm();
+  }
+}
+
+async function loadConvLlm() {
+  if (conv.llm) return;
+  try {
+    const r = await fetch('/api/converse/llm').then((x) => x.json());
+    conv.llm = r;
+  } catch (e) {
+    conv.llm = { available: false };
+  }
+  const banner = $('#convBanner');
+  if (banner) {
+    if (!conv.llm.available) {
+      banner.hidden = false;
+      banner.innerHTML = '没配 <code>MIMO_API_KEY</code>：录音、转写、分析都用不了。'
+        + '在启动前设这个环境变量再重启服务，就能用了（模型 ' + (conv.llm.model || 'mimo') + '）。';
+    } else if (conv.llm.stub) {
+      banner.hidden = false;
+      banner.textContent = '当前是 stub 模式（AR_LLM_STUB=1），返回的是假数据，只用于测试。';
+    } else {
+      banner.hidden = true;
+    }
+  }
+  if (conv.person) $('#convRec').disabled = !conv.llm.available;
+}
+
+function convFiltered() {
+  const q = ($('#convSearch') ? $('#convSearch').value : '').trim().toLowerCase();
+  return state.people.filter((p) => {
+    if (!q) return true;
+    return (p.name || '').toLowerCase().includes(q) || (p.role || '').toLowerCase().includes(q);
+  });
+}
+
+function makeDot() {
+  const d = document.createElement('div');
+  d.className = 'dot';
+  return d;
+}
+
+function renderConvPeople() {
+  const ul = $('#convPeople');
+  if (!ul) return;
+  ul.innerHTML = '';
+  const list = convFiltered();
+  if (!list.length) {
+    const li = document.createElement('li');
+    li.className = 'conv-empty';
+    li.textContent = '没有匹配的人；先去「01 人物数据」建一个';
+    ul.appendChild(li);
+    return;
+  }
+  list.forEach((p) => {
+    const li = document.createElement('li');
+    if (conv.person && conv.person.id === p.id) li.classList.add('is-locked');
+    const src = p.photo ? photoUrl(p) : '';
+    if (src) {
+      const img = document.createElement('img');
+      img.src = src;
+      img.alt = '';
+      img.onerror = () => { img.replaceWith(makeDot()); };
+      li.appendChild(img);
+    } else {
+      li.appendChild(makeDot());
+    }
+    const box = document.createElement('div');
+    const nm = document.createElement('div');
+    nm.className = 'nm';
+    nm.textContent = p.name;
+    const rl = document.createElement('div');
+    rl.className = 'rl';
+    rl.textContent = p.role || '未填身份';
+    box.appendChild(nm);
+    box.appendChild(rl);
+    li.appendChild(box);
+
+    const tag = document.createElement('span');
+    tag.className = 'lock';
+    tag.textContent = conv.person && conv.person.id === p.id ? '已锁定' : '锁定';
+    li.appendChild(tag);
+
+    li.onclick = () => lockPerson(p);
+    ul.appendChild(li);
+  });
+}
+
+async function lockPerson(p) {
+  if (conv.running) return toast('先停止录音再换人', true);
+  conv.person = p;
+  conv.items = [];
+  const r = await post('/api/converse/start', { person_id: p.id });
+  if (!r.ok) { conv.person = null; return toast(r.error || '锁定失败', true); }
+  conv.session = r.session;
+  conv.serverText = '';
+  if ($('#convText')) $('#convText').value = '';
+  if ($('#convResult')) $('#convResult').hidden = true;
+  $('#convTitle').textContent = p.name;
+  $('#convMeta').textContent = (p.role || '未填身份') + ' · 已锁定，会话 ' + r.session;
+  convState('锁定成功，按「开始录音」');
+  $('#convAnalyze').disabled = true;
+  $('#convRec').disabled = !(conv.llm && conv.llm.available);
+  renderConvPeople();
+}
+
+function convState(txt) {
+  if ($('#convState')) $('#convState').textContent = txt;
+}
+
+function convSecs() {
+  const s = Math.floor((Date.now() - conv.startedAt) / 1000);
+  if ($('#convSecs')) $('#convSecs').textContent = conv.running ? s + ' 秒' : '待机';
+}
+
+async function convStart() {
+  if (!conv.person) return toast('先锁一个人', true);
+  if (!conv.llm || !conv.llm.available) return toast('没配 MIMO_API_KEY，转写用不了', true);
+  if (conv.running) return;
+  try {
+    conv.stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+    });
+  } catch (e) {
+    return toast('拿不到麦克风：' + e.message, true);
+  }
+  conv.ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const src = conv.ctx.createMediaStreamSource(conv.stream);
+  conv.proc = conv.ctx.createScriptProcessor(4096, 1, 1);
+  conv.proc.onaudioprocess = (ev) => {
+    conv.buf.push(new Float32Array(ev.inputBuffer.getChannelData(0)));
+  };
+  src.connect(conv.proc);
+  conv.proc.connect(conv.ctx.destination);   // 不接出去某些浏览器不回调；输出是静音，不会啸叫
+
+  conv.running = true;
+  conv.buf = [];
+  conv.startedAt = Date.now();
+  conv.ticker = setInterval(convSecs, 500);
+  conv.chunkTimer = setInterval(() => convFlush(false), CONV_CHUNK_MS);
+  $('#convRec').hidden = true;
+  $('#convStop').hidden = false;
+  convState('录音中…每 6 秒自动送一段去转写');
+}
+
+async function convFlush(final) {
+  if (conv.flushing) return;
+  if (!conv.buf.length) return;
+  if (!final && conv.buf.length < CONV_MIN_FRAMES) return;
+  conv.flushing = true;
+  const chunks = conv.buf;
+  conv.buf = [];
+  try {
+    const sr = conv.ctx ? conv.ctx.sampleRate : 16000;
+    const wav = floatToWav(chunks, sr);
+    const url = await blobToDataURL(new Blob([wav], { type: 'audio/wav' }));
+    const r = await post('/api/converse/chunk', { session: conv.session, audio: url });
+    if (!r.ok) throw new Error(r.error || '转写失败');
+    conv.serverText = r.transcript;
+    if ($('#convText')) $('#convText').value = conv.serverText;
+    convState('已转写 ' + r.transcript.length + ' 字 · ' + r.seconds + ' 秒');
+  } catch (e) {
+    toast('这段没转成：' + e.message, true);
+  } finally {
+    conv.flushing = false;
+  }
+}
+
+async function convStop() {
+  if (!conv.running) return;
+  conv.running = false;
+  clearInterval(conv.ticker);
+  clearInterval(conv.chunkTimer);
+  try { conv.proc.disconnect(); } catch (e) { /* 已断开 */ }
+  try { conv.ctx.close(); } catch (e) { /* 已关闭 */ }
+  try { conv.stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* 已停止 */ }
+  conv.proc = null;
+  conv.ctx = null;
+  conv.stream = null;
+  $('#convRec').hidden = false;
+  $('#convStop').hidden = true;
+  convSecs();
+  await convFlush(true);
+  convState(conv.serverText ? '录音结束，可以点「分析这段对话」' : '这次没听到内容');
+  $('#convAnalyze').disabled = !conv.serverText.trim();
+}
+
+async function convAnalyze() {
+  if (!conv.session) return toast('先锁一个人', true);
+  const box = ($('#convText') ? $('#convText').value : '').trim();
+  if (!box) return toast('还没有内容，先录一段或粘一段', true);
+  $('#convAnalyze').disabled = true;
+  const old = $('#convAnalyze').textContent;
+  $('#convAnalyze').textContent = '分析中…';
+  try {
+    if (box !== conv.serverText) {
+      const r1 = await post('/api/converse/text', { session: conv.session, text: box, replace: true });
+      if (!r1.ok) throw new Error(r1.error || '文本没存上');
+      conv.serverText = r1.transcript;
+    }
+    const r = await post('/api/converse/analyze', { session: conv.session });
+    if (!r.ok) throw new Error(r.error || '分析失败');
+    conv.items = (r.items || []).map((it) => ({ ...it, on: true }));
+    $('#convSummary').textContent = r.summary || '（模型没给概括）';
+    renderConvItems();
+    $('#convResult').hidden = false;
+    convState('分析完成 · ' + conv.items.length + ' 条要点');
+  } catch (e) {
+    toast('分析失败：' + e.message, true);
+  } finally {
+    $('#convAnalyze').textContent = old;
+    $('#convAnalyze').disabled = false;
+  }
+}
+
+function renderConvItems() {
+  const ul = $('#convItems');
+  if (!ul) return;
+  ul.innerHTML = '';
+  conv.items.forEach((it, i) => {
+    const li = document.createElement('li');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = it.on !== false;
+    cb.onchange = () => { conv.items[i].on = cb.checked; refreshConvSave(); };
+    const k = document.createElement('span');
+    k.className = 'k';
+    k.textContent = it.key || '其他';
+    const v = document.createElement('span');
+    v.textContent = it.value;
+    if (it.quote) {
+      const q = document.createElement('span');
+      q.className = 'q';
+      q.textContent = '（原话：' + it.quote + '）';
+      v.appendChild(document.createElement('br'));
+      v.appendChild(q);
+    }
+    li.appendChild(cb);
+    li.appendChild(k);
+    li.appendChild(v);
+    ul.appendChild(li);
+  });
+  refreshConvSave();
+}
+
+function refreshConvSave() {
+  const n = conv.items.filter((i) => i.on !== false).length;
+  const btn = $('#convSave');
+  if (!btn) return;
+  btn.disabled = n === 0;
+  btn.textContent = n ? '写入档案（' + n + ' 条）' : '没有可写的';
+}
+
+async function convSave() {
+  const picked = conv.items.filter((i) => i.on !== false)
+    .map((i) => ({ key: i.key, value: i.value }));
+  if (!picked.length) return;
+  const btn = $('#convSave');
+  btn.disabled = true;
+  btn.textContent = '写入中…';
+  try {
+    const r = await post('/api/converse/save', { session: conv.session, items: picked });
+    if (!r.ok) throw new Error(r.error || '写入失败');
+    await loadPeople();
+    renderConvPeople();
+    toast('已写进 ' + r.person.name + ' 的档案：' + r.saved + ' 条');
+    convState('已写入档案 · 复杂数据里多了「对话要点」');
+  } catch (e) {
+    toast('写入失败：' + e.message, true);
+  } finally {
+    refreshConvSave();
+  }
+}
+
+function convClear() {
+  if (conv.running) return toast('先停止录音', true);
+  if ($('#convText')) $('#convText').value = '';
+  if ($('#convResult')) $('#convResult').hidden = true;
+  conv.items = [];
+  conv.serverText = '';
+  if (conv.session && $('#convText')) {
+    post('/api/converse/text', { session: conv.session, text: '', replace: true });
+  }
+  $('#convAnalyze').disabled = true;
+  convState('已清空，可以重新录');
+}
+
+let convBound = false;
+function convBindOnce() {
+  if (convBound) return;
+  convBound = true;
+  if ($('#convSearch')) $('#convSearch').oninput = renderConvPeople;
+  if ($('#convText')) {
+    // 手打/粘贴也要能直接分析：有字就把按钮点亮
+    $('#convText').oninput = () => {
+      $('#convAnalyze').disabled = !$('#convText').value.trim();
+    };
+  }
+  if ($('#convRec')) $('#convRec').onclick = convStart;
+  if ($('#convStop')) $('#convStop').onclick = convStop;
+  if ($('#convAnalyze')) $('#convAnalyze').onclick = convAnalyze;
+  if ($('#convSave')) $('#convSave').onclick = convSave;
+  if ($('#convClear')) $('#convClear').onclick = convClear;
+}
+
 function bind() {
   const buildEl = $('#build');
   if (buildEl) buildEl.textContent = 'build ' + BUILD;
@@ -365,6 +705,8 @@ function bind() {
   const add = () => openEditor(null);
   if ($('#btnAdd')) $('#btnAdd').onclick = add;
   if ($('#btnAdd2')) $('#btnAdd2').onclick = add;
+  if ($('#modPeople')) $('#modPeople').onclick = () => setModule('people');
+  if ($('#modConv')) $('#modConv').onclick = () => setModule('conv');
   if ($('#search')) $('#search').oninput = renderPeople;
   if ($('#edCancel')) $('#edCancel').onclick = closeEditor;
   if ($('#edSave')) $('#edSave').onclick = savePerson;
