@@ -555,13 +555,35 @@ function makeFakeSession() {
 
 // 关掉当前会话、等平台回收完再开下一条（end 事件之后必须留出这段时间）
 function restartSession(c, delay) {
-  try { if (c.session) c.session.finish(); } catch (e) { /* 已经结束 */ }
+  const old = c.session;
   c.session = null;
+  closeSession(old);
   if (c.stopped) return;
   setTimeout(() => {
     if (!capture || capture.stopped || capture.session) return;
     openSession();
-  }, delay || 400);
+  }, delay || 600);
+}
+
+// 关掉一条语音会话，并把它的 end 事件消费掉 —— 平台只有看到 end 被读走，
+// 才会认为设备已释放；否则下一次 requestVoiceInput 会报"麦克风繁忙"。
+function closeSession(session, done) {
+  if (!session) { if (done) done(); return; }
+  try { session.cancel(); } catch (e) { /* 已结束 */ }
+  try { session.finish(); } catch (e) { /* 已结束 */ }
+  const t0 = Date.now();
+  (function drainEnd() {
+    let guard = 0;
+    try {
+      while (guard++ < 64) {
+        const ev = session.takeEvent();
+        if (!ev) break;
+        if (ev.type === "end") { if (done) done(); return; }
+      }
+    } catch (e) { /* 会话已失效 */ }
+    if (Date.now() - t0 < 1500) setTimeout(drainEnd, 60);
+    else if (done) done();
+  })();
 }
 
 function openSession() {
@@ -711,7 +733,7 @@ async function startListening(mode) {
   if (capture || background) return;
   listenSig = "";
   // 上一段刚结束时会话还没被平台释放，立刻再申请就会报"麦克风繁忙"
-  const cool = 1200 - (Date.now() - (endedAt || 0));
+  const cool = 2200 - (Date.now() - (endedAt || 0));
   if (cool > 0) {
     paintIdle("稍等 · 麦克风正在释放");
     await new Promise((r) => setTimeout(r, cool));
@@ -840,7 +862,9 @@ async function stopAndArchive(msg) {
   listenSig = "";
   c.stopped = true;
   if (c.pumpTimer) clearTimeout(c.pumpTimer);
-  try { if (c.session) c.session.finish(); } catch (e) { /* 已经结束 */ }
+  const closing = c.session;
+  c.session = null;
+  closeSession(closing);
   const bytes = c.samples * 2;
   if (bytes >= 16000 * 2 * (SLICE_MIN_MS / 1000)) {
     c.queue.push(toWav(c.chunks, bytes));
