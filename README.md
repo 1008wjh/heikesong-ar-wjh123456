@@ -47,14 +47,16 @@ python src/server.py        # 打开 http://127.0.0.1:8765
 3. 镜片空屏时按一下「确认」→ 开始录音 → 说完自动停 → 认出后浮出卡片，状态行写「听到 · 53ms」。
 4. 再按「确认」翻详情页（复杂数据），「返回」清屏。
 
-### 路线二：摄像头（兜底 / 临时替代）
+### 路线二：用一张照片验人脸通道（不需要摄像头）
 
-1. 点「开启摄像头」→ 只是**预览**，不识别、不弹提示、不画框。
-2. 对准人，按 **「抓拍」（或空格键）** → 这一帧送到后端识别，画面**冻结**。
-3. 陌生人 → 面板里「记住他」→ 输名字 → 入库 → 同一帧自动重识别，卡片立刻变青色。
-4. 按「重拍」（或 R 键）回到预览。
+控制台现在**只管数据**（没有摄像头按钮了）。识别通道用命令行验，一条命令出一个结果：
 
-没有摄像头也能演示：地址后面加 `?demo=1`（单人）或 `?demo=2`（双人），会回放 `test/` 里的照片。
+```powershell
+python tools\try_face.py test\messi5.jpg     # known 里奥 sim=1.000
+python tools\try_face.py test\biden.jpg      # unknown 陌生人
+```
+
+人脸通道的接口没变（`POST /api/scan`），手机端或别的采集端照样能接。
 
 ---
 
@@ -152,7 +154,7 @@ curl -s -X POST http://127.0.0.1:8765/api/v1/speaker/bind \
 | `src/diarize.py` | v3 多人分离：pyannote 分段 + CAM++ 逐段声纹 + 自研聚类 + 实名映射（无模型时退回能量 VAD） |
 | `src/meeting.py` | v3 会议会话：分片落盘、合并、finalize、绑定实名、锚点回放、眼镜会议卡片 |
 | `src/asr.py` | v3 云端 ASR 预留适配层（aliyun/tencent/volcano/off），统一 `{spk_id,start,end,text}` 契约 |
-| `web/` | 眼镜视角 UI：预览 → 抓拍 → 冻结帧 + 框 + 左下角信息面板；右侧控制台增删改查 |
+| `web/` | 控制台：左侧人脉库列表，右侧编辑表单（照片 / 名字 / 身份 / 信息×3 / 两档 JSON / 录声纹）。没有摄像头 |
 | `test/smoke.py` | 管线冒烟测试（同人/不同人相似度） |
 | `test/voice_api_test.py` | 声纹接口 13 项（注册、同人换句、串号、latest、说得太短） |
 | `test/diarize_test.py` | v3 多人分离 25 项（聚类/二次合并/碎片并入/重叠清洗/静音 + 3 人会议零串号） |
@@ -161,7 +163,7 @@ curl -s -X POST http://127.0.0.1:8765/api/v1/speaker/bind \
 | `test/api_test.py` | 端到端 14 项（识别、抗干扰、陌生人、录入、卡片 == 信息 1/2/3） |
 | `test/api_console.py` | 控制台接口 15 项（增删改查、换图、空名拒绝、照片 404） |
 | `test/e2e_console.js` | 真浏览器跑控制台 9 项（点新增、上传图、保存、编辑、删除） |
-| `test/dom_sim.js` | 前端回归 11 项（抓拍一次只识别一次、按钮不被重建、入库后变青色） |
+| `test/dom_sim.js` | 控制台前端 17 项（列表渲染、表单回填、保存提交的 JSON、坏 JSON 被拦住） |
 | `test/glasses_sim.js` | 眼镜端 17 项：假 FusionUI + 假麦克风跑真后端，断言镜片上写出什么字、按「确认」能不能翻到详情 |
 | `glasses/` | 眼镜端 FusionUI 应用源码（`src/index.js`），打包产物在 `glasses/dist/` |
 | `dist/memorylens.fuiapp` | 打好的包（1.6.2 / versionCode 18 / debug-unsigned），给模拟器或真机 |
@@ -174,7 +176,8 @@ curl -s -X POST http://127.0.0.1:8765/api/v1/speaker/bind \
 | `tools/hud_preview.py` | 按眼镜端坐标把 HUD 画成 PNG：`python tools/hud_preview.py voice huihui_b` |
 | `tools/try_voice.py` | 拿一条 WAV 直接测声纹：`python tools/try_voice.py test/voice/huihui_b.wav` |
 | `tools/cdp_*.js` | 调试用：通过 Edge DevTools 协议查 DOM / 截图 / 敲键 / 跑端到端脚本 |
-| `start.bat` | 一键启动（找 Python、装依赖、开浏览器） |
+| `examples/` | 三张公开示例图（验证识别用）；**真实人脉数据只在本机 `data/`，不进仓库** |
+| `start.bat` | 一键启动（找 Python、装依赖、读 `env.local.bat`、开浏览器） |
 
 ### 控制台（人脉库增删改查）
 
@@ -196,8 +199,49 @@ curl -s -X POST http://127.0.0.1:8765/api/v1/speaker/bind \
 - **复杂数据**（`complex`）是按「确认」才展开的详情，支持嵌套：`{"家庭":{"宠物":"一只猫"},"历史":["2025 展会认识"]}`。服务端把 JSON 摊平成一行行字再发给眼镜（眼镜不会解析 JSON，也不该解析）。
 - 两个框都留空也能用：老数据会自动迁移出 `{"身份": ..., "信息1": ...}`，不丢东西。
 
+![控制台](test/console_v2_full.png)
+
 照片存 `data/photos/<id>.jpg`，取用走 `GET /api/photo?id=`；记录存在 `data/people.json`。
-改完下一次抓拍立刻生效，不用重启。录过声纹的人在列表里带一个青色「声」标；同一个人重录会**覆盖**旧声纹（不像人脸可以多张底片）。
+改完刷新页面立刻生效，不用重启服务。录过声纹的人在列表里带一个青色「声」标；同一个人重录会**覆盖**旧声纹（不像人脸可以多张底片）。
+
+### 模块 02 · 对话分析（单人）
+
+左边模块栏的第二个模块。锁一个人 → 录这一段对话 → 大模型析出"他答应了什么、偏好、近况" → 你勾选后写进档案。
+
+```
+锁定王姐 → ◉ 开始录音（每 6 秒自动转写一段）→ ■ 停止 → 分析这段对话 → 勾选 → 写入档案
+```
+
+| 环节 | 谁做的 | 说明 |
+|---|---|---|
+| 录音 | 浏览器 `getUserMedia` | 全局录音；没麦克风就**直接把原文粘进文本框**，一样能分析 |
+| 转写 | 本地 paraformer（默认）/ MiMo `mimo-v2.5-asr` / 任意 OpenAI 兼容 ASR | 服务端收 WAV 分片，累积成 transcript |
+| 析出 | 任意 OpenAI 兼容 chat：MiMo `mimo-v2.6-pro`、**DeepSeek `deepseek-chat`**、OpenAI… | 只输出结构化 JSON：`summary` + 最多 6 条 `{key, value, quote}` |
+| 落库 | `store.merge_facts()` | 并进 `complex["对话要点"]`，原文留在 `conversations`（最多 20 条） |
+
+**转写和析出分开配**，因为厂商能力不对等——DeepSeek 有对话、没有语音识别：
+
+```powershell
+# A. 全用小米 MiMo
+$env:MIMO_API_KEY = "sk-..."
+
+# B. 转写用本地模型（不要 Key）+ 析出用 DeepSeek
+powershell -File tools\get_asr_model.ps1
+$env:DEEPSEEK_API_KEY = "sk-..."
+$env:AR_LLM_PRESET = "deepseek"
+
+python src\server.py
+```
+
+配了一半也照样能用一半：只配本地转写没配文本模型时，横幅会说"能录音能转写，只是「分析」按不动"。
+
+![模块 02](test/conv_module.png)
+
+结果长这样，每条都带原话依据，勾上才会写进档案：
+
+![分析结果](test/conv_result.png)
+
+刻意没做的两件事：**多人分离**（另一个模块在做）、**自动写库**（模型会有幻觉，必须人工勾选）。
 
 ---
 
@@ -213,9 +257,10 @@ curl -s -X POST http://127.0.0.1:8765/api/v1/speaker/bind \
 - 控制台补齐增删改查 + 录声纹 + 两档 JSON
 
 **D3 · 演示与兜底（已完成）**
-- 批量导脸 `tools/enroll.py`；`?demo=1/2` 照片回放；阈值现场可调（`AR_MATCH_THRESHOLD` / `AR_VOICE_THRESHOLD`）
+- 批量导脸 `tools/enroll.py`；单张照片验证 `tools/try_face.py`；阈值现场可调（`AR_MATCH_THRESHOLD` / `AR_VOICE_THRESHOLD`）
+- 模块 02 对话分析：锁人 → 录音 → MiMo 转写/析出 → 勾选写入档案（`test/converse_api_test.py` 16 项）
 - 容器化：后端与工具链两个镜像，模拟器能在容器里真跑（见 `deploy/`）
-- 文档：`docs/00` 使用说明、`docs/08` 开发者文档
+- 文档：`使用说明.md`、`开发者文档.md`（原 `docs/00`、`docs/08`）
 
 ---
 
@@ -227,7 +272,7 @@ curl -s -X POST http://127.0.0.1:8765/api/v1/speaker/bind \
 4. **高潮**：换一个"老朋友"走上来打招呼 →
    卡片底下那行：**"答应把方案发给他——还没发"**。评委笑，你就赢了。
 5. **改**：现场点「编辑」，把信息改成"下周三来杭州"，再听一次——**同一把声音，文字已经换了**。
-6. **兜底**：万一麦克风被占，切回手机抓拍（页面「抓拍」），眼镜同样显示，状态行变「看到」。
+6. **兜底**：万一麦克风被占，用手机拍一张丢给 `python tools\try_face.py`，眼镜照样显示，状态行变「看到」。
 
 一句话收尾："我们不是让人脸识别更准，是让人不必再假装记得。"
 
@@ -258,7 +303,7 @@ curl -s -X POST http://127.0.0.1:8765/api/v1/speaker/bind \
 | 风险 | 兜底 |
 |---|---|
 | 现场光线/角度导致认不出 | 阈值 `AR_MATCH_THRESHOLD` 调低到 0.35；每人多录 2–3 张（不同角度/眼镜） |
-| 眼镜上没有摄像头 | 手机/笔记本当摄像头，眼镜只做显示；架构不变 |
+| 眼镜上没有摄像头 | 手机/笔记本采集，眼镜只做显示；架构不变 |
 | 断网 | 全本地，无任何外部请求（LLM 是可选开关） |
 | 现场吵、认错人 | 声纹双条件：绝对分 ≥0.72 且比第二名高 0.08；不满足就当陌生人，不瞎猜 |
 | 被问隐私 | 主动讲：仅本人同意录入、数据留在设备、可一键删除（控制台「删」/ `/api/people/delete`） |

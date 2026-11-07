@@ -1,55 +1,25 @@
-/* MemoryLens 前端
-   流程：开摄像头只做预览（不识别、不弹提示）→ 用户按「抓拍」→ 一帧送后端
-        → 画面冻结、画框标号 → 结果固定显示在左下角面板（绝不跟脸移动）
-   所以按钮永远停在原地，不会被下一帧重建或推着跑。 */
+/* MemoryLens 控制台（纯后台页面，不含摄像头）
+   左侧人脉库列表，右侧编辑表单：照片 / 名字 / 身份 / 三条信息 / 两档 JSON / 声纹。
+   后端接口：GET /api/people、POST /api/people/save、POST /api/people/delete、
+             GET /api/photo?id=、POST /api/voice/enroll */
 
 const $ = (s) => document.querySelector(s);
 
 // 改代码就 +1，页脚会显示。看到 build 不是最新的，说明浏览器还在跑旧脚本。
-const BUILD = 12;
-const buildEl = $('#build');
-if (buildEl) buildEl.textContent = 'build ' + BUILD;
+const BUILD = 15;
 
-const video = $('#video');
-const overlay = $('#overlay');
-const ctx = overlay.getContext('2d');
-const lens = $('#lens');
-const results = $('#results');
-const hint = $('#hint');
-const btnCam = $('#btnCam');
-const btnStop = $('#btnStop');
-const btnShot = $('#btnShot');
-const btnRetake = $('#btnRetake');
-const fileIn = $('#fileIn');
+const state = { people: [], threshold: 0.4 };
 
-const state = {
-  live: false,
-  busy: false,
-  frozen: null,   // 抓拍下来的那一帧（dataURL）
-  img: null,      // 同一帧的 Image 对象
-  faces: [],
-  size: null,
-  detailId: null,
-  people: [],
-};
+let editing = null;       // 正在编辑的人（null = 新增）
+let pendingImage = null;  // 这次新选的照片（dataURL）
+let pendingVoice = null;  // 这次新录的声纹（dataURL wav），保存时一起提交
+let voiceRecording = false;
+let voiceRec = null;
 
-let enrollCard = null;   // 当前处于"录入中"的卡片（全局最多一张）
+const VOICE_SECONDS = 3;
+const BLANK_IMG = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
 
 /* ---------------- 小工具 ---------------- */
-
-function el(cls, text) {
-  const d = document.createElement('div');
-  if (cls) d.className = cls;
-  if (text !== undefined) d.textContent = text;
-  return d;
-}
-
-function mkBtn(text, fn) {
-  const b = document.createElement('button');
-  b.textContent = text;
-  if (fn) b.onclick = fn;
-  return b;
-}
 
 function post(url, body) {
   return fetch(url, {
@@ -59,329 +29,35 @@ function post(url, body) {
   }).then((x) => x.json());
 }
 
-function loadImg(url) {
-  return new Promise((res, rej) => {
-    const img = new Image();
-    img.onload = () => res(img);
-    img.onerror = () => rej(new Error('图片解码失败'));
-    img.src = url;
-  });
+let toastTimer = null;
+function toast(msg, bad) {
+  const t = $('#toast');
+  if (!t) return;
+  t.textContent = msg;
+  t.hidden = false;
+  t.classList.toggle('bad', !!bad);
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.hidden = true; }, 2600);
 }
 
-/* ---------------- 摄像头：只预览，不识别 ---------------- */
-
-async function startCamera() {
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
-      audio: false,
-    });
-    video.srcObject = stream;
-    await video.play();
-    hint.classList.add('gone');
-    state.live = true;
-    clearOverlay();
-    setMode('live');
-    fitCanvas();
-  } catch (e) {
-    alert('打不开摄像头：' + e.message + '，可以点「用照片测试」。');
-  }
+function photoUrl(p) {
+  return '/api/photo?id=' + encodeURIComponent(p.id) + '&t=' + (p.photo ? Date.now() : 0);
 }
 
-function stopCamera() {
-  state.live = false;
-  const s = video.srcObject;
-  if (s) s.getTracks().forEach((t) => t.stop());
-  video.srcObject = null;
-  state.frozen = null;
-  state.img = null;
-  state.faces = [];
-  state.size = null;
-  results.innerHTML = '';
-  results.classList.remove('show');
-  clearOverlay();
-  setMode('idle');
-}
-
-function setMode(mode) {
-  const idle = mode === 'idle';
-  const frozen = mode === 'frozen';
-  btnCam.disabled = !idle;
-  btnStop.disabled = idle;
-  btnShot.hidden = frozen;
-  btnShot.disabled = !state.live;
-  btnRetake.hidden = !frozen;
-  $('#liveState').textContent = idle ? '● 待机' : frozen ? '● 已抓拍' : '● 预览中';
-  $('#liveState').classList.toggle('off', idle);
-  $('#lensMsg').textContent = idle
-    ? '先预览，按「抓拍」才识别'
-    : frozen
-      ? '这是刚才那一帧 · 按「重拍」可继续'
-      : '画面在动，按「抓拍」拍一张';
-  hint.classList.toggle('gone', !idle);
-}
-
-/* ---------------- 抓拍 ---------------- */
-
-const grab = document.createElement('canvas');
-const gctx = grab.getContext('2d');
-
-function frameDataUrl(maxW = 960) {
-  const vw = video.videoWidth, vh = video.videoHeight;
-  if (!vw) return null;
-  const scale = Math.min(1, maxW / vw);
-  grab.width = Math.round(vw * scale);
-  grab.height = Math.round(vh * scale);
-  gctx.drawImage(video, 0, 0, grab.width, grab.height);
-  return { url: grab.toDataURL('image/jpeg', 0.85), w: grab.width, h: grab.height };
-}
-
-async function capture() {
-  if (!state.live || state.busy) return;
-  const f = frameDataUrl(960);
-  if (!f) return;
-  await showShot(f.url);
-}
-
-async function showShot(url) {
-  state.busy = true;
-  state.frozen = url;
-  lens.classList.add('snap');
-  setTimeout(() => lens.classList.remove('snap'), 300);
-
-  const img = await loadImg(url);
-  state.img = img;
-  state.faces = [];
-  state.size = null;
-  setMode('frozen');
-  drawFrame(img, [], null);                 // 先冻住画面，用户立刻看到"拍到了"
-
-  results.innerHTML = '';
-  results.appendChild(el('res empty', '正在识别…'));
-  results.classList.add('show');
-
-  try {
-    const r = await post('/api/scan', { image: url });
-    if (!r.ok) throw new Error(r.error || '识别失败');
-    $('#latency').textContent = r.ms + ' ms';
-    state.faces = r.faces || [];
-    state.size = r.size || null;
-    drawFrame(img, state.faces, state.size);
-    renderResults();
-  } catch (e) {
-    results.innerHTML = '';
-    results.appendChild(el('res empty', '识别失败：' + e.message));
-    $('#latency').textContent = '失败';
-  } finally {
-    state.busy = false;
-  }
-}
-
-function retake() {
-  if (state.live) {
-    state.frozen = null;
-    state.img = null;
-    state.faces = [];
-    state.size = null;
-    results.innerHTML = '';
-    results.classList.remove('show');
-    clearOverlay();
-    setMode('live');
-  } else {
-    stopCamera();
-  }
-}
-
-/* ---------------- 画面：冻结帧 + 框 + 编号 ---------------- */
-
-// 画布用 CSS 像素：画框坐标和页面位置共用一套坐标系。
-// 注意必须每次绘制前对齐尺寸，否则 canvas 会保持默认 300x150 被 CSS 拉伸（数字会变得巨大）。
-function fitCanvas() {
-  const r = lens.getBoundingClientRect();
-  const w = Math.round(r.width) || 800;
-  const h = Math.round(r.height) || 600;
-  if (overlay.width !== w || overlay.height !== h) {
-    overlay.width = w;
-    overlay.height = h;
-  }
-  return { w, h };
-}
-
-// 视频是 object-fit:cover，且显示时做了水平镜像
-function coverMap(sw, sh, W, H) {
-  const s = Math.max(W / sw, H / sh);
-  return { s, ox: (W - sw * s) / 2, oy: (H - sh * s) / 2 };
-}
-
-function bracket(c, x, y, w, h, len) {
-  c.beginPath();
-  c.moveTo(x, y + len); c.lineTo(x, y); c.lineTo(x + len, y);
-  c.moveTo(x + w - len, y); c.lineTo(x + w, y); c.lineTo(x + w, y + len);
-  c.moveTo(x + w, y + h - len); c.lineTo(x + w, y + h); c.lineTo(x + w - len, y + h);
-  c.moveTo(x + len, y + h); c.lineTo(x, y + h); c.lineTo(x, y + h - len);
-  c.stroke();
-}
-
-function drawFrame(img, faces, size) {
-  const { w: W, h: H } = fitCanvas();
-  ctx.clearRect(0, 0, W, H);
-  const sw = img.naturalWidth || img.width;
-  const sh = img.naturalHeight || img.height;
-  const { s, ox, oy } = coverMap(sw, sh, W, H);
-
-  // 镜像绘制：和预览时的镜像画面完全一致，冻结的瞬间不会有跳变
-  ctx.save();
-  ctx.translate(W, 0);
-  ctx.scale(-1, 1);
-  ctx.drawImage(img, ox, oy, sw * s, sh * s);
-  ctx.restore();
-
-  if (!faces || !size) return;
-
-  faces.forEach((f, i) => {
-    const [bx, by, bw, bh] = f.box;
-    const x = W - (bx + bw) * s - ox;       // 镜像
-    const y = by * s + oy;
-    const w = bw * s, h = bh * s;
-    const known = f.status === 'known';
-
-    ctx.strokeStyle = known ? 'rgba(53,224,208,.9)' : 'rgba(255,180,84,.9)';
-    ctx.lineWidth = 1.6;
-    bracket(ctx, x, y, w, h, Math.min(w, h) * 0.22);
-
-    // 编号：框上的小方块和左下角面板里的编号一一对应
-    const cz = 20;
-    const cx = Math.max(2, x);
-    const cy = y - cz - 4 < 2 ? y + 4 : y - cz - 4;
-    ctx.fillStyle = known ? 'rgba(53,224,208,.92)' : 'rgba(255,180,84,.92)';
-    ctx.fillRect(cx, cy, cz, cz);
-    ctx.fillStyle = '#04110f';
-    ctx.font = '600 12px "Cascadia Code", Consolas, monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(String(i + 1), cx + cz / 2, cy + cz / 2 + .5);
-  });
-}
-
-function clearOverlay() {
-  ctx.clearRect(0, 0, overlay.width, overlay.height);
-}
-
-/* ---------------- 结果面板（固定位置，一次渲染，不随帧刷新） ---------------- */
-
-function renderResults() {
-  results.innerHTML = '';
-  if (!state.faces.length) {
-    results.appendChild(el('res empty', '没看到脸，按「重拍」再拍一张'));
-    results.classList.add('show');
-    return;
-  }
-  state.faces.slice(0, 3).forEach((f, i) => results.appendChild(makeRes(f, i)));
-  if (state.faces.length > 3) {
-    results.appendChild(el('res more', '还有 ' + (state.faces.length - 3) + ' 张脸没显示'));
-  }
-  results.classList.add('show');
-}
-
-function makeRes(f, i) {
-  const known = f.status === 'known';
-  const d = el('res ' + (known ? 'known' : 'unknown'));
-  d.__f = f;
-  d.__i = i;
-
-  const hd = el('hd');
-  hd.appendChild(el('numbadge', String(i + 1)));
-  hd.appendChild(el('nm', f.name));
-  if (f.similarity >= 0) hd.appendChild(el('sim', 'SIM ' + f.similarity.toFixed(2)));
-  d.appendChild(hd);
-
-  if (f.role) d.appendChild(el('role', f.role));
-  (f.lines || []).forEach((ln) => d.appendChild(el('ln', ln)));
-
-  if (!known) {
-    const act = el('act');
-    act.appendChild(mkBtn('记住他', () => startEnroll(d, f, i)));
-    d.appendChild(act);
-  }
-  return d;
-}
-
-/* ---------------- 录入：陌生人 → 入库 ---------------- */
-
-function startEnroll(res, f, i) {
-  // 同一时刻只允许一张卡片处于"录入中"，否则会出现两个「记住他」/两个输入框
-  if (enrollCard && enrollCard !== res) resetEnroll(enrollCard);
-  const act = res.querySelector('.act');
-  if (!act || act.querySelector('input')) return;
-  enrollCard = res;
-  if (f) { res.__f = f; res.__i = i; }
-  act.innerHTML = '';
-  const input = document.createElement('input');
-  input.placeholder = '他的名字';
-  const ok = mkBtn('保存');
-  const cancel = mkBtn('取消');
-  act.append(input, ok, cancel);
-  input.focus();
-
-  const face = f || res.__f;
-  cancel.onclick = () => resetEnroll(res);
-
-  ok.onclick = async () => {
-    const name = input.value.trim();
-    if (!name) return input.focus();
-    if (!state.frozen) return alert('画面没了，重拍一张');
-    ok.disabled = true;
-    const r = await post('/api/enroll', {
-      name,
-      image: state.frozen,
-      box: [face.box[0] + face.box[2] / 2, face.box[1] + face.box[3] / 2],
-    });
-    if (!r.ok) {
-      ok.disabled = false;
-      return alert('录入失败：' + r.error);
-    }
-    await loadPeople();
-    // 同一帧再识别一次：刚才的陌生人应该立刻变成青色
-    await rescan();
-  };
-}
-
-// 把某张卡片从"录入中"还原成「记住他」按钮
-function resetEnroll(res) {
-  if (enrollCard === res) enrollCard = null;
-  if (!res || !res.isConnected) return;
-  const act = res.querySelector('.act');
-  if (!act) return;
-  act.innerHTML = '';
-  act.appendChild(mkBtn('记住他', () => startEnroll(res, res.__f, res.__i)));
-}
-
-async function rescan() {
-  if (!state.frozen || !state.img) return;
-  try {
-    const r = await post('/api/scan', { image: state.frozen });
-    if (!r.ok) return;
-    $('#latency').textContent = r.ms + ' ms';
-    state.faces = r.faces || [];
-    state.size = r.size || null;
-    drawFrame(state.img, state.faces, state.size);
-    renderResults();
-  } catch (_) { /* 静默：界面保持原样 */ }
-}
-
-/* ---------------- 控制台：人脉库增删改查 ---------------- */
+/* ---------------- 列表 ---------------- */
 
 async function loadPeople() {
   const r = await fetch('/api/people').then((x) => x.json());
   state.people = r.people || [];
+  state.threshold = r.threshold || 0.4;
   $('#count').textContent = `库中 ${state.people.length} 人`;
-  $('#thresholdTag').textContent = '阈值 ' + r.threshold.toFixed(2);
+  $('#thresholdTag').textContent = '阈值 ' + Number(state.threshold).toFixed(2);
   renderPeople();
 }
 
 function renderPeople() {
   const ul = $('#people');
-  const q = ($('#search').value || '').trim().toLowerCase();
+  const q = (($('#search') && $('#search').value) || '').trim().toLowerCase();
   const list = state.people.filter(
     (p) => !q || (p.name + ' ' + (p.role || '')).toLowerCase().includes(q)
   );
@@ -389,18 +65,19 @@ function renderPeople() {
   if (!list.length) {
     const li = document.createElement('li');
     li.className = 'muted';
-    li.textContent = state.people.length ? '没有匹配的人' : '还没有人，点「+ 新增」录一个';
+    li.textContent = state.people.length ? '没有匹配的人' : '还没有人，点「+ 新增人物」';
     ul.appendChild(li);
     return;
   }
   list.forEach((p) => {
     const li = document.createElement('li');
     li.className = 'person';
+    if (editing && editing.id === p.id) li.classList.add('sel');
 
     const av = document.createElement('img');
     av.className = 'av';
     av.alt = '';
-    if (p.photo) av.src = '/api/photo?id=' + encodeURIComponent(p.id) + '&t=' + Date.now();
+    if (p.photo) av.src = photoUrl(p);
     else av.classList.add('ph');
 
     const who = document.createElement('div');
@@ -421,73 +98,46 @@ function renderPeople() {
 
     const acts = document.createElement('div');
     acts.className = 'acts';
-    const ed = mkBtn('编辑', () => openEditor(p.id));
+    const ed = document.createElement('button');
     ed.className = 'mini';
-    const del = mkBtn('删', () => deletePerson(p));
+    ed.textContent = '编辑';
+    ed.onclick = (e) => { e.stopPropagation(); openEditor(p.id); };
+    const del = document.createElement('button');
     del.className = 'mini ghost';
+    del.textContent = '删';
+    del.onclick = (e) => { e.stopPropagation(); deletePerson(p); };
     acts.append(ed, del);
 
     li.append(av, who, acts);
-    li.onclick = (e) => { if (e.target.tagName !== 'BUTTON') openEditor(p.id); };
+    li.onclick = () => openEditor(p.id);
     ul.appendChild(li);
   });
 }
 
-/* ---------------- 新增 / 编辑弹窗 ---------------- */
+/* ---------------- 编辑器 ---------------- */
 
-let editing = null;      // null = 新增
-let pendingImage = null; // 这次新选的照片（dataURL）
-let pendingVoice = null; // 这次新录的声纹（dataURL wav），保存时一起提交
-let voiceRecording = false;
-
-function openEditor(id) {
-  editing = (id && state.people.find((p) => p.id === id)) || null;
-  pendingImage = null;
-  pendingVoice = null;
-  voiceRecording = false;
-  $('#edTitle').textContent = editing ? '编辑 · ' + editing.name : '新增人物';
-  $('#edName').value = editing ? editing.name : '';
-  $('#edRole').value = editing ? editing.role || '' : '';
-  const info = (editing && editing.info) || [];
-  ['#ed1', '#ed2', '#ed3'].forEach((s, i) => { $(s).value = info[i] || ''; });
-  $('#edSimple').value = jsonText(editing && editing.simple);
-  $('#edComplex').value = jsonText(editing && editing.complex);
-  setEdPhoto(editing && editing.photo
-    ? '/api/photo?id=' + encodeURIComponent(editing.id) + '&t=' + Date.now()
-    : '');
-  $('#edPhotoHint').textContent = '正脸、光线均匀、别戴帽子';
-  const vc = (editing && editing.voice_count) || 0;
-  $('#edVoiceHint').textContent = vc > 0
-    ? '已有 ' + vc + ' 条声纹，重录会覆盖'
-    : '说一句「我是 XXX」，眼镜就能听声认人';
-  $('#edVoice').textContent = '◉ 录声纹（3 秒）';
-  $('#edDelete').hidden = !editing;
-  $('#editor').hidden = false;
-  setTimeout(() => $('#edName').focus(), 30);
-}
-
-const BLANK_IMG = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
-
-// 两档数据在弹窗里是 JSON 文本框：给人看要好读，空的就别显示
 function jsonText(obj) {
   if (!obj || typeof obj !== 'object' || !Object.keys(obj).length) return '';
   return JSON.stringify(obj, null, 2);
 }
 
 function parseJsonField(sel) {
-  const text = $(sel).value.trim();
+  const box = $(sel);
+  const text = (box && box.value || '').trim();
   if (!text) return null;
   try {
     const val = JSON.parse(text);
     if (val && typeof val === 'object' && !Array.isArray(val)) return val;
     throw new Error('要是一个 JSON 对象，比如 {"身份":"队友"}');
   } catch (e) {
-    throw new Error(($(sel).previousElementSibling || {}).textContent + ' 有问题：' + e.message);
+    const label = box && box.parentNode ? box.parentNode.textContent || '' : sel;
+    throw new Error(label.split('\n')[0].slice(0, 24) + ' 有问题：' + e.message);
   }
 }
 
 function setEdPhoto(src) {
   const img = $('#edPhoto');
+  if (!img) return;
   if (src) {
     img.src = src;
     img.classList.remove('empty');
@@ -497,36 +147,138 @@ function setEdPhoto(src) {
   }
 }
 
+function metaText(p) {
+  if (!p) return '还没保存 · 保存后才会出现在镜片上';
+  const bits = [];
+  if (p.first_met) bits.push('首次 ' + String(p.first_met).slice(0, 10));
+  if (p.last_met) bits.push('最近 ' + String(p.last_met).slice(0, 10));
+  bits.push('见面 ' + (p.meet_count || 0) + ' 次');
+  bits.push('底片 ' + (p.embedding_count || 0) + ' 张');
+  if (p.voice_count) bits.push('声纹 ' + p.voice_count + ' 条');
+  return bits.join(' · ');
+}
+
+function openEditor(id) {
+  editing = (id && state.people.find((p) => p.id === id)) || null;
+  pendingImage = null;
+  pendingVoice = null;
+  voiceRecording = false;
+
+  $('#edTitle').textContent = editing ? editing.name : '新增人物';
+  $('#edMeta').textContent = metaText(editing);
+  $('#edName').value = editing ? editing.name : '';
+  $('#edRole').value = editing ? editing.role || '' : '';
+  const info = (editing && editing.info) || [];
+  ['#ed1', '#ed2', '#ed3'].forEach((s, i) => { $(s).value = info[i] || ''; });
+  $('#edSimple').value = jsonText(editing && editing.simple);
+  $('#edComplex').value = jsonText(editing && editing.complex);
+  setEdPhoto(editing && editing.photo ? photoUrl(editing) : '');
+  $('#edPhotoHint').textContent = editing && editing.photo
+    ? '已有一张底片。换照片会重新算特征。'
+    : '正脸、光线均匀、别戴帽子。';
+
+  const vc = (editing && editing.voice_count) || 0;
+  $('#edVoiceHint').textContent = vc > 0
+    ? '已有 ' + vc + ' 条声纹，重录会覆盖。'
+    : '说一句「我是 XXX」，眼镜就能听声认人。';
+  $('#edVoice').textContent = '◉ 录声纹（3 秒）';
+  $('#edDelete').hidden = !editing;
+
+  $('#empty').hidden = true;
+  $('#editor').hidden = false;
+  renderPeople();
+  setTimeout(() => { const n = $('#edName'); if (n) n.focus(); }, 30);
+}
+
 function closeEditor() {
   stopVoiceIfRecording();
   $('#editor').hidden = true;
+  $('#empty').hidden = false;
   editing = null;
   pendingImage = null;
   pendingVoice = null;
+  voiceRecording = false;
+  renderPeople();
 }
 
-/* ---------------- 录声纹（浏览器麦克风 → 16k 单声道 wav） ---------------- */
+async function savePerson() {
+  const name = $('#edName').value.trim();
+  if (!name) { $('#edName').focus(); return toast('先填名字', true); }
 
-const VOICE_SECONDS = 3;
+  const body = {
+    id: editing ? editing.id : '',
+    name,
+    role: $('#edRole').value.trim(),
+    info: ['#ed1', '#ed2', '#ed3'].map((s) => $(s).value.trim()),
+  };
+  try {
+    const simple = parseJsonField('#edSimple');
+    const complex_ = parseJsonField('#edComplex');
+    if (simple) body.simple = simple;
+    if (complex_) body.complex = complex_;
+  } catch (e) {
+    return toast(e.message, true);
+  }
+  if (pendingImage) body.image = pendingImage;
+
+  const btn = $('#edSave');
+  btn.disabled = true;
+  btn.textContent = '保存中…';
+  try {
+    const r = await post('/api/people/save', body);
+    if (!r.ok) throw new Error(r.error || '保存失败');
+    let voiceNote = '';
+    if (pendingVoice) {
+      const vr = await post('/api/voice/enroll', { id: r.person.id, audio: pendingVoice });
+      if (!vr.ok) throw new Error(vr.error || '声纹保存失败');
+      voiceNote = ' · 声纹 ' + vr.seconds + 's';
+    }
+    // 先解锁按钮再切换：否则连点两次会点到一个 disabled 的按钮
+    btn.disabled = false;
+    btn.textContent = '保存';
+    closeEditor();
+    await loadPeople();
+    toast('已保存：' + name + voiceNote
+      + (!pendingImage && !pendingVoice && !editing ? '（没照片没声纹，先靠控制台记录）' : '')
+      + (r.faces > 1 ? `（图里 ${r.faces} 张脸，取了最大那张）` : ''));
+  } catch (e) {
+    toast('保存失败：' + e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '保存';
+  }
+}
+
+async function deletePerson(p) {
+  if (!p) return;
+  if (!confirm(`删除「${p.name}」？照片和底片会一起删掉。`)) return;
+  const r = await post('/api/people/delete', { id: p.id });
+  if (!r.ok) return toast('删除失败：' + r.error, true);
+  if (editing && editing.id === p.id) closeEditor();
+  await loadPeople();
+  toast('已删除：' + p.name);
+}
+
+/* ---------------- 声纹录制 ---------------- */
 
 function floatToWav(chunks, sampleRate) {
   let total = 0;
   chunks.forEach((c) => { total += c.length; });
   const buf = new ArrayBuffer(44 + total * 2);
   const view = new DataView(buf);
-  const str = (off, s) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)); };
-  str(0, 'RIFF');
+  const writeStr = (off, s) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)); };
+  writeStr(0, 'RIFF');
   view.setUint32(4, 36 + total * 2, true);
-  str(8, 'WAVE');
-  str(12, 'fmt ');
+  writeStr(8, 'WAVE');
+  writeStr(12, 'fmt ');
   view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);            // PCM
-  view.setUint16(22, 1, true);            // 单声道
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
   view.setUint32(24, sampleRate, true);
   view.setUint32(28, sampleRate * 2, true);
   view.setUint16(32, 2, true);
   view.setUint16(34, 16, true);
-  str(36, 'data');
+  writeStr(36, 'data');
   view.setUint32(40, total * 2, true);
   let off = 44;
   chunks.forEach((c) => {
@@ -547,8 +299,6 @@ function blobToDataURL(blob) {
   });
 }
 
-let voiceRec = null;   // { ctx, stream, proc, chunks, timer }
-
 function stopVoiceIfRecording() {
   if (!voiceRec) return;
   const r = voiceRec;
@@ -568,13 +318,13 @@ async function recordVoice() {
     return;
   }
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    return alert('这个浏览器不给用麦克风，换 Chrome/Edge 打开');
+    return toast('这个浏览器不给用麦克风，换 Chrome/Edge 打开', true);
   }
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } });
   } catch (e) {
-    return alert('拿不到麦克风：' + e.message);
+    return toast('拿不到麦克风：' + e.message, true);
   }
   const AudioCtx = window.AudioContext || window.webkitAudioContext;
   const ctx = new AudioCtx({ sampleRate: 16000 });
@@ -585,10 +335,13 @@ async function recordVoice() {
   source.connect(proc);
   proc.connect(ctx.destination);
 
-  voiceRec = { ctx, stream, proc, chunks, timer: setTimeout(async () => {
-    const r = stopVoiceIfRecording();
-    if (r) await finishVoice(r);
-  }, VOICE_SECONDS * 1000) };
+  voiceRec = {
+    ctx, stream, proc, chunks,
+    timer: setTimeout(async () => {
+      const r = stopVoiceIfRecording();
+      if (r) await finishVoice(r);
+    }, VOICE_SECONDS * 1000),
+  };
   voiceRecording = true;
   $('#edVoice').textContent = '◉ 正在录…（再点结束）';
   $('#edVoiceHint').textContent = '说话中，约 ' + VOICE_SECONDS + ' 秒';
@@ -600,68 +353,405 @@ async function finishVoice(r) {
   const blob = new Blob([wav], { type: 'audio/wav' });
   pendingVoice = await blobToDataURL(blob);
   $('#edVoice').textContent = '◉ 重录声纹（3 秒）';
-  $('#edVoiceHint').textContent = '已录 ' + (blob.size / 32000).toFixed(1) + ' 秒，保存时一起写入';
+  $('#edVoiceHint').textContent = '已录 ' + (blob.size / 32000).toFixed(1) + ' 秒，保存时一起写入。';
 }
 
-async function savePerson() {
-  const name = $('#edName').value.trim();
-  if (!name) { $('#edName').focus(); return alert('先填名字'); }
-  if (!editing && !pendingImage) return alert('新增需要上传一张正脸照，否则认不出他');
-  const body = {
-    id: editing ? editing.id : '',
-    name,
-    role: $('#edRole').value.trim(),
-    info: ['#ed1', '#ed2', '#ed3'].map((s) => $(s).value.trim()),
-  };
-  try {
-    const simple = parseJsonField('#edSimple');
-    const complex_ = parseJsonField('#edComplex');
-    if (simple) body.simple = simple;
-    if (complex_) body.complex = complex_;
-  } catch (e) {
-    return alert(e.message);
-  }
-  if (pendingImage) body.image = pendingImage;
+/* ---------------- 绑定 ---------------- */
 
-  const btn = $('#edSave');
-  btn.disabled = true;
-  btn.textContent = '保存中…';
+/* ---------------- 模块 02：单人对话分析 ---------------- */
+
+const CONV_CHUNK_MS = 6000;   // 每 6 秒切一段送上去转写，避免一次性传几分钟音频
+const CONV_MIN_FRAMES = 3;    // 攒够 3 帧（约 0.2s）才切，避免碎片
+
+const conv = {
+  llm: null,
+  person: null,
+  session: null,
+  serverText: '',
+  running: false,
+  ctx: null,
+  stream: null,
+  proc: null,
+  buf: [],
+  flushing: false,
+  startedAt: 0,
+  ticker: null,
+  chunkTimer: null,
+  items: [],
+};
+
+function setModule(name) {
+  const onConv = name === 'conv';
+  const convEl = $('#conv');
+  if (!convEl) return;
+  convEl.hidden = !onConv;
+  if ($('#contentPeople')) $('#contentPeople').hidden = onConv;
+  if ($('#listcol')) $('#listcol').hidden = onConv;
+  if ($('#modPeople')) $('#modPeople').classList.toggle('is-active', !onConv);
+  if ($('#modConv')) $('#modConv').classList.toggle('is-active', onConv);
+  if ($('#modConv')) $('#modConv').setAttribute('aria-current', onConv ? 'page' : 'false');
+  if (onConv) {
+    convBindOnce();
+    renderConvPeople();
+    loadConvLlm();
+  }
+}
+
+async function loadConvLlm() {
+  if (conv.llm) return;
   try {
-    const r = await post('/api/people/save', body);
-    if (!r.ok) throw new Error(r.error || '保存失败');
-    let voiceNote = '';
-    if (pendingVoice) {
-      const vr = await post('/api/voice/enroll', { id: r.person.id, audio: pendingVoice });
-      if (!vr.ok) throw new Error(vr.error || '声纹保存失败');
-      voiceNote = ' · 声纹 ' + vr.seconds + 's';
+    const r = await fetch('/api/converse/llm').then((x) => x.json());
+    conv.llm = r;
+  } catch (e) {
+    conv.llm = { available: false };
+  }
+  const banner = $('#convBanner');
+  if (banner) {
+    const asrOk = conv.llm.asrAvailable !== false;
+    if (conv.llm.stub) {
+      banner.hidden = false;
+      banner.textContent = '当前是 stub 模式（AR_LLM_STUB=1），返回的是假数据，只用于测试。';
+    } else if (!asrOk) {
+      banner.hidden = false;
+      banner.innerHTML = '没有可用的转写通道：放一份本地模型到 <code>models/asr/</code>，'
+        + '或设 <code>AR_ASR_KEY</code> 用云端转写。';
+    } else if (!conv.llm.available) {
+      banner.hidden = false;
+      banner.innerHTML = '转写用 <b>' + (conv.llm.asrProvider === 'local' ? '本地模型' : conv.llm.asr)
+        + '</b>，但没配文本模型 Key（<code>AR_LLM_KEY</code> / <code>MIMO_API_KEY</code> / <code>DEEPSEEK_API_KEY</code>）：'
+        + '能录音能转写，只是「分析」按不动。';
+    } else {
+      banner.hidden = true;
     }
-    // 先解锁按钮再关弹窗：否则连点两次会点到一个 disabled 的按钮
-    btn.disabled = false;
-    btn.textContent = '保存';
-    closeEditor();
-    await loadPeople();
-    if (state.frozen) await rescan();          // 画面还冻着的话，卡片立刻更新
-    $('#lensMsg').textContent = '已保存：' + name + voiceNote +
-      (r.faces > 1 ? `（图里 ${r.faces} 张脸，取了最大那张）` : '');
+  }
+  if (conv.person) $('#convRec').disabled = !asrOk;
+  const an = $('#convAnalyze');
+  if (an) an.disabled = !conv.llm.available || !($('#convText') && $('#convText').value.trim());
+}
+
+function convFiltered() {
+  const q = ($('#convSearch') ? $('#convSearch').value : '').trim().toLowerCase();
+  return state.people.filter((p) => {
+    if (!q) return true;
+    return (p.name || '').toLowerCase().includes(q) || (p.role || '').toLowerCase().includes(q);
+  });
+}
+
+function makeDot() {
+  const d = document.createElement('div');
+  d.className = 'dot';
+  return d;
+}
+
+function renderConvPeople() {
+  const ul = $('#convPeople');
+  if (!ul) return;
+  ul.innerHTML = '';
+  const list = convFiltered();
+  if (!list.length) {
+    const li = document.createElement('li');
+    li.className = 'conv-empty';
+    li.textContent = '没有匹配的人；先去「01 人物数据」建一个';
+    ul.appendChild(li);
+    return;
+  }
+  list.forEach((p) => {
+    const li = document.createElement('li');
+    if (conv.person && conv.person.id === p.id) li.classList.add('is-locked');
+    const src = p.photo ? photoUrl(p) : '';
+    if (src) {
+      const img = document.createElement('img');
+      img.src = src;
+      img.alt = '';
+      img.onerror = () => { img.replaceWith(makeDot()); };
+      li.appendChild(img);
+    } else {
+      li.appendChild(makeDot());
+    }
+    const box = document.createElement('div');
+    const nm = document.createElement('div');
+    nm.className = 'nm';
+    nm.textContent = p.name;
+    const rl = document.createElement('div');
+    rl.className = 'rl';
+    rl.textContent = p.role || '未填身份';
+    box.appendChild(nm);
+    box.appendChild(rl);
+    li.appendChild(box);
+
+    const tag = document.createElement('span');
+    tag.className = 'lock';
+    tag.textContent = conv.person && conv.person.id === p.id ? '已锁定' : '锁定';
+    li.appendChild(tag);
+
+    li.onclick = () => lockPerson(p);
+    ul.appendChild(li);
+  });
+}
+
+async function lockPerson(p) {
+  if (conv.running) return toast('先停止录音再换人', true);
+  conv.person = p;
+  conv.items = [];
+  const r = await post('/api/converse/start', { person_id: p.id });
+  if (!r.ok) { conv.person = null; return toast(r.error || '锁定失败', true); }
+  conv.session = r.session;
+  conv.serverText = '';
+  if ($('#convText')) $('#convText').value = '';
+  if ($('#convResult')) $('#convResult').hidden = true;
+  $('#convTitle').textContent = p.name;
+  $('#convMeta').textContent = (p.role || '未填身份') + ' · 已锁定，会话 ' + r.session;
+  convState('锁定成功，按「开始录音」');
+  $('#convAnalyze').disabled = true;
+  $('#convRec').disabled = !(conv.llm && conv.llm.available);
+  renderConvPeople();
+}
+
+function convState(txt) {
+  if ($('#convState')) $('#convState').textContent = txt;
+}
+
+function convSecs() {
+  const s = Math.floor((Date.now() - conv.startedAt) / 1000);
+  if ($('#convSecs')) $('#convSecs').textContent = conv.running ? s + ' 秒' : '待机';
+}
+
+async function convStart() {
+  if (!conv.person) return toast('先锁一个人', true);
+  if (!conv.llm || !conv.llm.available) return toast('没配 MIMO_API_KEY，转写用不了', true);
+  if (conv.running) return;
+  try {
+    conv.stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+    });
   } catch (e) {
-    alert('保存失败：' + e.message);
+    return toast('拿不到麦克风：' + e.message, true);
+  }
+  conv.ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const src = conv.ctx.createMediaStreamSource(conv.stream);
+  conv.proc = conv.ctx.createScriptProcessor(4096, 1, 1);
+  conv.proc.onaudioprocess = (ev) => {
+    conv.buf.push(new Float32Array(ev.inputBuffer.getChannelData(0)));
+  };
+  src.connect(conv.proc);
+  conv.proc.connect(conv.ctx.destination);   // 不接出去某些浏览器不回调；输出是静音，不会啸叫
+
+  conv.running = true;
+  conv.buf = [];
+  conv.startedAt = Date.now();
+  conv.ticker = setInterval(convSecs, 500);
+  conv.chunkTimer = setInterval(() => convFlush(false), CONV_CHUNK_MS);
+  $('#convRec').hidden = true;
+  $('#convStop').hidden = false;
+  convState('录音中…每 6 秒自动送一段去转写');
+}
+
+async function convFlush(final) {
+  if (conv.flushing) return;
+  if (!conv.buf.length) return;
+  if (!final && conv.buf.length < CONV_MIN_FRAMES) return;
+  conv.flushing = true;
+  const chunks = conv.buf;
+  conv.buf = [];
+  try {
+    const sr = conv.ctx ? conv.ctx.sampleRate : 16000;
+    const wav = floatToWav(chunks, sr);
+    const url = await blobToDataURL(new Blob([wav], { type: 'audio/wav' }));
+    const r = await post('/api/converse/chunk', { session: conv.session, audio: url });
+    if (!r.ok) throw new Error(r.error || '转写失败');
+    conv.serverText = r.transcript;
+    if ($('#convText')) $('#convText').value = conv.serverText;
+    convState('已转写 ' + r.transcript.length + ' 字 · ' + r.seconds + ' 秒');
+  } catch (e) {
+    toast('这段没转成：' + e.message, true);
   } finally {
-    btn.disabled = false;
-    btn.textContent = '保存';
+    conv.flushing = false;
   }
 }
 
-async function deletePerson(p) {
-  if (!p) return;
-  if (!confirm(`删除「${p.name}」？照片和底片会一起删掉。`)) return;
-  const r = await post('/api/people/delete', { id: p.id });
-  if (!r.ok) return alert('删除失败：' + r.error);
-  if (editing && editing.id === p.id) closeEditor();
-  await loadPeople();
-  if (state.frozen) await rescan();
+async function convStop() {
+  if (!conv.running) return;
+  conv.running = false;
+  clearInterval(conv.ticker);
+  clearInterval(conv.chunkTimer);
+  try { conv.proc.disconnect(); } catch (e) { /* 已断开 */ }
+  try { conv.ctx.close(); } catch (e) { /* 已关闭 */ }
+  try { conv.stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* 已停止 */ }
+  conv.proc = null;
+  conv.ctx = null;
+  conv.stream = null;
+  $('#convRec').hidden = false;
+  $('#convStop').hidden = true;
+  convSecs();
+  await convFlush(true);
+  convState(conv.serverText ? '录音结束，可以点「分析这段对话」' : '这次没听到内容');
+  $('#convAnalyze').disabled = !conv.llm || !conv.llm.available || !conv.serverText.trim();
 }
 
-/* ---------------- 用照片测试 ---------------- */
+async function convAnalyze() {
+  if (!conv.session) return toast('先锁一个人', true);
+  const box = ($('#convText') ? $('#convText').value : '').trim();
+  if (!box) return toast('还没有内容，先录一段或粘一段', true);
+  $('#convAnalyze').disabled = true;
+  const old = $('#convAnalyze').textContent;
+  $('#convAnalyze').textContent = '分析中…';
+  try {
+    if (box !== conv.serverText) {
+      const r1 = await post('/api/converse/text', { session: conv.session, text: box, replace: true });
+      if (!r1.ok) throw new Error(r1.error || '文本没存上');
+      conv.serverText = r1.transcript;
+    }
+    const r = await post('/api/converse/analyze', { session: conv.session });
+    if (!r.ok) throw new Error(r.error || '分析失败');
+    conv.items = (r.items || []).map((it) => ({ ...it, on: true }));
+    $('#convSummary').textContent = r.summary || '（模型没给概括）';
+    renderConvItems();
+    $('#convResult').hidden = false;
+    convState('分析完成 · ' + conv.items.length + ' 条要点');
+  } catch (e) {
+    toast('分析失败：' + e.message, true);
+  } finally {
+    $('#convAnalyze').textContent = old;
+    $('#convAnalyze').disabled = false;
+  }
+}
+
+function renderConvItems() {
+  const ul = $('#convItems');
+  if (!ul) return;
+  ul.innerHTML = '';
+  conv.items.forEach((it, i) => {
+    const li = document.createElement('li');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = it.on !== false;
+    cb.onchange = () => { conv.items[i].on = cb.checked; refreshConvSave(); };
+    const k = document.createElement('span');
+    k.className = 'k';
+    k.textContent = it.key || '其他';
+    const v = document.createElement('span');
+    v.textContent = it.value;
+    if (it.quote) {
+      const q = document.createElement('span');
+      q.className = 'q';
+      q.textContent = '（原话：' + it.quote + '）';
+      v.appendChild(document.createElement('br'));
+      v.appendChild(q);
+    }
+    li.appendChild(cb);
+    li.appendChild(k);
+    li.appendChild(v);
+    ul.appendChild(li);
+  });
+  refreshConvSave();
+}
+
+function refreshConvSave() {
+  const n = conv.items.filter((i) => i.on !== false).length;
+  const btn = $('#convSave');
+  if (!btn) return;
+  btn.disabled = n === 0;
+  btn.textContent = n ? '写入档案（' + n + ' 条）' : '没有可写的';
+}
+
+async function convSave() {
+  const picked = conv.items.filter((i) => i.on !== false)
+    .map((i) => ({ key: i.key, value: i.value }));
+  if (!picked.length) return;
+  const btn = $('#convSave');
+  btn.disabled = true;
+  btn.textContent = '写入中…';
+  try {
+    const r = await post('/api/converse/save', { session: conv.session, items: picked });
+    if (!r.ok) throw new Error(r.error || '写入失败');
+    await loadPeople();
+    renderConvPeople();
+    toast('已写进 ' + r.person.name + ' 的档案：' + r.saved + ' 条');
+    convState('已写入档案 · 复杂数据里多了「对话要点」');
+  } catch (e) {
+    toast('写入失败：' + e.message, true);
+  } finally {
+    refreshConvSave();
+  }
+}
+
+function convClear() {
+  if (conv.running) return toast('先停止录音', true);
+  if ($('#convText')) $('#convText').value = '';
+  if ($('#convResult')) $('#convResult').hidden = true;
+  conv.items = [];
+  conv.serverText = '';
+  if (conv.session && $('#convText')) {
+    post('/api/converse/text', { session: conv.session, text: '', replace: true });
+  }
+  $('#convAnalyze').disabled = true;
+  convState('已清空，可以重新录');
+}
+
+let convBound = false;
+function convBindOnce() {
+  if (convBound) return;
+  convBound = true;
+  if ($('#convSearch')) $('#convSearch').oninput = renderConvPeople;
+  if ($('#convText')) {
+    // 手打/粘贴也要能直接分析：有字就把按钮点亮
+    $('#convText').oninput = () => {
+      $('#convAnalyze').disabled = !conv.llm || !conv.llm.available || !$('#convText').value.trim();
+    };
+  }
+  if ($('#convRec')) $('#convRec').onclick = convStart;
+  if ($('#convStop')) $('#convStop').onclick = convStop;
+  if ($('#convAnalyze')) $('#convAnalyze').onclick = convAnalyze;
+  if ($('#convSave')) $('#convSave').onclick = convSave;
+  if ($('#convClear')) $('#convClear').onclick = convClear;
+}
+
+function bind() {
+  const buildEl = $('#build');
+  if (buildEl) buildEl.textContent = 'build ' + BUILD;
+
+  const add = () => openEditor(null);
+  if ($('#btnAdd')) $('#btnAdd').onclick = add;
+  if ($('#btnAdd2')) $('#btnAdd2').onclick = add;
+  if ($('#modPeople')) $('#modPeople').onclick = () => setModule('people');
+  if ($('#modConv')) $('#modConv').onclick = () => setModule('conv');
+  if ($('#search')) $('#search').oninput = renderPeople;
+  if ($('#edCancel')) $('#edCancel').onclick = closeEditor;
+  if ($('#edSave')) $('#edSave').onclick = savePerson;
+  if ($('#edVoice')) $('#edVoice').onclick = recordVoice;
+  if ($('#edDelete')) $('#edDelete').onclick = () => deletePerson(editing);
+
+  if ($('#edFile')) {
+    $('#edFile').onchange = async () => {
+      const f = $('#edFile').files[0];
+      if (!f) return;
+      pendingImage = await readAsDataURL(f);
+      setEdPhoto(pendingImage);
+      $('#edPhotoHint').textContent = '保存时会把这张脸存进人脉库。';
+      $('#edFile').value = '';
+    };
+  }
+
+  const fmtBtns = document.querySelectorAll('[data-fmt]');
+  if (fmtBtns && fmtBtns.forEach) {
+    fmtBtns.forEach((b) => {
+      b.onclick = () => {
+        const box = $(b.getAttribute('data-fmt'));
+        try {
+          const val = JSON.parse(box.value);
+          box.value = JSON.stringify(val, null, 2);
+        } catch (e) {
+          toast('这段 JSON 不合法：' + e.message, true);
+        }
+      };
+    });
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.isComposing) return;   // 输入法组字中，任何快捷键都不该抢
+    if (e.key === 'Escape' && !$('#editor').hidden) closeEditor();
+  });
+}
 
 function readAsDataURL(file) {
   return new Promise((res) => {
@@ -671,72 +761,7 @@ function readAsDataURL(file) {
   });
 }
 
-fileIn.onchange = async () => {
-  const file = fileIn.files[0];
-  if (!file) return;
-  const url = await readAsDataURL(file);
-  hint.classList.add('gone');
-  await showShot(url);
-};
+/* ---------------- 启动 ---------------- */
 
-/* ---------------- 演示模式（没摄像头/断网的兜底） ---------------- */
-
-async function demoMode(n) {
-  const img = new Image();
-  img.src = `/demo/demo${n}.jpg`;
-  await img.decode();
-  const c = document.createElement('canvas');
-  c.width = Math.min(960, img.width);
-  c.height = Math.round(img.height * (c.width / img.width));
-  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-  hint.classList.add('gone');
-  await showShot(c.toDataURL('image/jpeg', 0.85));
-  $('#lensMsg').textContent = '演示模式 · 照片回放';
-}
-
-const demoArg = location.search.match(/demo=(\d)/);
-if (demoArg) demoMode(demoArg[1]);
-
-/* ---------------- 绑定 ---------------- */
-
-btnCam.onclick = startCamera;
-btnStop.onclick = stopCamera;
-btnShot.onclick = capture;
-btnRetake.onclick = retake;
-
-// 控制台
-$('#btnAdd').onclick = () => openEditor(null);
-$('#search').oninput = renderPeople;
-$('#edClose').onclick = closeEditor;
-$('#edCancel').onclick = closeEditor;
-$('#edSave').onclick = savePerson;
-$('#edVoice').onclick = recordVoice;
-$('#edDelete').onclick = () => deletePerson(editing);
-$('#edFile').onchange = async () => {
-  const f = $('#edFile').files[0];
-  if (!f) return;
-  pendingImage = await readAsDataURL(f);
-  setEdPhoto(pendingImage);
-  $('#edPhotoHint').textContent = '保存时会把这张脸存进人脉库';
-  $('#edFile').value = '';
-};
-
-document.addEventListener('keydown', (e) => {
-  if (e.isComposing) return;   // 输入法组字中，任何快捷键都不该抢
-  if (!$('#editor').hidden) {
-    if (e.key === 'Escape') closeEditor();
-    return;                    // 弹窗打开时不触发抓拍/重拍
-  }
-  const t = e.target;
-  const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
-  if (typing) return;
-  if (e.code === 'Space') { e.preventDefault(); capture(); }
-  if (e.key === 'r' || e.key === 'R') retake();
-});
-
-window.addEventListener('resize', () => {
-  if (!state.frozen) return;
-  drawFrame(state.img, state.faces, state.size);   // drawFrame 内部会重新对齐画布尺寸
-});
-
+bind();
 loadPeople();

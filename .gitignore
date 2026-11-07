@@ -32,3 +32,5 @@ probe/
 glasses/dist/
 # 会议运行时数据（分片音频 / meta.json / 转写），不进仓库
 data/meetings/
+models/asr/
+env.local.bat

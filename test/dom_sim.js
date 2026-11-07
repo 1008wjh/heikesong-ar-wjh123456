@@ -1,126 +1,89 @@
-/* 前端回归测试（极简 DOM 替身跑 web/app.js）
-   守住三条：① 抓拍一次只识别一次，不做轮询（所以按钮不会被每帧重建）
-             ② 陌生人卡片带「记住他」，点了出输入框
-             ③ 入库后同一帧重识别 → 同一个人变青色 */
+/* 控制台前端回归（极简 DOM 替身跑 web/app.js）
+   守四条：① 列表按人名渲染 ② 点开某人表单被正确回填
+          ③ 保存时提交的 JSON 里有 id/name/info/simple ④ 坏 JSON 被拦住 */
 const fs = require('fs');
 const vm = require('vm');
 const path = require('path');
-
-const ctxStub = new Proxy({}, {
-  get: (t, k) => (k in t ? t[k] : () => {}),
-  set: (t, k, v) => { t[k] = v; return true; },
-});
 
 class El {
   constructor(tag) {
     this.tag = tag;
     this.children = [];
-    this.parent = null;
-    this.style = {};
+    this.parentNode = null;
+    this.value = '';
+    this.hidden = false;
+    this.disabled = false;
+    this.files = [];
     this._cls = '';
     this._text = '';
-    this.disabled = false;
-    this.hidden = false;
     this.onclick = null;
+    this.oninput = null;
+    this.onchange = null;
   }
   set className(v) { this._cls = v; }
   get className() { return this._cls; }
-  set textContent(v) { this._text = v; this.children.forEach((c) => { c.parent = null; }); this.children = []; }
+  set textContent(v) { this._text = String(v); this.children = []; }
   get textContent() { return this._text; }
-  set innerHTML(_v) { this.children.forEach((c) => { c.parent = null; }); this.children = []; }
+  set innerHTML(_v) { this.children = []; }
   get innerHTML() { return ''; }
-  get childNodes() { return this.children; }
   get classList() {
     const self = this;
-    const has = (c) => self._cls.split(' ').includes(c);
+    const has = (c) => self._cls.split(/\s+/).includes(c);
     return {
       add(c) { if (!has(c)) self._cls = (self._cls + ' ' + c).trim(); },
-      remove(c) { self._cls = self._cls.split(' ').filter((x) => x !== c).join(' '); },
+      remove(c) { self._cls = self._cls.split(/\s+/).filter((x) => x !== c).join(' '); },
       toggle(c, on) { const want = on === undefined ? !has(c) : !!on; if (want) this.add(c); else this.remove(c); },
     };
   }
-  appendChild(c) { c.parent = this; this.children.push(c); return c; }
-  append(...cs) { cs.forEach((c) => this.appendChild(c)); }
-  replaceChildren(...cs) { this.children.forEach((c) => { c.parent = null; }); this.children = []; cs.forEach((c) => this.appendChild(c)); }
-  remove() {
-    if (this.parent) {
-      const i = this.parent.children.indexOf(this);
-      if (i >= 0) this.parent.children.splice(i, 1);
-      this.parent = null;
-    }
+  appendChild(c) { c.parentNode = this; this.children.push(c); return c; }
+  append(...cs) {
+    cs.forEach((c) => {
+      if (typeof c === 'string') { const t = new El('#text'); t.textContent = c; this.appendChild(t); }
+      else this.appendChild(c);
+    });
   }
-  get isConnected() { let p = this; while (p.parent) p = p.parent; return p === doc.body; }
-  get offsetHeight() { return 92; }
-  getBoundingClientRect() { return { width: 800, height: 500 }; }
-  find(fn) {
-    for (const c of this.children) {
-      if (fn(c)) return c;
-      const r = c.find(fn);
-      if (r) return r;
-    }
-    return null;
-  }
-  querySelector(sel) {
-    const cls = sel.replace('.', '');
-    return this.find((e) => e._cls.split(' ').includes(cls));
-  }
-  getContext() { return ctxStub; }
-  toDataURL() { return 'data:image/jpeg;base64,STUB'; }
   focus() { this.focused = true; }
-  addEventListener() {}
 }
 
-const ids = ['video', 'overlay', 'lens', 'results', 'hint', 'btnCam', 'btnStop', 'btnShot',
-  'btnRetake', 'fileIn', 'latency', 'liveState', 'people', 'count', 'thresholdTag',
-  'detail', 'detailName', 'detailMeta', 'notes', 'noteIn', 'btnNote', 'lensMsg'];
+const ids = ['build', 'count', 'thresholdTag', 'search', 'btnAdd', 'btnAdd2', 'people', 'empty',
+  'editor', 'edTitle', 'edMeta', 'edName', 'edRole', 'ed1', 'ed2', 'ed3', 'edSimple', 'edComplex',
+  'edPhoto', 'edPhotoHint', 'edVoice', 'edVoiceHint', 'edDelete', 'edCancel', 'edSave', 'edFile', 'toast'];
 const byId = {};
-ids.forEach((id) => { byId[id] = new El('div'); byId[id].id = id; });
+ids.forEach((id) => { byId[id] = new El(id === 'people' ? 'ul' : 'div'); byId[id].id = id; });
 
 const doc = {
-  body: new El('body'),
+  querySelector: (sel) => byId[sel.replace('#', '')] || null,
+  querySelectorAll: () => [],
   createElement: (t) => new El(t),
-  querySelector: (sel) => byId[sel.replace('#', '')] || new El('div'),
   addEventListener() {},
 };
-byId.results.parent = doc.body;
-byId.video.videoWidth = 640;
-byId.video.videoHeight = 480;
 
-/* 后端替身：第一次扫描是陌生人，录入之后再扫就是同一个人 */
-let known = false;
-let scanCalls = 0;
-const facesNow = () => (known
-  ? [{ status: 'known', name: '张三', lines: ['队友 · 产品', '上次见面 3 天前'], similarity: 0.93, box: [120, 100, 160, 160] }]
-  : [{ status: 'unknown', name: '陌生人', lines: ['不在你的人脉库里', '按「记住他」录入一张脸'], similarity: -1, box: [120, 100, 160, 160] }]);
+const people = [
+  { id: 'p1', name: '里奥', role: '球王 · 老友', info: ['答应送他球衣', '住在迈阿密'],
+    photo: 'photos/p1.jpg', voice_count: 1, embedding_count: 1, meet_count: 2,
+    simple: { '身份': '队友' }, complex: { '家庭': { '宠物': '一只猫' } } },
+  { id: 'p2', name: '王姐', role: '产品经理', info: [], photo: '', voice_count: 0, embedding_count: 0 },
+];
+
+let savedBody = null;
+const fetchStub = async (url, opt) => {
+  if (url === '/api/people') return { json: async () => ({ people, threshold: 0.4 }) };
+  if (url === '/api/people/save') {
+    savedBody = JSON.parse(opt.body);
+    return { json: async () => ({ ok: true, person: { id: 'p1' }, faces: 1 }) };
+  }
+  return { json: async () => ({ ok: false, error: 'unexpected ' + url }) };
+};
 
 const sandbox = {
   document: doc,
   window: { addEventListener() {} },
-  location: { search: '' },
-  navigator: { mediaDevices: {} },
-  alert: (m) => { throw new Error('alert: ' + m); },
+  navigator: {},
   console,
+  fetch: fetchStub,
   setTimeout,
   clearTimeout,
-  Image: class {
-    constructor() { this.width = 640; this.height = 480; this.naturalWidth = 640; this.naturalHeight = 480; }
-    set src(_v) { setTimeout(() => this.onload && this.onload(), 0); }
-    decode() { return Promise.resolve(); }
-  },
-  fetch: async (url) => {
-    if (url.includes('/api/people')) {
-      return { json: async () => ({ people: known ? [{ id: 'p1', name: '张三', embedding_count: 1 }] : [], threshold: 0.4 }) };
-    }
-    if (url.includes('/api/enroll')) {
-      known = true;
-      return { json: async () => ({ ok: true, id: 'p1' }) };
-    }
-    if (url.includes('/api/scan')) {
-      scanCalls++;
-      return { json: async () => ({ ok: true, ms: 41, size: [640, 480], faces: facesNow() }) };
-    }
-    return { json: async () => ({ ok: false, error: 'unexpected ' + url }) };
-  },
+  JSON,
 };
 sandbox.globalThis = sandbox;
 
@@ -133,37 +96,43 @@ const ok = (cond, msg) => {
   if (cond) { pass++; console.log('  ok   ' + msg); }
   else { fail++; console.log('  FAIL ' + msg); }
 };
-const resList = () => byId.results.children;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 (async () => {
-  await sandbox.showShot('data:image/jpeg;base64,FROZEN');
   await sleep(20);
 
-  ok(scanCalls === 1, '抓拍一次只请求一次识别（无轮询 → 不会每帧重建按钮）');
-  ok(resList().length === 1, '结果面板出现 1 条');
-  const res = resList()[0];
-  ok(res._cls.includes('unknown'), '陌生人用琥珀色样式');
-  ok(res.querySelector('.numbadge').textContent === '1', '卡片编号 1，和画面上的框对应');
-  ok(!!res.querySelector('.act'), '带「记住他」按钮');
+  ok(byId.people.children.length === 2, '列表渲染出 2 个人');
+  const first = byId.people.children[0];
+  ok(first.className.includes('person'), '列表项带 .person 样式');
+  const who = first.children.find((c) => c.className === 'who');
+  ok(who && who.children[0].textContent === '里奥', '第一行是里奥');
+  ok(byId.count.textContent.includes('2'), '右上角人数正确');
 
-  const btn = res.querySelector('.act').children[0];
-  btn.onclick();
-  const act = res.querySelector('.act');
-  ok(act.children.length === 3, '点「记住他」：出现 输入框/保存/取消');
-  ok(act.children[0].tag !== 'button', '第一格是输入框');
+  sandbox.openEditor('p1');
+  ok(byId.editor.hidden === false, '打开编辑器');
+  ok(byId.empty.hidden === true, '空状态收起');
+  ok(byId.edName.value === '里奥', '名字回填');
+  ok(byId.ed1.value === '答应送他球衣', '信息 1 回填');
+  ok(byId.edSimple.value.includes('"身份"'), '简单数据回填成 JSON 文本');
+  ok(byId.edDelete.hidden === false, '编辑时出现删除按钮');
 
-  act.children[0].textContent = '张三';
-  act.children[0].value = '张三';
-  await act.children[1].onclick();
-  await sleep(20);
+  byId.edName.value = '里奥2';
+  byId.edSimple.value = '{"身份":"队友","上次见面":"上周"}';
+  byId.edComplex.value = '';
+  await sandbox.savePerson();
+  ok(!!savedBody, '保存时发出了请求');
+  ok(savedBody.id === 'p1' && savedBody.name === '里奥2', '提交了 id 与改后的名字');
+  ok(savedBody.simple && savedBody.simple['身份'] === '队友', '简单数据被解析成对象提交');
+  ok(!('complex' in savedBody), '复杂数据留空时不提交');
+  ok(byId.editor.hidden === true, '保存后回到空状态');
 
-  ok(scanCalls === 2, '入库后对同一帧重识别一次');
-  ok(resList()[0]._cls.includes('known'), '同一个人立刻变青色（闭环走通）');
-  ok(resList()[0].querySelector('.nm').textContent === '张三', '卡片显示名字');
-
-  sandbox.retake();
-  ok(resList().length === 0, '重拍：结果面板清空');
+  sandbox.openEditor(null);
+  byId.edName.value = '新人';
+  byId.edSimple.value = '{oops';
+  savedBody = null;
+  await sandbox.savePerson();
+  ok(savedBody === null, '坏 JSON 不发请求');
+  ok(byId.toast.hidden === false && byId.toast.className.includes('bad'), '坏 JSON 弹出错误提示');
 
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
