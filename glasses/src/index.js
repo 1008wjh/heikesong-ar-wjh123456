@@ -25,9 +25,9 @@ const POLL_MS = 700;        // 拉结果
 const NAV_MS = 120;         // 读按键/手势
 const HTTP_TIMEOUT_MS = 1500;
 const MAX_SAMPLES = 16000 * 30;
-const OUTBOX_RETRY_MS = 8000;
+const OUTBOX_RETRY_MS = 8000;  // 离线录音的重发间隔
 // 卡片（认人结果/55 秒建议）露一会儿就收起来，录音不停
-const HOLD_MS = 9000;   // 离线录音的重发间隔
+const HOLD_MS = 9000;      // 认人卡片在镜片上停留多久
 
 // 宿主注入的私有数据目录；没有（单测 / 无沙箱环境）就不落盘。
 const APP_DATA_DIR = process.env.FUSIONUI_APP_DATA_DIR;
@@ -491,6 +491,11 @@ function paintListening() {
 
 function openSession() {
   if (!capture) return;
+  // 上一会话可能还没被平台回收（"麦克风繁忙"多半就是它）——先显式收掉
+  try {
+    if (capture.session) capture.session.finish();
+  } catch (e) { /* 已经结束 */ }
+  capture.session = null;
   let session;
   try {
     session = input.requestVoiceInput({ mode: "audio" });
@@ -572,7 +577,7 @@ async function drain(c) {
 
 
 
-function startListening(mode) {
+async function startListening(mode) {
   if (capture || background) return;
   listenSig = "";
   let availability;
@@ -583,7 +588,19 @@ function startListening(mode) {
     return;
   }
   if (!availability || availability.canRequest === false) {
-    paintIdle("麦克风不可用 · " + ((availability && availability.reason) || "unknown"));
+    // 常见原因是上一次录音还没被回收，等一会儿再试
+    for (let i = 0; i < 3 && availability && availability.canRequest === false; i++) {
+      paintIdle("麦克风忙 · 等一下再试");
+      await new Promise((r) => setTimeout(r, 800));
+      try {
+        availability = input.getVoiceInputAvailability("audio");
+      } catch (e) {
+        availability = null;
+      }
+    }
+  }
+  if (!availability || availability.canRequest === false) {
+    paintIdle("麦克风被占用 · 稍后再按一次");
     return;
   }
   capture = {
@@ -875,7 +892,7 @@ function navMode(act) {
   if (act === "activate") {
     const mode = MODE_ITEMS[modeSelect.index].key;
     modeSelect = null;
-    startListening(mode);
+    startListening(mode).catch(() => {});
     return;
   }
 }
