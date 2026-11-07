@@ -214,7 +214,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/latest/reset":
             # 调试用：把"眼镜上现在显示的那条"清掉，方便验证下一次推送
             with _LAST_LOCK:
-                _LAST.update({"rev": _LAST["rev"] + 1, "faces": [], "at": time.time(), "ms": 0, "kind": ""})
+                _LAST.update({"rev": _LAST["rev"] + 1, "faces": [], "at": time.time() * 1000,
+                              "ms": 0, "kind": ""})
                 rev = _LAST["rev"]
             return self._json({"ok": True, "rev": rev})
         if path.startswith("/api/card/") and path.endswith("/full"):
@@ -318,7 +319,7 @@ class Handler(BaseHTTPRequestHandler):
         with _LAST_LOCK:
             _LAST["rev"] += 1
             _LAST["faces"] = out
-            _LAST["at"] = time.time()
+            _LAST["at"] = time.time() * 1000      # 毫秒：和眼镜端 Date.now() 比，统一口径
             _LAST["ms"] = payload["ms"]
             payload["rev"] = _LAST["rev"]
         return self._json(payload)
@@ -492,7 +493,7 @@ class Handler(BaseHTTPRequestHandler):
         with _LAST_LOCK:
             _LAST["rev"] += 1
             _LAST["faces"] = [card]
-            _LAST["at"] = time.time()
+            _LAST["at"] = time.time() * 1000      # 毫秒：和眼镜端 Date.now() 比，统一口径
             _LAST["ms"] = view.get("ms", 0)
             _LAST["kind"] = "agent"
             payload["rev"] = _LAST["rev"]
@@ -510,7 +511,7 @@ class Handler(BaseHTTPRequestHandler):
         with _LAST_LOCK:
             _LAST["rev"] += 1
             _LAST["faces"] = cards_out
-            _LAST["at"] = time.time()
+            _LAST["at"] = time.time() * 1000      # 毫秒：和眼镜端 Date.now() 比，统一口径
             _LAST["ms"] = ms
             _LAST["kind"] = "voice"
             payload["rev"] = _LAST["rev"]
