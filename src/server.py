@@ -39,7 +39,7 @@ agent.bind_store(store)          # 智能体的工具要用同一个库实例
 
 # 最近一次识别结果。手机抓拍 → 这里 → 眼镜轮询取走。
 # 眼镜端（IrisView 应用）没有摄像头，只能"看"这里的最新一帧结果。
-_LAST = {"rev": 0, "faces": [], "at": 0, "ms": 0, "kind": "", "session": ""}
+_LAST = {"rev": 0, "faces": [], "at": 0, "ms": 0, "kind": ""}
 _LAST_LOCK = threading.Lock()
 
 # 对话分析（模块 02）的会话：只活在内存里，服务重启就没了
@@ -203,8 +203,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/latest/reset":
             # 调试用：把"眼镜上现在显示的那条"清掉，方便验证下一次推送
             with _LAST_LOCK:
-                _LAST.update({"rev": _LAST["rev"] + 1, "faces": [], "at": time.time(), "ms": 0,
-                              "kind": "", "session": ""})
+                _LAST.update({"rev": _LAST["rev"] + 1, "faces": [], "at": time.time(), "ms": 0, "kind": ""})
                 rev = _LAST["rev"]
             return self._json({"ok": True, "rev": rev})
         if path.startswith("/api/card/") and path.endswith("/full"):
@@ -310,7 +309,6 @@ class Handler(BaseHTTPRequestHandler):
             _LAST["faces"] = out
             _LAST["at"] = time.time()
             _LAST["ms"] = payload["ms"]
-            _LAST["session"] = ""
             payload["rev"] = _LAST["rev"]
         return self._json(payload)
 
@@ -486,7 +484,6 @@ class Handler(BaseHTTPRequestHandler):
             _LAST["at"] = time.time()
             _LAST["ms"] = view.get("ms", 0)
             _LAST["kind"] = "agent"
-            _LAST["session"] = session
             payload["rev"] = _LAST["rev"]
         return self._json(payload)
 
@@ -505,7 +502,6 @@ class Handler(BaseHTTPRequestHandler):
             _LAST["at"] = time.time()
             _LAST["ms"] = ms
             _LAST["kind"] = "voice"
-            _LAST["session"] = ""
             payload["rev"] = _LAST["rev"]
         return self._json(payload)
 

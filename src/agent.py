@@ -28,11 +28,6 @@ PRESET_OP = {"todo": "filter", "recall": "recall", "hint": "next"}
 _CANCEL = set()
 _CANCEL_LOCK = threading.Lock()
 
-# 文本纠正过的"当前是谁"：session -> person_id。
-# 眼镜端每片还会带它自己记的旧 person_id，这里以纠正为准（否则改完下一片又变回去）。
-_PIN = {}
-_PIN_LOCK = threading.Lock()
-
 
 def cancel(session: str) -> bool:
     """作废某个会话正在跑的结果（interrupt）。"""
@@ -97,8 +92,6 @@ class AgentState(TypedDict, total=False):
     manual: bool         # 用户按「确认」主动触发的那一片（第几片都要给建议）
     preset: str          # 主页面快捷预设 id（todo/summary/next/recall）
     cancelled: bool      # 这次请求被 /api/agent/cancel 作废了
-    cmd: str             # 文本指令：filter/focus/person/all/cancel/reject/person_miss
-    cmd_arg: str         # 指令参数（"只留待办"里的 待办）
 
 
 # ---------- 工具：匹配、抽取 ----------
@@ -197,34 +190,6 @@ def rule_extract(text: str) -> list[dict]:
     return out
 
 
-# ---------- 文本指令（确定性，不走模型） ----------
-# 眼镜键盘只有十来个字，主要给控制台/文本通道用；语音转写出来的短命令也认。
-# 覆盖验收里的"内容修改 / 重点与布局 / 跨方式纠正"。
-_CMD_SPECS = (
-    ("cancel", re.compile(r"^(取消|不要了|算了|退出去)[。！!]?$")),
-    ("all", re.compile(r"^(显示全部|全部|回到刚才|恢复|还原|显示完整)[。！!]?$")),
-    ("reject", re.compile(r"^(不是他|不是这个人|认错了|换个人)[。！!]?$")),
-    ("filter", re.compile(r"^(?:只看|只留|只保留|只显示|仅看|筛选)\s*(.+?)[。！!？?]?$")),
-    ("focus", re.compile(r"^(?:优先|先看|重点|突出|强调)(?:看|显示)?\s*(.+?)[。！!？?]?$")),
-    ("person", re.compile(
-        r"^(?:换成|切换成|切换到|改成|不是他[，,\s]*(?:是)?|认错了[，,\s]*(?:是)?)"
-        r"\s*(.+?)[。！!？?]?$")),
-)
-
-
-def parse_command(text: str) -> tuple:
-    """把一句短指令解析成 (cmd, arg)；不是指令返回 ("", "")。"""
-    t = (text or "").strip()
-    if not t or len(t) > 24:
-        return "", ""
-    for name, rx in _CMD_SPECS:
-        m = rx.match(t)
-        if m:
-            arg = (m.group(1) or "").strip() if m.groups() else ""
-            return name, arg
-    return "", ""
-
-
 # ---------- 图 ----------
 
 def node_ingest(state: AgentState) -> dict:
@@ -256,8 +221,7 @@ def node_ingest(state: AgentState) -> dict:
     elif text:
         asr_src = "text"
     window = ((state.get("window") or "") + " " + text).strip()[-2000:]
-    cmd, cmd_arg = parse_command(text)      # 短指令（文本或转写出来的都算）
-    return {"text": text[:MAX_TRANSCRIPT], "window": window, "cmd": cmd, "cmd_arg": cmd_arg,
+    return {"text": text[:MAX_TRANSCRIPT], "window": window,
             "asr_ms": asr_ms, "asr_src": asr_src,
             "audio_sec": sec, "audio_peak": peak,
             "slice_no": int(state.get("slice_no") or 0) + 1}
@@ -283,41 +247,6 @@ def node_route(state: AgentState) -> dict:
     except llm.LLMUnavailable:
         return {"mode": "single", "degraded": True,
                 "cls_ms": int((time.time() - t0) * 1000)}
-
-
-def node_command(state: AgentState) -> dict:
-    """"换成谁"这类指令要先解析成人，再交给 render 出卡。
-
-    其他指令（只看/优先/恢复/取消）不需要额外信息，render 里直接拼。
-    """
-    cmd = state.get("cmd") or ""
-    arg = (state.get("cmd_arg") or "").strip(" 　,，")
-    notes = list(state.get("notes") or [])
-    if cmd != "person":
-        return {}
-    if not arg or arg in ("他", "她", "这个人", "刚才那个", "刚才的人"):
-        return {"notes": notes + ["没说换成谁"]}
-    person = None
-    for p in _people():
-        if (p.get("name") or "") == arg:
-            person = p
-            break
-    if person is None:
-        for p in _people():
-            pn = p.get("name") or ""
-            if pn and (arg in pn or pn in arg):
-                person = p
-                break
-    if person is None:
-        return {"cmd": "person_miss", "notes": notes + ["没找到「%s」" % arg]}
-    sid = state.get("session") or ""
-    with _PIN_LOCK:
-        if len(_PIN) > 200:
-            _PIN.clear()
-        _PIN[sid] = person["id"]
-    notes.append("用户纠正：换成 %s" % person["name"])
-    return {"person_id": person["id"], "person_name": person["name"],
-            "matched_by": "text", "similarity": 1.0, "notes": notes}
 
 
 def node_identify(state: AgentState) -> dict:
@@ -367,69 +296,6 @@ def suggest_options(state_name, person_name):
     return ["只留待办", "再说细一点", "不是他"]
 
 
-def _item_rows(items) -> list:
-    return ["%s: %s" % (it.get("key", "其他"), it.get("value", "")) for it in items]
-
-
-def _filter_items(items, arg: str) -> list:
-    """按"待办/日期/承诺/任意词"筛要点；空参数原样返回。"""
-    if not arg:
-        return list(items)
-    if any(k in arg for k in ("待办", "行动", "跟进")):
-        want = ("答应的事", "跟进", "日期")
-        return [it for it in items if str(it.get("key")) in want]
-    if any(k in arg for k in ("日期", "时间", "截止", "什么时候")):
-        return [it for it in items if str(it.get("key")) == "日期"]
-    if any(k in arg for k in ("承诺", "答应", "答应的事")):
-        return [it for it in items if str(it.get("key")) == "答应的事"]
-    return [it for it in items
-            if arg in str(it.get("key")) or arg in str(it.get("value"))]
-
-
-def _render_command(state: AgentState, cmd: str) -> dict:
-    """文本指令的卡片：改对象、改重点、改布局，全在现有 view 字段里表达。"""
-    pid = state.get("person_id") or ""
-    name = state.get("person_name") or ""
-    person = store_ref.get(pid) if (pid and store_ref) else None
-    items = state.get("items") or []
-    arg = (state.get("cmd_arg") or "").strip()
-    base = {"person": name, "person_id": pid,
-            "matched_by": state.get("matched_by") or "text",
-            "similarity": state.get("similarity") or 1.0,
-            "options": [], "degraded": False}
-    if cmd == "cancel":
-        return {"state": "异常", "layout": "notice",
-                "rows": ["已取消", "按一下重新问"], **base}
-    if cmd == "reject":
-        return {"state": "待确认", "layout": "card",
-                "rows": ["不是他？", "说「换成 名字」，或去控制台改"], **base}
-    if cmd == "person_miss":
-        return {"state": "异常", "layout": "notice",
-                "rows": ["没找到「%s」" % arg, "说全名，或去控制台加"], **base}
-    if cmd == "person":
-        rows = cards.simple_lines(person, 4) if person else ["没找到这个人"]
-        return {"state": "完成", "layout": "card", "rows": rows, **base}
-    if cmd == "all":
-        rows = cards.simple_lines(person, 4) if person else _item_rows(items)[:4]
-        if not rows:
-            rows = ["还没有可显示的内容", "先认一个人，或说两句"]
-        return {"state": "完成", "layout": "card", "rows": rows, **base}
-    if cmd in ("filter", "focus"):
-        hit = _filter_items(items, arg)
-        if cmd == "filter":
-            rows = _item_rows(hit)[:4]
-            if not rows:
-                rows = ["没有「%s」相关的记录" % arg, "换个条件，或先聊两句"]
-            return {"state": "完成", "layout": "focus", "rows": rows, **base}
-        rest = [it for it in items if it not in hit]
-        rows = _item_rows(hit + rest)[:4]
-        if not rows:
-            rows = ["这段还没有要点", "先说两句再试"]
-        return {"state": "完成", "layout": "focus", "rows": rows, **base}
-    rows = _item_rows(items)[:4] or ["好了"]
-    return {"state": "完成", "layout": "card", "rows": rows, **base}
-
-
 def node_render(state: AgentState) -> dict:
     """把"人 + 要点"渲染成镜片视图模型（五状态之一 + 布局）。"""
     if state.get("mode") == "meeting":
@@ -440,8 +306,6 @@ def node_render(state: AgentState) -> dict:
             "person": "",
             "degraded": state.get("degraded", False),
         }}
-    if state.get("cmd"):
-        return {"view": _render_command(state, state["cmd"])}
     name = state.get("person_name") or ""
     items = state.get("items") or []
     preset = state.get("preset") or ""
@@ -544,10 +408,6 @@ def node_recommend(state: AgentState) -> dict:
             dialog = "用户要求：" + want + "\n对话：\n" + dialog
         got = llm.recommend(dialog,
                             state.get("person_name") or "", profile, state.get("items") or [])
-        # 模型跑完这段时间里用户点了「返回」：结果作废，别让旧结果冒充最新
-        if _cancelled(state.get("session") or ""):
-            return {"cancelled": True, "next_actions": [],
-                    "notes": (state.get("notes") or []) + ["用户已取消，这版结果作废"]}
         nxt = got.get("next") or []
         return {"next_actions": nxt, "rec_ms": int((time.time() - t0) * 1000),
                 "summary": state.get("summary") or got.get("summary") or ""}
@@ -558,8 +418,6 @@ def node_recommend(state: AgentState) -> dict:
 
 def node_commit(state: AgentState) -> dict:
     """有主、有要点才写档案；多人或没认出人就只留在界面上。"""
-    if state.get("cmd"):
-        return {}          # 文本指令只改画面，不写档案
     pid = state.get("person_id")
     items = state.get("items") or []
     if pid and items and state.get("mode") != "meeting":
@@ -573,7 +431,6 @@ def node_commit(state: AgentState) -> dict:
 def build(memory=None):
     g = StateGraph(AgentState)
     g.add_node("ingest", node_ingest)
-    g.add_node("command", node_command)
     g.add_node("route", node_route)
     g.add_node("identify", node_identify)
     g.add_node("extract", node_extract)
@@ -582,17 +439,13 @@ def build(memory=None):
     g.add_node("commit", node_commit)
 
     g.add_edge(START, "ingest")
-    # 短指令直接进 command（不调模型、不做单人/多人判断），普通输入才走 route
-    g.add_conditional_edges("ingest", lambda s: "command" if s.get("cmd") else "route",
-                            {"command": "command", "route": "route"})
-    g.add_edge("command", "render")
+    g.add_edge("ingest", "route")
     g.add_conditional_edges("route", lambda s: "meeting" if s.get("mode") == "meeting" else "single",
                             {"single": "identify", "meeting": "render"})
     g.add_edge("identify", "extract")
     g.add_edge("extract", "recommend")
     g.add_edge("recommend", "render")
-    g.add_conditional_edges("render",
-                            lambda s: "skip" if (s.get("mode") == "meeting" or s.get("cmd")) else "commit",
+    g.add_conditional_edges("render", lambda s: "skip" if s.get("mode") == "meeting" else "commit",
                             {"commit": "commit", "skip": END})
     g.add_edge("commit", END)
     return g.compile(checkpointer=memory) if memory else g.compile()
@@ -632,17 +485,10 @@ def run_feed(session: str, text: str = "", audio: str = "", auto_add: bool = Tru
         )
     t0 = time.time()
     _clear_cancel(session)          # 新请求开始，作废上一轮留下的取消标记
-    # 文本纠正过"是谁"的会话：以纠正为准。眼镜端每片还带它自己记的旧 person_id，
-    # 不覆盖的话改完下一片又变回原来的人。
-    with _PIN_LOCK:
-        fixed = _PIN.get(session)
-    if fixed:
-        pinned = fixed
     state: AgentState = {"session": session, "text": text, "audio": audio,
                          "auto_add": auto_add, "degraded": False, "notes": [],
                          "mode": (mode or "").lower(), "manual": bool(manual),
-                         "preset": preset or "", "pinned": pinned, "cancelled": False,
-                         "cmd": "", "cmd_arg": ""}   # 每片重置：别让上一片的指令残留
+                         "preset": preset or "", "pinned": pinned, "cancelled": False}
     cfg = {"configurable": {"thread_id": session}}
     try:
         out = graph().invoke(state, cfg)
