@@ -60,7 +60,33 @@ switch ($Cmd) {
     'build'   { $inner = "python3 $sdk build /work/glasses" }
     'package' { $inner = "python3 $sdk package /work/glasses --output /work/dist/memorylens.fuiapp --debug-unsigned" }
     'run'     { $inner = "bash /work/deploy/sim-shot.sh $Port $WaitSec" }
-    default   { throw "unknown command: $Cmd (use test / build / package / run / doctor)" }
+    'gui'     { $inner = $null }   # 走 WSLg，见下
+    default   { throw "unknown command: $Cmd (use test / build / package / run / gui / doctor)" }
+}
+
+if ($Cmd -eq 'gui') {
+    # 有窗口的那种跑法：Docker 在 WSL 里调，窗口经 WSLg 显示到 Windows 桌面
+    function To-WslPath([string]$p) {
+        $q = $p.Replace('\', '/')
+        if ($q -match '^([A-Za-z]):(.*)$') {
+            $drive = $Matches[1].ToLower()
+            return "/mnt/$drive$($Matches[2])"
+        }
+        return $q
+    }
+    $wslKit = To-WslPath $kit
+    $wslProj = To-WslPath $proj
+    Write-Host "== docker gui ==" -ForegroundColor Cyan
+    $cmd = "docker run --rm --name memorylens-sim " +
+           "--add-host host.docker.internal:host-gateway " +
+           "-e DISPLAY=`$DISPLAY -e WAYLAND_DISPLAY=wayland-0 " +
+           "-e XDG_RUNTIME_DIR=/mnt/wslg/runtime-dir " +
+           "-e MEMORYLENS_BACKEND=$Backend " +
+           "-v /tmp/.X11-unix:/tmp/.X11-unix -v /mnt/wslg:/mnt/wslg " +
+           "-v `"$wslKit`":/kit -v `"$wslProj`":/work -w /work " +
+           "memorylens-irisview bash /work/deploy/sim-gui.sh $Port"
+    wsl -d Ubuntu bash -lc $cmd
+    exit $LASTEXITCODE
 }
 
 Write-Host "== docker $Cmd ==" -ForegroundColor Cyan

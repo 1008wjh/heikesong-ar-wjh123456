@@ -265,10 +265,10 @@ function paintIdle(msg) {
   complexKey = "";
   lastScene = { idle: msg };
   putText(retained.status, msg);
-  putText(retained.name, "");
-  putText(retained.role, "");
-  putText(retained.sim, "");
-  retained.info.forEach((t) => putText(t, ""));
+  putText(retained.name, " ");
+  putText(retained.role, " ");
+  putText(retained.sim, " ");
+  retained.info.forEach((t) => putText(t, " "));
   putText(retained.foot, "按一下就说");
 }
 
@@ -276,8 +276,8 @@ function paintOffline(err) {
   stopScroll();
   putText(retained.status, "后台没连上");
   putText(retained.name, "眼镜在线");
-  putText(retained.role, "");
-  putText(retained.sim, "");
+  putText(retained.role, " ");
+  putText(retained.sim, " ");
   const rows = splitLines("电脑上跑 start.bat", 6);
   retained.info.forEach((t, i) => putText(t, rows[i] || ""));
   putText(retained.foot, "按一下就说");
@@ -325,8 +325,8 @@ function paintComplex(name) {
   viewMode = "complex";
   putText(retained.status, "详情 · 按「确认」收起");
   putText(retained.name, name || "");
-  putText(retained.role, "");
-  putText(retained.sim, "");
+  putText(retained.role, " ");
+  putText(retained.sim, " ");
   cardRows = complexRows || [];
   if (!same) rowOffset = 0;
   paintRows();
@@ -373,7 +373,7 @@ let stopNote = 0;                // 停止持续听后，底栏先显示一阵"�
 function paintRows() {
   const total = cardRows.length;
   retained.info.forEach((t, i) => {
-    if (!total) { putText(t, ""); return; }
+    if (!total) { putText(t, " "); return; }
     const row = cardRows[(rowOffset + i) % total];
     putText(t, i < Math.min(total, VISIBLE_ROWS) ? (row || "") : "");
   });
@@ -457,7 +457,7 @@ function paintListening() {
   if (!capture.lastCard) {
     putText(retained.name, "在听…");
     putText(retained.role, "直接说话就行，不用按键");
-    putText(retained.sim, "");
+    putText(retained.sim, " ");
     const hint = [
       "前 15 秒用来认人",
       "认出来就一直记这段对话",
@@ -728,7 +728,7 @@ function paintText() {
     putText(retained.status, "建议 · 上下选");
     putText(retained.name, (lastScene && lastScene.card && lastScene.card.name) || "一句话指令");
     putText(retained.role, "确认=发送");
-    putText(retained.sim, "");
+    putText(retained.sim, " ");
     const rows = textMode.options.map((o, i) => (i === textMode.index ? "▶ " + o : "  " + o));
     retained.info.forEach((t, i) => putText(t, rows[i] || ""));
     putText(retained.foot, "返回 关掉");
@@ -737,7 +737,7 @@ function paintText() {
   putText(retained.status, "打字 · 方向键选");
   putText(retained.name, textMode.draft ? textMode.draft.slice(-5) : "?");
   putText(retained.role, "短语键");
-  putText(retained.sim, "");
+  putText(retained.sim, " ");
   const rows = keyRowsView();
   retained.info.forEach((t, i) => putText(t, rows[i] || ""));
   putText(retained.foot, "删除 发送 关闭");
@@ -829,7 +829,7 @@ function paintMode() {
   putText(retained.status, "选模式 · 左右选 · 确认进入");
   putText(retained.name, "开始记录");
   putText(retained.role, "先选这一段是什么");
-  putText(retained.sim, "");
+  putText(retained.sim, " ");
   const rows = MODE_ITEMS.map((m, i) => (i === modeSelect.index ? "【" + m.label + "】" : "  " + m.label));
   retained.info.forEach((t, i) => putText(t, rows[i] || ""));
   retained.info[2] && putText(retained.info[2], MODE_ITEMS[modeSelect.index].hint);
@@ -950,6 +950,7 @@ function tick() {
 function start() {
   if (retained.window) return;
   buildHud();
+  paintIdle("按一下开始听…");   // 先把空闲态画出来，别留控件的默认 "Text"
   poll();
   pollTimer = setInterval(poll, POLL_MS);
   lastPaintAt = 0;
