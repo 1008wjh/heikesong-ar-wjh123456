@@ -20,6 +20,7 @@ from typing import Any, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 import cards
+import calllog
 import llm
 import voice
 
@@ -43,6 +44,13 @@ class AgentState(TypedDict, total=False):
     view: dict
     rev: int
     ms: int
+    # 下面几个只用于日志/排查：哪一步慢、有没有走兜底
+    asr_ms: int
+    asr_src: str         # local | http | text | failed | none
+    llm_ms: int
+    rule_fallback: bool
+    slice_no: int
+    window: str
 
 
 # ---------- 工具：匹配、抽取 ----------
@@ -104,12 +112,16 @@ def tool_extract(state: AgentState) -> dict:
     """抽要点。模型不可用就退回关键词规则，保证界面照样有东西。"""
     text = state.get("text") or ""
     person = {"name": state.get("person_name") or "这个人", "role": ""}
+    t0 = time.time()
     try:
         got = llm.analyze(text, person)
-        return {"items": got.get("items") or [], "summary": got.get("summary") or ""}
+        return {"items": got.get("items") or [], "summary": got.get("summary") or "",
+                "llm_ms": int((time.time() - t0) * 1000), "rule_fallback": False}
     except llm.LLMUnavailable as e:
         return {"items": rule_extract(text), "summary": "",
-                "degraded": True, "notes": ["模型不可用（%s），用关键词兜底" % e]}
+                "degraded": True, "rule_fallback": True,
+                "llm_ms": int((time.time() - t0) * 1000),
+                "notes": ["模型不可用（%s），用关键词兜底" % e]}
 
 
 def rule_extract(text: str) -> list[dict]:
@@ -136,13 +148,22 @@ def rule_extract(text: str) -> list[dict]:
 def node_ingest(state: AgentState) -> dict:
     text = (state.get("text") or "").strip()
     audio = state.get("audio") or ""
+    asr_ms = None
+    asr_src = "none"
     if not text and audio:
+        t0 = time.time()
         try:
             text = llm.transcribe(decode_audio_ref(audio))
+            asr_src = "local" if llm.status().get("asrProvider") == "local" else "http"
         except Exception as e:
-            return {"text": "", "notes": (state.get("notes") or []) + ["转写失败：%s" % e]}
+            return {"text": "", "notes": (state.get("notes") or []) + ["转写失败：%s" % e],
+                    "asr_ms": int((time.time() - t0) * 1000), "asr_src": "failed"}
+        asr_ms = int((time.time() - t0) * 1000)
+    elif text:
+        asr_src = "text"
     window = ((state.get("window") or "") + " " + text).strip()[-2000:]
     return {"text": text[:MAX_TRANSCRIPT], "window": window,
+            "asr_ms": asr_ms, "asr_src": asr_src,
             "slice_no": int(state.get("slice_no") or 0) + 1}
 
 
@@ -317,6 +338,17 @@ def run_feed(session: str, text: str = "", audio: str = "", auto_add: bool = Tru
     view["rev"] = int(time.time() * 1000) % 1000000
     view["ms"] = int((time.time() - t0) * 1000)
     view["notes"] = out.get("notes") or []
+    calllog.emit(
+        kind="agent.feed", session=session, mode=out.get("mode") or "",
+        slice_no=out.get("slice_no"), state=view.get("state"),
+        person=view.get("person") or "", person_id=view.get("person_id") or "",
+        matched_by=out.get("matched_by") or "none",
+        similarity=view.get("similarity"), items=len(out.get("items") or []),
+        degraded=bool(out.get("degraded")), rule_fallback=bool(out.get("rule_fallback")),
+        asr_src=out.get("asr_src"), asr_ms=out.get("asr_ms"), llm_ms=out.get("llm_ms"),
+        total_ms=view["ms"], chars=len(out.get("text") or ""),
+        notes=(out.get("notes") or [])[:3],
+    )
     return view
 
 

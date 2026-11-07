@@ -51,7 +51,8 @@ let rafId = null;
 let lastPaintAt = 0;
 let lastScene = null;
 let lastCardKey = "";
-let endedAt = 0;          // {card, rev, ms} 或 {idle:"..."}，用来周期性重绘
+let endedAt = 0;
+let bootAt = Date.now();   // 启动前的旧结果不显示（首页要干净）          // {card, rev, ms} 或 {idle:"..."}，用来周期性重绘
 let pollTimer = null;
 let navTimer = null;
 let outboxTimer = null;
@@ -910,6 +911,7 @@ async function poll() {
       return;
     }
     const c0 = faces[0];
+    if ((data.at || 0) < bootAt) return;      // 启动时就躺在 /api/latest 里的旧卡片，不画
     if (c0.kind === "agent" && !capture && Date.now() - endedAt < 15000) {
       // 上一段晚到的对话结果：不在待机时画，免得盖住当前画面
       return;

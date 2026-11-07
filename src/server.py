@@ -12,13 +12,14 @@ import time
 import traceback
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlparse
 
 import cv2
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import agent  # noqa: E402
+import calllog  # noqa: E402
 import cards  # noqa: E402
 import llm  # noqa: E402
 import voice  # noqa: E402
@@ -184,6 +185,14 @@ class Handler(BaseHTTPRequestHandler):
             st = llm.status()
             st["ok"] = True
             return self._json(st)
+        if path == "/api/agent/log":
+            # 最近 N 条调用日志（JSONL 里一行一条），默认 50
+            qs = parse_qs(urlparse(self.path).query)
+            try:
+                n = max(1, min(500, int((qs.get("n") or ["50"])[0])))
+            except Exception:
+                n = 50
+            return self._json({"path": calllog.path(), "items": calllog.tail(n)})
         if path == "/api/latest/reset":
             # 调试用：把"眼镜上现在显示的那条"清掉，方便验证下一次推送
             with _LAST_LOCK:
