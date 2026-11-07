@@ -184,10 +184,11 @@ function getJson(path) {
   });
 }
 
-function postJson(path, body) {
+function postJson(path, body, timeoutMs) {
+  const ms = timeoutMs || 8000;
   if (typeof fetch === "function") {
     const signal = typeof AbortSignal !== "undefined" && AbortSignal.timeout
-      ? AbortSignal.timeout(8000) : undefined;
+      ? AbortSignal.timeout(ms) : undefined;
     return fetch(BACKEND + path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -201,7 +202,7 @@ function postJson(path, body) {
   return new Promise((resolve, reject) => {
     const req = http.request(BACKEND + path, {
       method: "POST",
-      timeout: 8000,
+      timeout: ms,
       headers: { "Content-Type": "application/json", "Content-Length": payload.length },
     }, (res) => {
       let buf = "";
@@ -285,11 +286,14 @@ function paintIdle(msg) {
 
 function paintOffline(err) {
   stopScroll();
-  putText(retained.status, "后台没连上");
-  putText(retained.name, "眼镜在线");
+  const msg = String(err || "");
+  // 超时 ≠ 没连上：后端在跑、只是这次慢（长调用最容易撞上）
+  const slow = /timeout|timed out|aborted|ETIMEDOUT/i.test(msg);
+  putText(retained.status, slow ? "后台在跑 · 这次慢" : "后台没连上");
+  putText(retained.name, slow ? "再按一次" : "眼镜在线");
   putText(retained.role, " ");
   putText(retained.sim, " ");
-  const rows = splitLines("电脑上跑 start.bat", 6);
+  const rows = splitLines(slow ? "这次有点慢，再按一次确认" : "电脑上跑 start.bat", 6);
   retained.info.forEach((t, i) => putText(t, rows[i] || ""));
   putText(retained.foot, "按一下就说");
 }
@@ -435,7 +439,7 @@ function stopScroll() {
 const SLICE_MS = Number(process.env.MEMORYLENS_SLICE_MS || 55000);
 const FIRST_SLICE_MS = Number(process.env.MEMORYLENS_FIRST_SLICE_MS || 15000);
 const SILENT_PEAK = 60;      // 整片峰值低于这个数就认为麦克风没进声音   // 第一片短一点，先认人         // 一片 55 秒：正好卡在平台 60 秒会话上限之前
-const MAX_SESSION_MS = 59000;   // 会话再长就换一个，避免撞平台上限
+const MAX_SESSION_MS = 60500;   // 平台 60 秒上限；让平台自己 end，我们只兜底
 const SLICE_MIN_MS = 5000;      // 停止时最后一片不足这个数就丢掉
 const MAX_LISTEN_MS = 30 * 60 * 1000;   // 兜底：连续听 30 分钟自动停
 const AUTO_ARCHIVE = process.env.MEMORYLENS_ARCHIVE !== "0";   // 停止后把整段对话整理进档案
@@ -452,6 +456,8 @@ function clockOf(ms, step) {
 }
 
 function listenLine() {
+  const c0 = capture;
+  if (c0 && !c0.session) return "等「确认采集」";
   const c = capture;
   const tail = c.sent ? " · " + c.sent + " 段" : "";
   const silent = c.samples === 0 && Date.now() - c.startedAt > 3000;
@@ -805,7 +811,7 @@ async function identify(c, wav) {
   try {
     res = await postJson("/api/agent/feed", {
       session: c.agentSession, audio: wav, auto_add: true, mode: c.mode,
-    });
+    }, 30000);
   } catch (e) {
     if (!outbox.push(wav)) c.dropped += 1;
     return;
@@ -852,7 +858,7 @@ async function pushChunk(c, wav, manual) {
     const res = await postJson("/api/agent/feed", {
       session: c.agentSession, audio: wav, auto_add: true, mode: c.mode,
       manual: !!manual,
-    });
+    }, 30000);
     c.sent += 1;
     const v = (res && res.view) || null;
     if (!v) return;
@@ -905,7 +911,7 @@ async function stopAndArchive(msg) {
   }
   paintIdle("整理 " + c.personName + " 这段…");
   try {
-    const analyzed = await postJson("/api/converse/analyze", { session: c.sessionId });
+    const analyzed = await postJson("/api/converse/analyze", { session: c.sessionId }, 30000);
     const items = (analyzed && analyzed.items) || [];
     if (!items.length) {
       paintIdle("没析出要点 · 转写已存");
@@ -984,7 +990,7 @@ async function sendText(text) {
       session: "text-" + Date.now().toString(36),
       text: t,
       auto_add: false,
-    });
+    }, 30000);
     const v = resp && resp.view;
     if (!v) { paintIdle("没拿到结果"); return; }
     const card = {

@@ -352,20 +352,24 @@ def pick_person(transcript, names):
 
 
 def recommend(transcript, person_name, profile, items):
-    """下一步该做什么：给三条可点的行动建议（要贴着这个人的档案说）。"""
+    """下一步该说什么：给三条「提词」（不是总结，是接下来能直接说出口的话）。"""
     who = person_name or "一个刚认识的陌生人"
     facts = profile or "（没有档案）"
     done = "；".join("%s：%s" % (i.get("key", ""), i.get("value", "")) for i in (items or [])[:6]) or "（这段还没抽出要点）"
     out = _chat_plain(
-        "你在帮用户和对面的人聊天。根据这个人的档案和这一段对话，给出三条「下一步可以做什么」的短建议。"
-        "要求：每条不超过 12 个字，动词开头，能直接照着做；不要解释；只输出 JSON。\n"
-        '格式：{"summary":"一句话总结这段对话","next":["建议1","建议2","建议3"]}',
+        "你是对话提词器，不是会议纪要。用户戴着眼镜正和对面的人面对面说话，"
+        "需要的是「接下来我该说什么」，不是「刚才说了什么」。\n"
+        "根据档案和刚才这段对话，给三条可以直接说出口的话，挑对方最可能接得住的方向："
+        "追问细节、兑现承诺、或者接一个他刚提到的事。\n"
+        "要求：每条不超过 12 个字；写成第一人称可以直接念出来的短句；"
+        "不要出现「总结/建议/可以」这类词；不要解释；只输出 JSON。\n"
+        '格式：{"hint":"一句≤18字的接话提示","say":["可以说的1","可以说的2","可以说的3"]}',
         "对面的人：%s\n档案：%s\n这段的要点：%s\n对话原文：%s" % (who, facts, done, (transcript or "")[-1200:]),
-        max_tokens=180,
+        max_tokens=200,
     )
     obj = _loads_loose(out) or {}
-    nxt = [str(x).strip()[:14] for x in (obj.get("next") or []) if str(x).strip()][:3]
-    return {"summary": str(obj.get("summary") or "")[:60], "next": nxt}
+    say = [str(x).strip()[:14] for x in (obj.get("say") or obj.get("next") or []) if str(x).strip()][:3]
+    return {"summary": str(obj.get("hint") or obj.get("summary") or "")[:40], "next": say}
 
 
 def analyze(transcript, person):

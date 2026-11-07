@@ -255,7 +255,12 @@ def node_render(state: AgentState) -> dict:
     name = state.get("person_name") or ""
     items = state.get("items") or []
     heard = (state.get("window") or state.get("text") or "").strip()
-    if not items:
+    hints = [str(x).strip() for x in (state.get("next_actions") or []) if str(x).strip()][:3]
+    if hints:
+        # 镜片上要做的是"提词"：接下来能直接说出口的话，不是刚才的汇总。
+        rows = hints
+        state_name = "完成" if name else "待确认"
+    elif not items:
         # 让镜片自己说出"听到了什么" —— 不然用户完全不知道是麦克风没收到、
         # 还是收到了但没抽到要点。
         first = ("听到：" + heard[:12]) if heard else "没听到声音"
