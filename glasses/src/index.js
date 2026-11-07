@@ -372,7 +372,11 @@ let complexKey = "";
 let autoDetailDone = false;      // 详情页内容指纹（tick 重画时判断要不要回到第一行）
 let stopNote = 0;                // 停止持续听后，底栏先显示一阵"已停止"
 
+let paintedRows = "";
 function paintRows() {
+  const want = cardRows.slice(rowOffset, rowOffset + VISIBLE_ROWS).join("|");
+  if (want === paintedRows) return;
+  paintedRows = want;
   const total = cardRows.length;
   retained.info.forEach((t, i) => {
     if (!total) { putText(t, " "); return; }
@@ -425,16 +429,20 @@ const AUTO_ARCHIVE = process.env.MEMORYLENS_ARCHIVE !== "0";   // 停止后把�
 
 let capture = null;   // {session,chunks,samples,queue,busy,personId,personName,sessionId,slices,sent,lastCard,stopped,dropped}
 
-function clockOf(ms) {
-  const s = Math.max(0, Math.floor(ms / 1000));
-  return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
+// 在听页每秒改一次文字会让整块面板重绘（镜片上就是闪），所以按 10 秒取整
+function clockOf(ms, step) {
+  const sec = Math.max(0, Math.floor(ms / 1000));
+  const q = step ? Math.floor(sec / step) * step : sec;
+  const m = Math.floor(q / 60);
+  const r = q % 60;
+  return m + ":" + (r < 10 ? "0" + r : r);
 }
 
 function listenLine() {
   const c = capture;
   const tail = c.sent ? " · " + c.sent + " 段" : "";
   const silent = c.samples === 0 && Date.now() - c.startedAt > 3000;
-  return "在听 " + clockOf(Date.now() - c.startedAt) + (silent ? " · 没声音" : tail);
+  return "在听 " + clockOf(Date.now() - c.startedAt, 10) + (silent ? " · 没声音" : tail);
 }
 
 // 只刷"状态行 + 底栏"；卡片内容由切片结果负责画，避免每 400ms 把卡片冲掉
