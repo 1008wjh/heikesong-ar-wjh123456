@@ -18,6 +18,32 @@ import time
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
+import presets as presets_store
+
+# 主页面上的快捷预设：id -> {label, prompt, op, layout}
+# op=filter 只留待办；op=summary 摘要；op=next 出提词；op=recall 翻历史
+# 快捷按钮本身在 data/presets.json，可后台编辑；这里只登记"有确定性分支"的 id
+PRESET_OP = {"todo": "filter", "recall": "recall", "hint": "next"}
+
+_CANCEL = set()
+_CANCEL_LOCK = threading.Lock()
+
+
+def cancel(session: str) -> bool:
+    """作废某个会话正在跑的结果（interrupt）。"""
+    with _CANCEL_LOCK:
+        _CANCEL.add(session)
+    return True
+
+
+def _cancelled(session: str) -> bool:
+    with _CANCEL_LOCK:
+        return session in _CANCEL
+
+
+def _clear_cancel(session: str) -> None:
+    with _CANCEL_LOCK:
+        _CANCEL.discard(session)
 
 import cards
 import calllog
@@ -58,6 +84,8 @@ class AgentState(TypedDict, total=False):
     window: str
     skipped_short: bool
     manual: bool         # 用户按「确认」主动触发的那一片（第几片都要给建议）
+    preset: str          # 主页面快捷预设 id（todo/summary/next/recall）
+    cancelled: bool      # 这次请求被 /api/agent/cancel 作废了
 
 
 # ---------- 工具：匹配、抽取 ----------
@@ -267,6 +295,36 @@ def node_render(state: AgentState) -> dict:
         }}
     name = state.get("person_name") or ""
     items = state.get("items") or []
+    preset = state.get("preset") or ""
+    if state.get("cancelled"):
+        return {"view": {"state": "异常", "layout": "notice",
+                         "rows": ["已取消", "按一下重新问"], "person": "",
+                         "degraded": False}}
+    if preset == "todo":
+        # 只留待办：内容变少 + 布局变 focus（对应评分里的"重点/布局变化"）
+        keep = [it for it in items if str(it.get("key")) in ("答应的事", "跟进", "日期")]
+        rows = ["%s: %s" % (it.get("key", ""), it.get("value", "")) for it in keep[:4]]
+        return {"view": {"state": "完成", "layout": "focus",
+                         "rows": rows or ["这段没有待办", "换个预设试试"],
+                         "person": name, "person_id": state.get("person_id") or "",
+                         "matched_by": state.get("matched_by") or "none",
+                         "similarity": state.get("similarity") or 0.0,
+                         "options": [], "degraded": False, "preset": preset}}
+    if preset == "recall":
+        person = store_ref.get(state.get("person_id") or "") if state.get("person_id") else None
+        rows = []
+        for cv in ((person or {}).get("conversations") or [])[-2:]:
+            sm = (cv or {}).get("summary") or ""
+            if sm:
+                rows.append("上次: " + sm[:24])
+        facts = ((person or {}).get("complex") or {}).get("对话要点") or {}
+        rows += ["%s: %s" % (k, v) for k, v in list(facts.items())[:2]]
+        return {"view": {"state": "完成", "layout": "card",
+                         "rows": rows or ["还没记过和这个人的对话"],
+                         "person": name, "person_id": state.get("person_id") or "",
+                         "matched_by": state.get("matched_by") or "none",
+                         "similarity": state.get("similarity") or 0.0,
+                         "options": [], "degraded": False, "preset": preset}}
     heard = (state.get("window") or state.get("text") or "").strip()
     hints = [str(x).strip() for x in (state.get("next_actions") or []) if str(x).strip()][:3]
     first_slice = int(state.get("slice_no") or 1) <= 1 and not state.get("manual")
@@ -313,7 +371,9 @@ def node_recommend(state: AgentState) -> dict:
     # 第一片只做"认人 + 要点"；下一步建议从第二片起（也就是 55 秒那一片）才调模型
     # 第一片只做"认人 + 要点"；下一步建议从第二片起才调模型。
     # 例外：用户手动按「确认」触发的那一片（manual），第几片都要跑。
-    if int(state.get("slice_no") or 1) <= 1 and not state.get("manual"):
+    if state.get("cancelled"):
+        return {"notes": (state.get("notes") or []) + ["已取消，跳过提词"]}
+    if int(state.get("slice_no") or 1) <= 1 and not state.get("manual") and not state.get("preset"):
         return {}
     person = store_ref.get(state.get("person_id") or "") if state.get("person_id") else None
     profile = ""
@@ -329,7 +389,11 @@ def node_recommend(state: AgentState) -> dict:
         profile = " / ".join([x for x in lines + extra if x])[:800]
     t0 = time.time()
     try:
-        got = llm.recommend(state.get("window") or state.get("text") or "",
+        want = (presets_store.get(state.get("preset") or "") or {}).get("prompt") or ""
+        dialog = (state.get("window") or state.get("text") or "")
+        if want:
+            dialog = "用户要求：" + want + "\n对话：\n" + dialog
+        got = llm.recommend(dialog,
                             state.get("person_name") or "", profile, state.get("items") or [])
         nxt = got.get("next") or []
         return {"next_actions": nxt, "rec_ms": int((time.time() - t0) * 1000),
@@ -393,7 +457,7 @@ def graph():
 
 
 def run_feed(session: str, text: str = "", audio: str = "", auto_add: bool = True,
-             mode: str = "", manual: bool = False) -> dict:
+             mode: str = "", manual: bool = False, preset: str = "") -> dict:
     """跑一片。session 相同的片会落在同一个 thread 里（上下文自动保留）。
 
     manual=True：这片是用户按「确认」主动触发的，第几片都要跑"档案+转写→建议"。
@@ -407,9 +471,11 @@ def run_feed(session: str, text: str = "", audio: str = "", auto_add: bool = Tru
             manual=manual, people=people,
         )
     t0 = time.time()
+    _clear_cancel(session)          # 新请求开始，作废上一轮留下的取消标记
     state: AgentState = {"session": session, "text": text, "audio": audio,
                          "auto_add": auto_add, "degraded": False, "notes": [],
-                         "mode": (mode or "").lower(), "manual": bool(manual)}
+                         "mode": (mode or "").lower(), "manual": bool(manual),
+                         "preset": preset or "", "cancelled": False}
     cfg = {"configurable": {"thread_id": session}}
     try:
         out = graph().invoke(state, cfg)

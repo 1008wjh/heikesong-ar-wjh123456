@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Archivo:wght@400;600&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="style.css?v=15" />
+<link rel="stylesheet" href="style.css?v=16" />
 </head>
 <body>
 
@@ -59,9 +59,9 @@
       <span class="mod-n">02</span>
       <span class="mod-t">对话分析</span>
     </button>
-    <button class="mod" disabled title="待开发">
+    <button class="mod" id="modPreset" data-mod="preset">
       <span class="mod-n">03</span>
-      <span class="mod-t">识别日志</span>
+      <span class="mod-t">预设按钮</span>
     </button>
     <button class="mod" disabled title="待开发">
       <span class="mod-n">04</span>
@@ -162,7 +162,25 @@
   </section>
 
   <!-- 模块 02：单人对话 → 大模型析出要点 -->
-  <section class="conv" id="conv" hidden>
+  <section class="presets" id="presets" hidden>
+      <div class="cell pres-head">
+        <div>
+          <p class="kicker">模块 03</p>
+          <h2>镜片主页面上的按钮</h2>
+          <p class="empty-p">最多 3 个。名字显示在镜片上（建议 ≤4 字），提示词是按下确认时一起发给模型的指令。</p>
+        </div>
+        <div class="pres-acts">
+          <button class="btn ghost" id="presetAdd" type="button">＋ 加一个</button>
+          <button class="btn" id="presetSave" type="button">保存</button>
+        </div>
+      </div>
+      <div class="cell pres-body">
+        <div id="presetList"></div>
+        <p class="tiny" id="presetMsg">改完点保存，眼镜下次启动或 30 秒内会换过来。</p>
+      </div>
+    </section>
+
+    <section class="conv" id="conv" hidden>
 
     <div class="cell conv-pick">
       <p class="kicker">第一步</p>
@@ -214,6 +232,6 @@
 
 <div id="toast" class="toast" hidden></div>
 
-<script src="app.js?v=15"></script>
+<script src="app.js?v=16"></script>
 </body>
 </html>

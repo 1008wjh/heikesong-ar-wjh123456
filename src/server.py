@@ -22,6 +22,7 @@ import agent  # noqa: E402
 import calllog  # noqa: E402
 import cards  # noqa: E402
 import llm  # noqa: E402
+import presets as presets_store  # noqa: E402
 import voice  # noqa: E402
 from face import FaceEngine  # noqa: E402
 from store import MATCH_THRESHOLD, Store  # noqa: E402
@@ -181,6 +182,8 @@ class Handler(BaseHTTPRequestHandler):
             with _LAST_LOCK:
                 snapshot = dict(_LAST)
             return self._json({"ok": True, **snapshot})
+        if path == "/api/presets":
+            return self._json({"ok": True, "items": presets_store.list_presets()})
         if path == "/api/agent/status":
             st = llm.status()
             st["ok"] = True
@@ -218,6 +221,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._agent_feed(body)
             if path == "/api/agent/archive":
                 return self._agent_archive(body)
+            if path == "/api/presets/save":
+                try:
+                    items = presets_store.save_presets(body.get("items"))
+                except Exception as e:
+                    return self._json({"ok": False, "error": str(e)}, 400)
+                return self._json({"ok": True, "items": items})
+            if path == "/api/agent/cancel":
+                session = str(body.get("session") or "")
+                agent.cancel(session)
+                return self._json({"ok": True, "cancelled": session})
             if path == "/api/voice/enroll":
                 return self._voice_enroll(body)
             if path == "/api/people/save":
@@ -365,9 +378,10 @@ class Handler(BaseHTTPRequestHandler):
         auto_add = body.get("auto_add", True)
         manual = bool(body.get("manual"))
         mode = str(body.get("mode") or "")
+        preset = str(body.get("preset") or "")
         view = agent.run_feed(
             session, text=text, audio=audio, auto_add=bool(auto_add),
-            mode=mode, manual=manual,
+            mode=mode, manual=manual, preset=preset,
         )
         person = None if view.get("mode") == "meeting" else store.get(view.get("person_id") or "")
         if person:

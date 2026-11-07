@@ -6,7 +6,7 @@
 const $ = (s) => document.querySelector(s);
 
 // 改代码就 +1，页脚会显示。看到 build 不是最新的，说明浏览器还在跑旧脚本。
-const BUILD = 15;
+const BUILD = 16;
 
 const state = { people: [], threshold: 0.4 };
 
@@ -382,19 +382,115 @@ const conv = {
 
 function setModule(name) {
   const onConv = name === 'conv';
+  const onPreset = name === 'preset';
+  const showPeople = !onConv && !onPreset;
   const convEl = $('#conv');
-  if (!convEl) return;
-  convEl.hidden = !onConv;
-  if ($('#contentPeople')) $('#contentPeople').hidden = onConv;
-  if ($('#listcol')) $('#listcol').hidden = onConv;
-  if ($('#modPeople')) $('#modPeople').classList.toggle('is-active', !onConv);
-  if ($('#modConv')) $('#modConv').classList.toggle('is-active', onConv);
-  if ($('#modConv')) $('#modConv').setAttribute('aria-current', onConv ? 'page' : 'false');
+  if (convEl) convEl.hidden = !onConv;
+  if ($('#presets')) $('#presets').hidden = !onPreset;
+  if ($('#contentPeople')) $('#contentPeople').hidden = !showPeople;
+  if ($('#listcol')) $('#listcol').hidden = !showPeople;
+  [['#modPeople', showPeople], ['#modConv', onConv], ['#modPreset', onPreset]].forEach(([sel, on]) => {
+    const el = $(sel);
+    if (!el) return;
+    el.classList.toggle('is-active', !!on);
+    el.setAttribute('aria-current', on ? 'page' : 'false');
+  });
   if (onConv) {
     convBindOnce();
     renderConvPeople();
     loadConvLlm();
   }
+  if (onPreset) {
+    presetBindOnce();
+    loadPresets();
+  }
+}
+
+/* ---------------- 预设按钮（镜片主页那三个） ---------------- */
+const presets = { items: [], busy: false, bound: false };
+
+function mk(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;
+  return n;
+}
+
+async function loadPresets() {
+  try {
+    const res = await fetch('/api/presets');
+    const data = await res.json();
+    presets.items = (data.items || []).map((x) => ({ id: x.id, label: x.label, prompt: x.prompt }));
+    renderPresets();
+  } catch (e) {
+    if ($('#presetMsg')) $('#presetMsg').textContent = '读不到预设：' + e.message;
+  }
+}
+
+function renderPresets() {
+  const box = $('#presetList');
+  if (!box) return;
+  box.replaceChildren();
+  presets.items.forEach((it, i) => {
+    const row = mk('div', 'preset-row');
+    const idx = mk('span', 'preset-idx', String(i + 1));
+    const label = mk('input', 'preset-label');
+    label.placeholder = '按钮名（≤4 字）';
+    label.value = it.label || '';
+    label.oninput = () => { it.label = label.value; };
+    const prompt = mk('input', 'preset-prompt');
+    prompt.placeholder = '提示词：按下确认时一起发给模型';
+    prompt.value = it.prompt || '';
+    prompt.oninput = () => { it.prompt = prompt.value; };
+    const del = mk('button', 'btn ghost tiny', '删');
+    del.type = 'button';
+    del.onclick = () => { presets.items.splice(i, 1); renderPresets(); };
+    row.append(idx, label, prompt, del);
+    box.append(row);
+  });
+  if (!presets.items.length) {
+    box.append(mk('p', 'tiny', '还没有按钮，点右上角「＋ 加一个」。'));
+  }
+}
+
+async function savePresets() {
+  if (presets.busy) return;
+  presets.busy = true;
+  const btn = $('#presetSave');
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetch('/api/presets/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: presets.items }),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || '保存失败');
+    presets.items = data.items || presets.items;
+    renderPresets();
+    if ($('#presetMsg')) $('#presetMsg').textContent = '已保存 · 眼镜下次启动生效';
+  } catch (e) {
+    if ($('#presetMsg')) $('#presetMsg').textContent = '保存失败：' + e.message;
+  } finally {
+    presets.busy = false;
+    if (btn) btn.disabled = false;
+  }
+}
+
+function presetBindOnce() {
+  if (presets.bound) return;
+  presets.bound = true;
+  if ($('#presetAdd')) {
+    $('#presetAdd').onclick = () => {
+      if (presets.items.length >= 3) {
+        if ($('#presetMsg')) $('#presetMsg').textContent = '镜片主页面只放得下 3 个按钮';
+        return;
+      }
+      presets.items.push({ id: 'p' + Date.now().toString(36), label: '', prompt: '' });
+      renderPresets();
+    };
+  }
+  if ($('#presetSave')) $('#presetSave').onclick = savePresets;
 }
 
 async function loadConvLlm() {
@@ -715,6 +811,7 @@ function bind() {
   if ($('#btnAdd2')) $('#btnAdd2').onclick = add;
   if ($('#modPeople')) $('#modPeople').onclick = () => setModule('people');
   if ($('#modConv')) $('#modConv').onclick = () => setModule('conv');
+  if ($('#modPreset')) $('#modPreset').onclick = () => setModule('preset');
   if ($('#search')) $('#search').oninput = renderPeople;
   if ($('#edCancel')) $('#edCancel').onclick = closeEditor;
   if ($('#edSave')) $('#edSave').onclick = savePerson;

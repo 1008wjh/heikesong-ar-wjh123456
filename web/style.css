@@ -760,3 +760,45 @@ code {
     transition-duration: 0.001ms !important;
   }
 }
+
+/* ---------- 模块 03：预设按钮 ---------- */
+.presets {
+  grid-column: 2 / -1;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: var(--gap);
+  min-height: 0;
+}
+
+.pres-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  padding: 18px 20px;
+}
+
+.pres-head h2 { font-size: 22px; margin: 0 0 6px; }
+.pres-acts { display: flex; gap: 8px; }
+
+.pres-body { padding: 16px 20px; overflow-y: auto; }
+
+.preset-row {
+  display: grid;
+  grid-template-columns: 28px 140px minmax(0, 1fr) 44px;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.preset-idx { color: var(--muted); font-size: 12px; }
+.preset-label, .preset-prompt {
+  width: 100%;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--bg);
+  border: 3px solid var(--line);
+  padding: 7px 9px;
+}
+.preset-prompt { font-size: 12.5px; }
