@@ -215,7 +215,14 @@ function wavFramesLoop(name, seconds) {
   check("后端在线", health.ok === true, JSON.stringify(health));
 
   // 用一个熟人做声纹基准
-  const people = (await (await fetch(BACKEND + "/api/people")).json()).people;
+  // 上一次跑剩下的测试人先清掉（自动建号是异步的，上一轮清理可能没赶上）
+  for (const p of (await (await fetch(BACKEND + "/api/people")).json()).people) {
+    if (p.name.startsWith("陌生人")) await postJson("/api/people/delete", { id: p.id });
+  }
+
+  const people0 = (await (await fetch(BACKEND + "/api/people")).json()).people;
+  const idsBefore = new Set(people0.map((p) => p.id));
+  const people = people0;
   const wang = people.find((p) => p.name === "王姐");
   if (!wang) {
     const r = await postJson("/api/people/save", {
@@ -244,10 +251,10 @@ function wavFramesLoop(name, seconds) {
   // 1) 按一下 → 开始听：前 15 秒切片认人，认出后卡片浮出
   feed = { frames: wavFramesLoop("huihui_b", 240), perTick: 120 };
   navQueue.push("activate");
-  await sleep(400);
+  await waitUntil(() => hud().some((v) => v.includes("单人")), 6000);
   check("先出单人/多人选择", hud().some((v) => v.includes("单人")), JSON.stringify(hud()));
   navQueue.push("activate");
-  await sleep(600);
+  await waitUntil(() => hud().some((v) => v.includes("在听")), 8000);
   check("进入持续听（状态行有计时）", hud().some((v) => v.includes("在听")), JSON.stringify(hud()));
   await waitUntil(() => hud().includes("王姐"), 30000);
   let lines = hud();
@@ -312,6 +319,17 @@ function wavFramesLoop(name, seconds) {
   navQueue.push("back");
   await sleep(400);
   check("返回键关掉键盘", !hud().some((v) => v.includes("【")), JSON.stringify(hud()));
+
+  // 收尾：自动建号是异步的（归档还在跑），等一会儿再清两次
+  for (let pass = 0; pass < 2; pass++) {
+    await sleep(1500);
+    try {
+      const now = (await (await fetch(BACKEND + "/api/people")).json()).people;
+      for (const p of now) {
+        if (!idsBefore.has(p.id)) await postJson("/api/people/delete", { id: p.id });
+      }
+    } catch (e) { /* 清理失败不影响断言结果 */ }
+  }
 
   console.log(failures ? `\n${failures} 项失败` : "\n全部通过");
   process.exit(failures ? 1 : 0);
