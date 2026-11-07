@@ -452,7 +452,8 @@ const SLICE_MIN_MS = 5000;      // 停止时最后一片不足这个数就丢掉
 const MAX_LISTEN_MS = 30 * 60 * 1000;   // 兜底：连续听 30 分钟自动停
 const AUTO_ARCHIVE = process.env.MEMORYLENS_ARCHIVE !== "0";   // 停止后把整段对话整理进档案
 
-let capture = null;   // {session,chunks,samples,queue,busy,personId,personName,sessionId,slices,sent,lastCard,stopped,dropped}
+let capture = null;
+let prevIdentified = null;   // {session,chunks,samples,queue,busy,personId,personName,sessionId,slices,sent,lastCard,stopped,dropped}
 
 // 在听页每秒改一次文字会让整块面板重绘（镜片上就是闪），所以按 10 秒取整
 function clockOf(ms, step) {
@@ -785,6 +786,8 @@ async function drain(c) {
 
 async function startListening(mode) {
   if (capture || background) return;
+  // 新一段开始：清掉上一段认出的人，否则第二段会沿用上一个人
+  prevIdentified = null;
   listenSig = "";
   // 上一段刚结束时会话还没被平台释放，立刻再申请就会报"麦克风繁忙"
   const cool = 2200 - (Date.now() - (endedAt || 0));
@@ -1313,13 +1316,16 @@ async function finishIdentify(c) {
   c.identifying = false;
   const chunks = c.identChunks;
   c.identChunks = [];
+  c.chunks = [];            // 认人用的音频不要混进后面的提词切片
+  c.samples = 0;
   if (!chunks.length) { paintListening("没录到声音"); return; }
   const wav = toWav(chunks, chunks.reduce((n, b) => n + b.length, 0));
   retained.status.setText("在想…");
   try {
-    const r = await postJson("/api/voice/identify", { audio: "data:audio/wav;base64," + wav.toString("base64") }, 60000);
-    if (r && r.status === "known") {
+    const r = await postJson("/api/voice/identify", { audio: wav }, 60000);
+        if (r && r.status === "known") {
       c.identified = { id: r.person_id, name: r.name };
+      prevIdentified = c.identified;
       c.personId = r.person_id;
       c.personName = r.name;
       c.lastCard = r.card || null;
