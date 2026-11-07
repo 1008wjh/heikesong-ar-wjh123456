@@ -505,6 +505,44 @@ def recommend(transcript, person_name, profile, items, system_prompt=""):
     return {"summary": "", "next": _fallback_next(items), "degraded": True, "fallback": True}
 
 
+MEETING_QA_PROMPT = """下面是一段线下会议对话，请完成以下要求：
+1. 从对话中提取出核心问题；
+2. 针对问题给出分点式的精简回答要点；
+3. 语言简洁，避免长段落，适配小屏幕阅读。
+
+对话上下文：
+{context}"""
+
+
+def answer_meeting(context):
+    """多人会议的一键 AI 应答（PRD 固定提示词）。
+
+    返回可以直接上 AR 小屏的要点式文本。没配 Key 时抛 LLMUnavailable，
+    由会议服务层降级成本地规则兜底——不假装模型可用。
+    """
+    context = (context or "").strip()
+    if not context:
+        raise LLMUnavailable("还没有会议上下文")
+    if STUB:
+        return ("1. 核心问题：报价单什么时候发、会议怎么安排？\n"
+                "2. 王姐会在下周三之前把报价单发过来。\n"
+                "3. 明天下午 3 点、三楼会议室开会，记得带电脑和充电器。\n"
+                "4. 会后需要确认会议时间并发送纪要。")
+    if not LLM_KEY:
+        raise LLMUnavailable("没配文本模型 Key（AR_LLM_KEY / DEEPSEEK_API_KEY 等）")
+    out = _chat_plain(
+        "你是线下会议的 AI 助手。回答必须精简、分点、适合 AR 小屏阅读；"
+        "只根据给出的会议上下文，不要编造没出现的信息。",
+        MEETING_QA_PROMPT.format(context=context[-4000:]),
+        max_tokens=520,
+        temperature=0.2,
+    )
+    out = (out or "").strip()
+    if not out:
+        raise LLMUnavailable("模型没有返回内容")
+    return out
+
+
 def analyze(transcript, person):
     """对话原文 → {summary, items[]}。person 只用 name/role 做上下文。"""
     transcript = (transcript or "").strip()

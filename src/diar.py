@@ -9,11 +9,14 @@ import sherpa_onnx
 
 import voice
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SEG_MODEL = os.environ.get(
     "AR_DIAR_MODEL",
-    r"E:\ar-memory\models\diar\sherpa-onnx-pyannote-segmentation-3-0\model.onnx",
+    os.path.join(ROOT, "models", "diar", "sherpa-onnx-pyannote-segmentation-3-0", "model.onnx"),
 )
-SPEAKER_MODEL = os.environ.get("AR_VOICE_MODEL", r"E:\ar-memory\models\campplus_zh_16k.onnx")
+SPEAKER_MODEL = os.environ.get(
+    "AR_VOICE_MODEL", os.path.join(ROOT, "models", "campplus_zh_16k.onnx"),
+)
 
 _lock = threading.Lock()
 _diar = None

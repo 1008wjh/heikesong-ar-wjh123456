@@ -1,11 +1,14 @@
 "use strict";
 
 /**
- * 多人会议眼镜端仿真：参考 test/glasses_sim.js 的替身方式，
- * 用 demo_meeting.wav 当麦克风，验证：
- *   模式选多人 → 第一片 15s/测试 5s 出 3 人 → 自动切片 → 返回归档。
+ * 多人会议 PRD 眼镜端仿真（不需要真模拟器）。
  *
- * 跑法：node test/meeting_glasses_sim.js   （需要 8765 服务）
+ * 验证：
+ *   选「多人」→ 会议主页（未录制）→ 确认开始录制 → 底部字幕
+ *   → 左键 AI 浮窗 → 上下滚动 → 右键关闭
+ *   → 确认停止并保存 → 返回退出到模式选择页
+ *
+ * 跑法：node test/meeting_glasses_sim.js   （需要 8765 后端在跑）
  */
 
 const fs = require("node:fs");
@@ -14,9 +17,10 @@ const Module = require("node:module");
 
 const BACKEND = process.env.MEMORYLENS_BACKEND || "http://127.0.0.1:8765";
 process.env.MEMORYLENS_BACKEND = BACKEND;
-process.env.MEMORYLENS_ARCHIVE = process.env.MEMORYLENS_ARCHIVE || "1";
-process.env.MEMORYLENS_FIRST_SLICE_MS = process.env.MEMORYLENS_FIRST_SLICE_MS || "5000";
-process.env.MEMORYLENS_SLICE_MS = process.env.MEMORYLENS_SLICE_MS || "5000";
+process.env.MEMORYLENS_MEETING_FIRST_SLICE_MS =
+  process.env.MEMORYLENS_MEETING_FIRST_SLICE_MS || "5000";
+process.env.MEMORYLENS_MEETING_SLICE_MS =
+  process.env.MEMORYLENS_MEETING_SLICE_MS || "5000";
 
 const texts = [];
 let created = 0;
@@ -28,7 +32,10 @@ function check(name, cond, detail) {
 }
 
 function styleObject() {
-  return { setBackgroundColor() {}, setTextColor() {}, setTextFont() {}, setTextAlign() {} };
+  return {
+    setBackgroundColor() {}, setTextColor() {}, setTextFont() {}, setTextAlign() {},
+    setOpacity() {},
+  };
 }
 
 const fusionui = {
@@ -37,8 +44,11 @@ const fusionui = {
   TextAlign: { AUTO: 0, TOP_LEFT: 1, LEFT_MID: 4, CENTER: 5, RIGHT_MID: 6 },
   Board: {
     create() {
-      return { setParent() {}, setIgnoreLayout() {}, setSize() {}, getLocalStyle: styleObject,
-        getRootWidget() { return {}; } };
+      return {
+        setParent() {}, setIgnoreLayout() {}, setSize() {}, setPosition() {},
+        setHidden() {}, setOpacity() {}, getLocalStyle: styleObject,
+        getRootWidget() { return {}; },
+      };
     },
   },
   FusionRoot: { acquireFusionRootFromWindow: () => ({ getRootWidget: () => ({}) }) },
@@ -46,7 +56,8 @@ const fusionui = {
     create() {
       const node = {
         value: "", __w: 0, __h: 0,
-        setParent() {}, setIgnoreLayout() {}, setPosition() {}, setSize() {},
+        setParent() {}, setIgnoreLayout() {}, setPosition() {},
+        setSize([w, h]) { node.__w = w; node.__h = h; },
         setAlignment() {}, resetAlignment() {}, updateLayout() {}, invalidate() {},
         getLocalStyle: styleObject,
         setText(v) { node.value = String(v); }, getText() { return node.value; },
@@ -59,6 +70,7 @@ const fusionui = {
   },
 };
 
+// 真实按住键的顺序：队列里取
 const navQueue = [];
 let active = null;
 let feedTimer = null;
@@ -94,9 +106,10 @@ const input = {
       cancel() { return session.finish(); },
     };
     active = session;
+    // 2 帧 / 40ms = 1 倍速：和真实麦克风同节奏，切片时序才可信
     feedTimer = setInterval(() => {
       if (!active || active.ended || active !== session) return;
-      for (let i = 0; i < 40 && active.pending.length < 64; i++) {
+      for (let i = 0; i < 2 && active.pending.length < 64; i++) {
         const buf = nextFrame();
         active.pending.push({
           type: "audio", sampleRate: 16000, channels: 1, format: "s16le",
@@ -117,6 +130,8 @@ const os = {
   WindowProperty: { create: () => ({ setTitle() {}, setSize() {} }) },
   Window: { create: () => ({}) },
   setDisplayKeepAwake: () => true,
+  requestAnimationFrame: (fn) => setTimeout(fn, 16),
+  cancelAnimationFrame: (id) => clearTimeout(id),
 };
 
 const originalLoad = Module._load;
@@ -132,38 +147,88 @@ async function waitUntil(fn, ms = 20000) {
   const t0 = Date.now();
   while (Date.now() - t0 < ms) {
     if (fn()) return true;
-    await sleep(150);
+    await sleep(200);
   }
   return false;
 }
 function hud() { return texts.map((t) => t.value).filter((v) => v && v !== " "); }
+function has(re) { return hud().some((v) => re.test(v)); }
 
 (async () => {
-  console.log("== 多人会议眼镜端仿真（" + BACKEND + "）");
+  console.log("== 多人会议 PRD 眼镜端仿真（" + BACKEND + "）");
   const health = await (await fetch(BACKEND + "/api/health")).json();
   check("后端在线", health.ok === true);
 
   require(path.join(__dirname, "..", "glasses", "src", "index.js"));
-  await sleep(300);
-  check("HUD 建好", created >= 12, "控件数=" + created);
+  await sleep(500);
+  check("HUD 建好（含会议字幕/浮窗控件）", created >= 18, "控件数=" + created);
+  check("初始待机", has(/按一下/), JSON.stringify(hud().slice(0, 4)));
 
+  // 1) 确认 → 模式选择 → 右 → 多人 → 确认
   navQueue.push("activate");
-  await waitUntil(() => hud().some((v) => v.includes("单人")), 5000);
-  check("模式选择出现", hud().some((v) => v.includes("单人")), JSON.stringify(hud()));
-  navQueue.push("right");           // 单人 → 多人
+  await waitUntil(() => has(/单人/), 5000);
+  check("模式选择出现", has(/单人/), JSON.stringify(hud()));
+  navQueue.push("right");
   navQueue.push("activate");
-  await waitUntil(() => hud().some((v) => v.includes("在听")), 6000);
-  check("进入会议录音", hud().some((v) => v.includes("在听")), JSON.stringify(hud()));
+  await waitUntil(() => has(/多人会议/), 8000);
+  check("进入会议模块（未录制）", has(/未录制/), JSON.stringify(hud()));
+  check("显示多人会议标题", has(/^多人会议$/), JSON.stringify(hud()));
 
-  await waitUntil(() => hud().some((v) => v.includes("人") && v.includes("会议")), 15000);
-  let lines = hud();
-  check("首片出会议分人", lines.some((v) => v.includes("人") && (v.includes("王姐") || v.includes("会议"))),
-    JSON.stringify(lines));
+  // 2) 确认开始录制
+  navQueue.push("activate");
+  await waitUntil(() => has(/录制中/), 8000);
+  check("确认键开始录制", has(/录制中/), JSON.stringify(hud()));
 
+  // 3) 等第一片转写回来（真实 ASR + 分人约 3-5s）
+  const gotSub = await waitUntil(() => has(/^S\d+ /), 40000);
+  check("底部出现带说话人编号的字幕", gotSub, JSON.stringify(hud().slice(0, 12)));
+  const subLines = hud().filter((v) => /^S\d+ /.test(v));
+  check("字幕至少一条", subLines.length >= 1, JSON.stringify(subLines));
+
+  // 4) 左键 → AI 浮窗
+  navQueue.push("left");
+  const gotAi = await waitUntil(() => has(/^AI 回答/), 15000);
+  check("左键弹出 AI 回答浮窗", gotAi, JSON.stringify(hud().slice(0, 12)));
+  check("浮窗有要点内容", has(/核心问题|发言人|王姐|会议/), JSON.stringify(hud().slice(0, 16)));
+
+  // 5) 上下滚动：标题里的行号要变
+  const titleBefore = hud().find((v) => /^AI 回答/.test(v)) || "";
+  navQueue.push("down");
+  await sleep(500);
+  const titleAfter = hud().find((v) => /^AI 回答/.test(v)) || "";
+  check("下键滚动浮窗内容", titleAfter !== titleBefore, titleBefore + " -> " + titleAfter);
+
+  // 6) 右键关闭浮窗
+  navQueue.push("right");
+  await sleep(600);
+  check("右键关闭浮窗", !has(/^AI 回答/), JSON.stringify(hud().slice(0, 12)));
+
+  // 7) 再左键刷新 + 确认停止并保存
+  navQueue.push("left");
+  await waitUntil(() => has(/^AI 回答/), 10000);
+  navQueue.push("activate");
+  const saved = await waitUntil(() => has(/会议已保存/), 60000);
+  check("确认键停止并保存会议", saved, JSON.stringify(hud().slice(0, 12)));
+  check("停止后状态回到未录制", has(/未录制/) || has(/再录/), JSON.stringify(hud().slice(0, 12)));
+
+  // 8) 返回退出到模块选择页
   navQueue.push("back");
-  await waitUntil(() => hud().some((v) => v.includes("会议已保存")), 20000);
-  lines = hud();
-  check("返回后会议归档", lines.some((v) => v.includes("会议已保存")), JSON.stringify(lines));
+  await waitUntil(() => has(/单人/) && !has(/多人会议/), 8000);
+  check("返回退出到模式选择页", has(/单人/) && !has(/多人会议/), JSON.stringify(hud().slice(0, 12)));
+
+  // 9) 后端确实落了会议 + 转写 + AI 历史
+  const listing = await (await fetch(BACKEND + "/api/meetings")).json();
+  const latest = (listing.items || [])[0];
+  check("会议列表里有这场会", !!latest, JSON.stringify(listing.items && listing.items.slice(0, 2)));
+  if (latest) {
+    check("会议有转写段", (latest.segment_count || 0) >= 1,
+      "segment_count=" + latest.segment_count);
+    const detail = await (await fetch(BACKEND + "/api/meetings/" + latest.session_id)).json();
+    check("会议详情有 AI 问答历史", (detail.answers || []).length >= 1,
+      JSON.stringify((detail.answers || []).slice(-1)));
+    check("会议详情有按段转写", (detail.segments || []).length >= 1,
+      "segments=" + (detail.segments || []).length);
+  }
 
   console.log(failures ? "\n" + failures + " 项失败" : "\n全部通过");
   process.exit(failures ? 1 : 0);

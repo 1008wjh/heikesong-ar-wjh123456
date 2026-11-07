@@ -1,162 +1,165 @@
-﻿# 一键启动眼镜模拟器：查后端 -> 查包 -> 开窗口
-# 由 sim.bat 调用；也可以直接 powershell -File tools\start-sim.ps1
+# One-click IrisView simulator launcher (WSLg, no Docker required).
+#   sim.bat                 -> start backend (if needed), build package (if stale), open simulator
+#   powershell -File tools\start-sim.ps1 -CheckOnly
+#   powershell -File tools\start-sim.ps1 -NoBackend -Port 28045
+#   powershell -File tools\start-sim.ps1 -ForceBuild
+#
+# Why WSL instead of Docker: the stock Docker path assumes a distro named
+# "Ubuntu"; on the competition machine the developer kit lives in a dedicated
+# distro (IrisView) with WSLg + Node 24 already installed. This script finds
+# whichever distro has the kit and runs the simulator there. Docker remains
+# available via tools\kit-docker.ps1 for CI/containers.
+#
+# Keep this file ASCII-only: Windows PowerShell 5.1 reads no-BOM UTF-8 as ANSI.
 
-param([int]$Port = 28045, [switch]$NoBackend, [switch]$CheckOnly)
+param(
+    [int]$Port = 28045,
+    [switch]$NoBackend,
+    [switch]$CheckOnly,
+    [switch]$ForceBuild
+)
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
 function Say($msg, $color = 'Gray') { Write-Host $msg -ForegroundColor $color }
+function Fail($msg) { Say $msg 'Red'; exit 1 }
 
-# 出错时不要一闪而过：消息留在这里，由 sim.bat 负责暂停（直接跑本脚本时看终端）
-function Fail($msg) {
-    Say $msg 'Red'
-    exit 1
-}
-
-function Test-Docker {
-    # PS 5.1：$ErrorActionPreference=Stop 时，原生命令的 stderr 一旦被重定向就会抛异常，
-    # 所以探测命令这里临时放开，只看退出码。
-    $old = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try {
-        $v = & docker info --format '{{.ServerVersion}}' 2>$null
-        return ($LASTEXITCODE -eq 0 -and "$v".Trim().Length -gt 0)
-    } catch { return $false } finally { $ErrorActionPreference = $old }
-}
-function Test-DockerWsl {
-    $old = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try {
-        $v = & wsl -d Ubuntu -e docker info --format '{{.ServerVersion}}' 2>$null
-        return ($LASTEXITCODE -eq 0 -and "$v".Trim().Length -gt 0)
-    } catch { return $false } finally { $ErrorActionPreference = $old }
-}
-
-# ---------- 1. Docker 在不在（不在就尝试拉起 Docker Desktop） ----------
-if (-not (Test-Docker)) {
-    Say '[..] Docker Desktop 没在跑，正在尝试启动（最多等 2 分钟）' 'Yellow'
-    $exe = @(
-        (Join-Path $env:ProgramFiles 'Docker\Docker\Docker Desktop.exe'),
-        (Join-Path $env:LOCALAPPDATA 'Docker\Docker Desktop.exe')
-    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if (-not $exe) {
-        Fail '[!!] 没找到 Docker Desktop：先安装 Docker Desktop（见 deploy\README.md），再双击 sim.bat'
+function To-WslPath([string]$p) {
+    $q = $p.Replace('\', '/')
+    if ($q -match '^([A-Za-z]):(.*)$') {
+        return '/mnt/' + $Matches[1].ToLower() + $Matches[2]
     }
-    Start-Process -FilePath $exe | Out-Null
-    $up = $false
-    for ($i = 0; $i -lt 60; $i++) {
-        Start-Sleep -Seconds 2
-        if (Test-Docker) { $up = $true; break }
-    }
-    if (-not $up) {
-        Fail '[!!] Docker 等了两分钟还没起来：手动打开 Docker Desktop，等左下角变绿后再双击 sim.bat'
-    }
-    Say '[ok] Docker 已就绪' 'Green'
+    return $q
 }
 
-# 模拟器是在 WSL 里用 docker 跑的，所以 Docker Desktop 里要勾上 WSL Integration
-# 冷启动时 Docker Desktop 先起引擎、WSL 集成要再等几十秒，所以这里给 3 分钟
-if (-not (Test-DockerWsl)) {
-    Say '[..] Docker 引擎好了，等 WSL 集成就绪（最多 3 分钟）…' 'Yellow'
-    $wslOk = $false
-    for ($i = 0; $i -lt 90; $i++) {
-        Start-Sleep -Seconds 2
-        if (Test-DockerWsl) { $wslOk = $true; break }
+# ---------- 1. find a WSL distro that has the IrisView developer kit ----------
+Say '[..] looking for the IrisView developer kit in WSL...' 'Yellow'
+$distros = @()
+try {
+    $distros = @(& wsl -l -q 2>$null | ForEach-Object {
+        ($_ -replace "`0", '').Trim()
+    } | Where-Object { $_ })
+} catch {
+    Fail '[!!] WSL is not available. Install/enable WSL2 first.'
+}
+if (-not $distros.Count) { Fail '[!!] No WSL distro found. Open the IrisView installer first.' }
+
+$kitCandidates = @(
+    '/home/iris/IrisView/Developer-Kit',
+    '/home/ubuntu/IrisView/Developer-Kit',
+    '/opt/IrisView/Developer-Kit'
+)
+$distro = $null
+$kit = $null
+foreach ($d in $distros) {
+    foreach ($k in $kitCandidates) {
+        & wsl -d $d -e test -f "$k/sdk/fusionui-app-sdk/fusionui_sdk.py" 2>$null
+        if ($LASTEXITCODE -eq 0) { $distro = $d; $kit = $k; break }
     }
-    if (-not $wslOk) {
-        Fail '[!!] WSL 里调不到 docker：Docker Desktop → Settings → Resources → WSL Integration，打开 Ubuntu 再重试'
-    }
-    Say '[ok] WSL 集成已就绪' 'Green'
+    if ($distro) { break }
+}
+if (-not $distro) {
+    Fail '[!!] Developer kit not found in any WSL distro. Run the IrisView installer, or pass IRIS_KIT / use tools\kit-docker.ps1.'
+}
+Say ("[ok] distro=" + $distro + " kit=" + $kit) 'Green'
+
+# WSLg (windows/input/audio bridge) must exist for the GUI
+& wsl -d $distro -e test -d /mnt/wslg/runtime-dir 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Fail '[!!] WSLg is not available in this distro. Update WSL (wsl --update) and restart.'
 }
 
-# ---------- 模拟器镜像 ----------
-$oldEap = $ErrorActionPreference
-$ErrorActionPreference = 'Continue'
-& docker image inspect memorylens-irisview *> $null
-$imgOk = ($LASTEXITCODE -eq 0)
-$ErrorActionPreference = $oldEap
-if (-not $imgOk) {
-    Say '[..] 模拟器镜像还没建，先 build（第一次 5-10 分钟，需要联网）' 'Yellow'
-    & docker build -f deploy/Dockerfile.irisview -t memorylens-irisview .
-    if ($LASTEXITCODE -ne 0) { Fail '[!!] 镜像 build 失败：看上面的报错（常见是拉基础镜像超时，重试一次）' }
-    Say '[ok] 镜像已建好' 'Green'
+# Node 24 is required by the SDK; the kit distro normally ships it.
+$nodeVer = (& wsl -d $distro -e bash -lc 'node -v' 2>$null) -join ''
+if ($nodeVer -notmatch '^v24\.') {
+    Fail ('[!!] Node 24 not found in ' + $distro + ' (got: ' + $nodeVer + '). Install the kit distro again.')
 }
+Say ("[ok] node " + $nodeVer) 'Green'
 
-# ---------- 2. 后端在不在（不在就拉起来） ----------
+# ---------- 2. backend ----------
 function Test-Backend {
     try {
-        $r = Invoke-WebRequest -Uri "http://127.0.0.1:8765/api/health" -TimeoutSec 2 -UseBasicParsing
+        $r = Invoke-WebRequest -Uri 'http://127.0.0.1:8765/api/health' -TimeoutSec 2 -UseBasicParsing
         return ($r.StatusCode -eq 200)
     } catch { return $false }
 }
 
 if (-not $NoBackend) {
     if (Test-Backend) {
-        Say '[ok] 后端已经在 8765 上跑着' 'Green'
+        Say '[ok] backend is already listening on 8765' 'Green'
     } else {
-        Say '[..] 后端没起，正在用 start.bat 拉起来' 'Yellow'
+        Say '[..] starting backend (start.bat)...' 'Yellow'
+        $env:ML_NO_BROWSER = '1'
         Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', 'start.bat' -WorkingDirectory $root -WindowStyle Hidden
         $ok = $false
-        for ($i = 0; $i -lt 25; $i++) {
+        for ($i = 0; $i -lt 30; $i++) {
             Start-Sleep -Seconds 2
             if (Test-Backend) { $ok = $true; break }
         }
-        if ($ok) { Say '[ok] 后端起来了' 'Green' }
-        else { Fail '[!!] 后端 30 秒还没起来，先单独跑 start.bat 看看报什么错' }
+        if (-not $ok) { Fail '[!!] backend did not come up in 60s; run start.bat manually to see the error.' }
+        Say '[ok] backend is up' 'Green'
     }
 }
 
-# ---------- 3. 包在不在 / 是不是旧的 ----------
+# ---------- 3. build the glasses package if the source is newer ----------
 $pkg = Join-Path $root 'dist\memorylens.fuiapp'
 $src = Join-Path $root 'glasses\src\index.js'
-$needBuild = $true
-if (Test-Path $pkg) {
-    if ((Get-Item $pkg).LastWriteTime -ge (Get-Item $src).LastWriteTime) { $needBuild = $false }
+$needBuild = $ForceBuild -or (-not (Test-Path $pkg))
+if (-not $needBuild -and (Test-Path $src)) {
+    if ((Get-Item $pkg).LastWriteTime -lt (Get-Item $src).LastWriteTime) { $needBuild = $true }
 }
+$buildScript = To-WslPath (Join-Path $PSScriptRoot 'build-wsl.sh')
+$simScript = To-WslPath (Join-Path $PSScriptRoot 'sim-wsl.sh')
+$wslProj = To-WslPath $root
+
 if ($needBuild) {
-    Say '[..] 包不存在或比源码旧，先 build + package（第一次要一两分钟）' 'Yellow'
-    & powershell -NoProfile -File (Join-Path $PSScriptRoot 'kit-docker.ps1') build
-    if ($LASTEXITCODE -ne 0) { Fail '[!!] build 失败：看上面的报错' }
-    & powershell -NoProfile -File (Join-Path $PSScriptRoot 'kit-docker.ps1') package
-    if ($LASTEXITCODE -ne 0) { Fail '[!!] package 失败：看上面的报错' }
-    Say '[ok] 包已更新' 'Green'
+    Say '[..] rebuilding glasses package (about 20-40s)...' 'Yellow'
+    & wsl -d $distro -e env SIM_KIT=$kit SIM_PROJ=$wslProj bash $buildScript
+    if ($LASTEXITCODE -ne 0) { Fail '[!!] build failed; see the log above.' }
+    Say '[ok] package rebuilt: dist\memorylens.fuiapp' 'Green'
+} else {
+    Say '[ok] package is up to date' 'Green'
 }
 
 if ($CheckOnly) {
-    Say '[ok] 环境检查通过（Docker / WSL / 镜像 / 后端 / 包都就绪）' 'Green'
+    Say '[ok] check passed: WSLg / kit / node / backend / package are ready' 'Green'
     exit 0
 }
 
-# ---------- 4. 开窗口 ----------
+# ---------- 4. WSL -> Windows backend address ----------
+$gw = (& wsl -d $distro -e sh -c "ip route | awk '/default/ {print `$3; exit}'" 2>$null) -join ''
+$gw = $gw.Trim()
+if (-not $gw) { $gw = '172.19.16.1' }
+$backend = 'http://' + $gw + ':8765'
+Say ("[ok] backend for the simulator: " + $backend) 'Green'
+
+# ---------- 5. run ----------
 @'
 
-  ┌────────────────────────────── 怎么玩 ──────────────────────────────┐
-  │ 白色大窗 = Client 控制台，右侧「应用输入」那六个按钮就是眼镜的键   │
-  │ 黑色小窗 = 镜片（640x480），只读                                   │
-  │                                                                   │
-  │  待机      点「确认」→ 出「单人 / 多人」→ 再点「确认」进单人      │
-  │  在听      「确认」= 看详情（不打断）  「返回」= 结束并入库        │
-  │  待机      「上」= 短语键盘   「下」= 三条建议                     │
-  │  详情页    「确认」= 收起     「返回」= 清屏                       │
-  │                                                                   │
-  │ 模拟器没有麦克风：另开一个终端，喂一句话给镜片                     │
-  │     python tools\say.py "王姐：报价单下周三之前发你"               │
-  │     python tools\say.py --audio test\voice\huihui_b.wav            │
-  └───────────────────────────────────────────────────────────────────┘
-  关掉窗口或按 Ctrl+C 结束。
+  +---------------------------- how to use ----------------------------+
+  | White window = Client console; the six buttons on the right are   |
+  | the glasses keys (Up/Down/Left/Right/Confirm/Back).               |
+  | Black window = the lens (640x480), mirror of the left eye.        |
+  |                                                                  |
+  | Single mode: Confirm -> choose "single" -> Confirm starts record  |
+  | Meeting mode: Confirm -> Right -> Confirm enters "multi"           |
+  |   Confirm = start / stop recording                                |
+  |   Left    = ask AI (popup opens or refreshes)                     |
+  |   Right   = close AI popup                                        |
+  |   Up/Down = scroll AI popup (only while it is open)               |
+  |   Back    = stop + save, exit to the mode picker                  |
+  |                                                                  |
+  | No microphone in the simulator: feed audio/text from another      |
+  | terminal:  python tools\say.py "..."                              |
+  +-------------------------------------------------------------------+
 
 '@ | Write-Host
-
-$guiT0 = Get-Date
-& powershell -NoProfile -File (Join-Path $PSScriptRoot 'kit-docker.ps1') gui -Port $Port
+Say '[..] launching simulator... close the windows or press Ctrl+C to stop.' 'Cyan'
+& wsl -d $distro -e env SIM_KIT=$kit SIM_PROJ=$wslProj SIM_PORT=$Port MEMORYLENS_BACKEND=$backend bash $simScript
 $code = $LASTEXITCODE
 if ($code -ne 0) {
-    # 十几秒内就退出来 = 根本没起来；跑了很久再退 = 用户自己关的窗口
-    if (((New-TimeSpan -Start $guiT0).TotalSeconds) -lt 15) {
-        Fail ('[!!] 模拟器没起来（退出码 ' + $code + '）：看上面的报错')
-    }
-    Say '[ok] 模拟器已关闭' 'Gray'
+    Fail ('[!!] simulator exited with code ' + $code + '; see the log above.')
 }
 exit 0

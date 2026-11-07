@@ -34,6 +34,11 @@ models/asr/
 # 会议归档 / 模拟器启动日志：运行时数据，不进仓库
 data/meetings/
 data/sim/
+# 多人会议 PRD：原始音频与 SQLite 会话库都是运行时数据
+audio_storage/
+data/meetings.db
+data/meetings.db-shm
+data/meetings.db-wal
 env.local.bat
 
 simstate/

@@ -843,3 +843,400 @@ code {
   color: var(--on-accent);
   vertical-align: 1px;
 }
+
+/* ---------- 模块 04：多人会议 ---------- */
+
+/* 和 02/03 一样横跨「人脉库 + 内容」两列，列表/详情在同一个格子里切换 */
+.meetings {
+  grid-column: 2 / -1;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  gap: var(--gap);
+  min-height: 0;
+}
+
+.mtg-view {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: var(--gap);
+  min-height: 0;
+}
+
+/* ---- 列表页 ---- */
+
+.mtg-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  padding: 18px 20px;
+}
+.mtg-head h2 { font-size: 24px; margin-bottom: 8px; }
+.mtg-head .empty-p { margin: 0; max-width: 60ch; }
+.mtg-acts { display: flex; gap: 8px; }
+
+.mtg-body {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--surface);
+}
+
+.mtg-list {
+  list-style: none;
+  margin: 0;
+  padding: 12px;
+  flex: 1 1 auto;
+  display: grid;
+  gap: var(--gap-thin);
+  align-content: start;
+  overflow-y: auto;
+  min-height: 0;
+}
+.mtg-list:empty { display: none; }
+
+.mtg-row {
+  background: var(--bg);
+  border-left: 6px solid var(--ink);
+  border-bottom: 2px solid var(--line);
+  padding: 12px 14px;
+  display: grid;
+  grid-template-columns: 142px minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  cursor: pointer;
+  transition: background 120ms var(--ease), border-color 120ms var(--ease);
+}
+.mtg-row:hover { background: var(--surface); border-left-color: var(--accent); }
+
+.mtg-when { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.mtg-date {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.mtg-dur { font-size: 11.5px; color: var(--muted); }
+
+.mtg-info { min-width: 0; }
+.mtg-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.mtg-sum {
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mtg-stats { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+.mtg-rec {
+  flex: none;
+  font-style: normal;
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  padding: 1px 5px;
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.mtg-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+.mtg-go {
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.mtg-row:hover .mtg-go { color: var(--accent); }
+
+/* 离线归集状态徽标：0 未提交 / 1 处理中 / 2 已完成 */
+.mtg-badge {
+  display: inline-block;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  line-height: 1.5;
+  padding: 2px 7px;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+.mtg-badge.is-0 { color: var(--muted); }
+.mtg-badge.is-1 {
+  color: var(--accent);
+  background: color-mix(in oklch, var(--accent) 12%, transparent);
+}
+.mtg-badge.is-2 {
+  color: var(--on-accent);
+  background: var(--ink);
+  border-color: var(--ink);
+}
+h3 .mtg-badge { margin-left: 10px; vertical-align: 2px; }
+
+.mtg-empty {
+  padding: 32px 26px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  flex: 1 1 auto;
+  justify-content: center;
+}
+.mtg-empty h2 { font-size: 26px; margin: 0 0 4px; }
+.mtg-empty .hint { margin: 0 0 10px; max-width: 46ch; }
+
+.mtg-err {
+  background: var(--accent3);
+  border-left: 8px solid var(--accent);
+  color: var(--ink);
+  padding: 10px 14px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.mtg-err p { margin: 0; }
+
+.mtg-none {
+  list-style: none;
+  padding: 8px 2px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+/* ---- 详情页 ---- */
+
+.mtg-detail {
+  grid-template-rows: none;
+  grid-auto-rows: min-content;
+  align-content: start;
+  overflow-y: auto;
+}
+
+.mtg-dhead {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  padding: 16px 20px;
+}
+.mtg-dhead-main {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 14px;
+  align-items: center;
+}
+.mtg-dhead-text { min-width: 0; }
+.mtg-dhead h2 { font-size: clamp(20px, 2vw, 26px); }
+.mtg-dhead .meta { margin-top: 6px; word-break: break-all; }
+.mtg-dhead .kicker { word-break: break-all; }
+
+.mtg-detail .mtg-err { margin: 0; }
+
+/* 基础信息：1px 黑缝分格，复用 .cell 的网点底。
+   用 flex 而不是 grid：wide 项要跨整行，auto-fit 的轨道折叠会被跨列项挡住。 */
+.mtg-facts {
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1px;
+  background: var(--line);
+}
+.mtg-fact {
+  flex: 1 1 150px;
+  padding: 12px 14px;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.mtg-fact-k {
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.mtg-fact-v {
+  font-family: "Archivo Black", Archivo, sans-serif;
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 1.35;
+}
+.mtg-fact.is-wide { flex: 1 1 100%; }
+.mtg-fact.is-wide .mtg-fact-v {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+/* 读取中 / 读不到的占位也住在这个深色缝格里，得自带底色 */
+.mtg-facts > .hint {
+  flex: 1 1 100%;
+  margin: 0;
+  padding: 14px;
+  background: var(--bg);
+}
+
+.mtg-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.mtg-chip {
+  font-size: 11px;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.mtg-section { padding: 16px 20px; }
+.mtg-section h3 { margin-bottom: 12px; }
+
+/* 完整转写 */
+.mtg-segs { list-style: none; margin: 0; padding: 0; display: grid; }
+.mtg-seg {
+  display: grid;
+  grid-template-columns: 108px 54px minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+  padding: 9px 0;
+  border-top: 1px solid color-mix(in oklch, var(--line) 24%, transparent);
+}
+.mtg-seg:first-child { border-top: 0; }
+.mtg-who {
+  justify-self: start;
+  max-width: 100%;
+  font-size: 11px;
+  line-height: 1.6;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mtg-who.spk0 { background: var(--ink); color: var(--on-accent); border-color: var(--ink); }
+.mtg-who.spk1 { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.mtg-who.spk2 { background: var(--accent3); color: var(--ink); border-color: var(--accent3); }
+.mtg-who.spk3 { background: transparent; color: var(--ink); }
+.mtg-ts {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  color: var(--muted);
+}
+.mtg-text { margin: 0; font-size: 13px; line-height: 1.7; word-break: break-word; }
+
+/* AI 问答历史 */
+.mtg-answers { display: grid; gap: 12px; }
+.mtg-ans {
+  display: grid;
+  gap: 6px;
+  padding: 8px 0 8px 12px;
+  border-left: 6px solid var(--line);
+}
+.mtg-ans-head { display: flex; align-items: baseline; gap: 10px; }
+.mtg-ans-t {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 600;
+}
+.mtg-ans-id { font-size: 10.5px; letter-spacing: 0.1em; color: var(--muted); }
+
+.mtg-ctx {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  padding: 6px 9px;
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+.mtg-ctx summary { cursor: pointer; color: var(--muted); }
+.mtg-ctx summary:hover { color: var(--ink); }
+.mtg-ctx-full {
+  margin: 8px 0 0;
+  font-family: inherit;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.mtg-ans-body {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+.mtg-ans-k {
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding-top: 3px;
+}
+.mtg-ans-text {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 离线归集 */
+.mtg-offline-acts { display: flex; gap: 8px; margin-top: 10px; }
+
+.mtg-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--gap-thin);
+}
+.mtg-group {
+  border: 2px solid var(--line);
+  background: var(--surface);
+  padding: 12px 14px;
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+.mtg-group-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+.mtg-group-head b { font-size: 13.5px; }
+.mtg-group-sec {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.mtg-points {
+  margin: 0;
+  padding-left: 16px;
+  display: grid;
+  gap: 5px;
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+.mtg-points li.muted { color: var(--muted); }
+
+@media (max-width: 1080px) {
+  .mtg-row { grid-template-columns: 122px minmax(0, 1fr); align-items: start; }
+  .mtg-side {
+    grid-column: 1 / -1;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+}
+
+@media (max-width: 720px) {
+  .meetings { grid-column: 1; }
+  .mtg-head { grid-template-columns: 1fr; align-items: start; }
+  .mtg-row { grid-template-columns: 1fr; }
+  .mtg-dhead { grid-template-columns: 1fr; align-items: start; }
+  .mtg-dhead-main { grid-template-columns: 1fr; }
+  .mtg-seg { grid-template-columns: 1fr; gap: 4px; }
+  .mtg-ans-body { grid-template-columns: 1fr; gap: 4px; }
+  .mtg-ans-k { padding-top: 0; }
+}

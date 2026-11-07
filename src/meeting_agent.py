@@ -588,6 +588,22 @@ def node_view(state: MeetingState) -> dict:
         "expected_speakers": expected,
         "degraded": bool(state.get("degraded")),
     }
+    # PRD 的多人模块需要"底部实时字幕"和"AI 上下文"，所以把逐段结果也放进 view。
+    # 时间戳统一用毫秒（相对会议开始），和 speech_record 表保持一致。
+    tail = []
+    for seg in segments[-24:]:
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+        tail.append({
+            "spk_id": seg.get("spk") or "",
+            "name": seg.get("name") or "",
+            "start_ts": int(round(float(seg.get("start") or 0) * 1000)),
+            "end_ts": int(round(float(seg.get("end") or 0) * 1000)),
+            "content": text,
+        })
+    view["segments"] = tail
+    view["transcript_tail"] = tail[-4:]
     return {"view": view}
 
 

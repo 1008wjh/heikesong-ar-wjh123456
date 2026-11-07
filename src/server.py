@@ -26,6 +26,7 @@ import presets as presets_store  # noqa: E402
 import settings as settings_store  # noqa: E402
 import voice  # noqa: E402
 import diar  # noqa: E402
+import meeting_service  # noqa: E402
 from face import FaceEngine  # noqa: E402
 from store import MATCH_THRESHOLD, Store  # noqa: E402
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -203,6 +204,15 @@ class Handler(BaseHTTPRequestHandler):
             st = llm.status()
             st["ok"] = True
             return self._json(st)
+        # ---------- 多人会议（PRD 模块） ----------
+        if path == "/api/meetings":
+            return self._json(meeting_service.list_meetings())
+        if path.startswith("/api/meetings/"):
+            sid = path[len("/api/meetings/"):].strip("/")
+            return self._json(meeting_service.detail(sid))
+        if path == "/api/meeting/state":
+            sid = (query.get("session") or [""])[0]
+            return self._json(meeting_service.state(sid))
         if path == "/api/agent/log":
             # 最近 N 条调用日志（JSONL 里一行一条），默认 50
             qs = parse_qs(urlparse(self.path).query)
@@ -241,6 +251,36 @@ class Handler(BaseHTTPRequestHandler):
                 return self._agent_feed(body)
             if path == "/api/agent/archive":
                 return self._agent_archive(body)
+            # ---------- 多人会议（PRD 模块） ----------
+            if path == "/api/meeting/start":
+                return self._json(meeting_service.start(str(body.get("session") or "")))
+            if path == "/api/meeting/feed":
+                session = str(body.get("session") or "")
+                if not session:
+                    return self._json({"ok": False, "error": "缺少 session"}, 400)
+                return self._json(meeting_service.feed(
+                    session, audio=body.get("audio") or "", text=body.get("text") or "",
+                    auto_add=body.get("auto_add", True)))
+            if path == "/api/meeting/ask":
+                session = str(body.get("session") or "")
+                if not session:
+                    return self._json({"ok": False, "error": "缺少 session"}, 400)
+                return self._json(meeting_service.ask(session))
+            if path == "/api/meeting/stop":
+                session = str(body.get("session") or "")
+                if not session:
+                    return self._json({"ok": False, "error": "缺少 session"}, 400)
+                return self._json(meeting_service.stop(session))
+            if path == "/api/meeting/offline":
+                session = str(body.get("session") or "")
+                if not session:
+                    return self._json({"ok": False, "error": "缺少 session"}, 400)
+                return self._json(meeting_service.offline_submit(session))
+            if path == "/api/meeting/discard":
+                session = str(body.get("session") or "")
+                if not session:
+                    return self._json({"ok": False, "error": "缺少 session"}, 400)
+                return self._json(meeting_service.discard(session))
             if path == "/api/settings/save":
                 try:
                     got = settings_store.save_settings(body)

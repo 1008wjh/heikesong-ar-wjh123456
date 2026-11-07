@@ -59,8 +59,12 @@
       <span class="mod-n">02</span>
       <span class="mod-t">预设</span>
     </button>
-    <button class="mod" disabled title="待开发">
+    <button class="mod" id="modMeeting" data-mod="meeting">
       <span class="mod-n">03</span>
+      <span class="mod-t">多人会议</span>
+    </button>
+    <button class="mod" disabled title="待开发">
+      <span class="mod-n">04</span>
       <span class="mod-t">设置</span>
     </button>
     <p class="rail-foot">数据只在本机<br />data/people.json</p>
@@ -199,10 +203,70 @@
       </div>
     </section>
 
+  <!-- 模块 03：多人会议（列表 / 会话详情） -->
+  <section class="meetings" id="meetings" hidden>
+
+    <!-- 列表页 -->
+    <div class="mtg-view" id="mtgListView">
+      <div class="cell mtg-head">
+        <div>
+          <p class="kicker">模块 03</p>
+          <h2>多人会议</h2>
+          <p class="empty-p">眼镜端归档的会议都在这里：完整转写、AI 问答、会后离线归集。</p>
+        </div>
+        <div class="mtg-acts">
+          <button class="btn" id="mtgRefresh" type="button">刷新</button>
+        </div>
+      </div>
+      <div class="cell mtg-body">
+        <div class="mtg-err" id="mtgErr" hidden></div>
+        <ul id="mtgList" class="mtg-list"></ul>
+        <div class="mtg-empty" id="mtgEmpty" hidden>
+          <p class="kicker">暂无会议</p>
+          <h2>还没有归档的会议</h2>
+          <p class="hint">用眼镜录一场多人会议，按返回归档后就会出现在这里。</p>
+          <button class="btn btn-save" id="mtgReload" type="button">重新读取</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 会话详情页 -->
+    <div class="mtg-view mtg-detail" id="mtgDetailView" hidden>
+      <div class="cell mtg-dhead">
+        <div class="mtg-dhead-main">
+          <button class="btn mini-btn" id="mtgBack" type="button">← 返回列表</button>
+          <div class="mtg-dhead-text">
+            <p class="kicker">会议详情 · <span id="mtgSid">—</span></p>
+            <h2 id="mtgDTitle">…</h2>
+            <p class="meta" id="mtgDMeta"></p>
+          </div>
+        </div>
+        <div class="mtg-acts">
+          <button class="btn" id="mtgDRefresh" type="button">刷新</button>
+        </div>
+      </div>
+
+      <div class="mtg-err" id="mtgDErr" hidden></div>
+
+      <div class="cell mtg-facts" id="mtgFacts"></div>
+
+      <div class="cell mtg-section">
+        <h3>完整转写 <span class="opt" id="mtgSegCount">0 段</span></h3>
+        <ul class="mtg-segs" id="mtgSegs"></ul>
+      </div>
+
+      <div class="cell mtg-section">
+        <h3>AI 问答历史 <span class="opt" id="mtgAnsCount">0 条</span></h3>
+        <div class="mtg-answers" id="mtgAnswers"></div>
+      </div>
+
+      <div class="cell mtg-section mtg-offline" id="mtgOffline"></div>
+    </div>
+  </section>
 </div>
 
 <div id="toast" class="toast" hidden></div>
 
-<script src="app.js?v=21"></script>
+<script src="app.js?v=22"></script>
 </body>
 </html>

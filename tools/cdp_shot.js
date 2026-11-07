@@ -17,7 +17,9 @@ function get(path) {
 (async () => {
   const out = process.argv[2] || 'shot.png';
   const list = JSON.parse(await get('/json/list'));
-  const page = list.find((t) => t.type === 'page' && t.webSocketDebuggerUrl);
+  const match = process.env.CDP_MATCH || '127.0.0.1:8765';
+  const pages = list.filter((t) => t.type === 'page' && t.webSocketDebuggerUrl);
+  const page = pages.find((t) => String(t.url || '').includes(match)) || pages[0];
   const ws = new WebSocket(page.webSocketDebuggerUrl);
 
   const shot = await new Promise((res, rej) => {

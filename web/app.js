@@ -6,7 +6,7 @@
 const $ = (s) => document.querySelector(s);
 
 // 改代码就 +1，页脚会显示。看到 build 不是最新的，说明浏览器还在跑旧脚本。
-const BUILD = 21;
+const BUILD = 22;
 
 const state = { people: [], threshold: 0.4 };
 
@@ -496,6 +496,552 @@ async function finishVoice(r) {
     + Math.round(peak * 100) + '%），保存时一起写入。';
 }
 
+/* ---------------- 模块 04：多人会议 ---------------- */
+
+// 后端接口（由后端同学实现）：
+//   GET  /api/meetings              列表
+//   GET  /api/meetings/<session>    详情：meeting / speakers / segments / answers / offline_summary
+//   POST /api/meeting/offline       提交离线归集（异步，status 0→1→2）
+// segments 的 start_ts / end_ts 是毫秒。
+
+const mtg = {
+  items: [],
+  loading: false,
+  bound: false,
+  current: null,      // 正在看的 session_id
+  detail: null,       // 详情接口的原始数据
+  pollTimer: null,
+  pollCount: 0,
+  submitting: false,
+};
+
+const MTG_OFFLINE = {
+  0: { text: '未提交', cls: 'is-0' },
+  1: { text: '处理中', cls: 'is-1' },
+  2: { text: '已完成', cls: 'is-2' },
+};
+
+function offlineInfo(n) {
+  const k = Number(n);
+  if (!isFinite(k)) return MTG_OFFLINE[0];
+  return MTG_OFFLINE[k] || { text: '状态 ' + k, cls: 'is-0' };
+}
+
+function pad2(n) {
+  return (n < 10 ? '0' : '') + n;
+}
+
+// 秒 → mm:ss（超过一小时补小时位，避免出现 123:45 这种）
+function fmtDur(sec) {
+  const n = Number(sec);
+  if (!isFinite(n) || n < 0) return '—';
+  const t = Math.floor(n);
+  const h = Math.floor(t / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  const s = t % 60;
+  return h ? h + ':' + pad2(m) + ':' + pad2(s) : pad2(m) + ':' + pad2(s);
+}
+
+function fmtMs(ms) {
+  return fmtDur(Number(ms) / 1000);
+}
+
+// 说话人累计时长：不到一分钟给「24.7 秒」，更长用 mm:ss
+function fmtSecShort(sec) {
+  const n = Number(sec);
+  if (!isFinite(n) || n < 0) return '—';
+  if (n < 60) return n.toFixed(1) + ' 秒';
+  return fmtDur(n);
+}
+
+// "2026-11-08 12:00:00" → "2026-11-08 12:00"
+function fmtTime(s) {
+  const t = String(s == null ? '' : s).trim();
+  return t ? t.slice(0, 16) : '—';
+}
+
+function truncateText(s, n) {
+  const t = String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
+  return t.length > n ? t.slice(0, n) + '…' : t;
+}
+
+// 读 JSON：接口没实现/返回错误码时给出能看懂的信息，不抛白屏
+async function getJson(url) {
+  let res;
+  try {
+    res = await fetch(url);
+  } catch (e) {
+    throw new Error('后端连不上（' + (e.message || '网络错误') + '）');
+  }
+  let data = null;
+  try {
+    data = await res.json();
+  } catch (e) {
+    throw new Error('返回的不是 JSON（HTTP ' + res.status + '）');
+  }
+  if (!res.ok || (data && data.ok === false)) {
+    const msg = (data && data.error) || ('HTTP ' + res.status);
+    if (res.status === 404) throw new Error('接口还没实现（' + msg + '）');
+    throw new Error(msg);
+  }
+  return data;
+}
+
+function setMtgErr(text) {
+  const box = $('#mtgErr');
+  if (!box) return;
+  box.replaceChildren();
+  if (!text) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  const p = mk('p', null, text);
+  const retry = mk('button', 'mini', '重试');
+  retry.type = 'button';
+  retry.onclick = () => loadMeetings({ toast: true });
+  box.append(p, retry);
+}
+
+function setMtgDErr(text) {
+  const box = $('#mtgDErr');
+  if (!box) return;
+  box.textContent = text || '';
+  box.hidden = !text;
+}
+
+async function loadMeetings(opts) {
+  const o = opts || {};
+  if (mtg.loading) return;
+  mtg.loading = true;
+  try {
+    const data = await getJson('/api/meetings');
+    mtg.items = Array.isArray(data.items) ? data.items : [];
+    setMtgErr('');
+    renderMtgList();
+    if (o.toast) toast('已刷新 · ' + mtg.items.length + ' 场会议');
+  } catch (e) {
+    mtg.items = [];
+    setMtgErr('读不到会议列表：' + e.message);
+    renderMtgList();
+    if (o.toast) toast('读不到会议列表：' + e.message, true);
+  } finally {
+    mtg.loading = false;
+  }
+}
+
+function renderMtgList() {
+  const ul = $('#mtgList');
+  if (!ul) return;
+  ul.replaceChildren();
+  const hasErr = $('#mtgErr') && !$('#mtgErr').hidden;
+  if ($('#mtgEmpty')) $('#mtgEmpty').hidden = mtg.items.length > 0 || !!hasErr;
+  if (!mtg.items.length) return;
+
+  mtg.items.forEach((item) => {
+    const sid = item.session_id || '';
+    const li = mk('li', 'mtg-row');
+    li.tabIndex = 0;
+    li.setAttribute('role', 'button');
+    li.setAttribute('aria-label', '打开会议 ' + (item.summary || sid));
+    li.onclick = () => openMeeting(sid);
+    li.onkeydown = (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        openMeeting(sid);
+      }
+    };
+
+    const when = mk('div', 'mtg-when');
+    when.append(
+      mk('b', 'mtg-date', fmtTime(item.create_time)),
+      mk('span', 'mtg-dur', '时长 ' + fmtDur(item.duration_sec))
+    );
+
+    const info = mk('div', 'mtg-info');
+    const line = mk('div', 'mtg-line');
+    line.append(mk('span', 'mtg-sum', item.summary || '（没有摘要）'));
+    if (Number(item.is_recording)) line.append(mk('i', 'mtg-rec', '录音中'));
+    info.append(
+      line,
+      mk('div', 'mtg-stats',
+        Number(item.speaker_count || 0) + ' 人 · '
+        + Number(item.segment_count || 0) + ' 段 · '
+        + Number(item.answer_count || 0) + ' 条问答')
+    );
+
+    const st = offlineInfo(item.offline_diarization_status);
+    const side = mk('div', 'mtg-side');
+    side.append(mk('span', 'mtg-badge ' + st.cls, '离线归集 ' + st.text));
+    side.append(mk('span', 'mtg-go', '查看 →'));
+
+    li.append(when, info, side);
+    ul.append(li);
+  });
+}
+
+function showMtgDetail(on) {
+  if ($('#mtgListView')) $('#mtgListView').hidden = !!on;
+  if ($('#mtgDetailView')) $('#mtgDetailView').hidden = !on;
+}
+
+function mtgStopPoll() {
+  if (mtg.pollTimer) {
+    clearInterval(mtg.pollTimer);
+    mtg.pollTimer = null;
+  }
+}
+
+// status=1（处理中）时每 3 秒悄悄刷一次，最多 60 秒；
+// 离开详情/返回列表会清掉，避免后台一直打请求。
+function startMtgPoll(sessionId) {
+  mtgStopPoll();
+  mtg.pollCount = 0;
+  mtg.pollTimer = setInterval(() => {
+    if (mtg.current !== sessionId || ($('#meetings') && $('#meetings').hidden)) {
+      mtgStopPoll();
+      return;
+    }
+    mtg.pollCount += 1;
+    if (mtg.pollCount > 20) {
+      mtgStopPoll();
+      return;
+    }
+    loadMeetingDetail(sessionId, { quiet: true });
+  }, 3000);
+}
+
+async function openMeeting(sessionId) {
+  if (!sessionId) return toast('这条会议缺少 session_id', true);
+  mtgStopPoll();
+  mtg.current = sessionId;
+  mtg.detail = null;
+  showMtgDetail(true);
+  renderMtgLoading();
+  const detailView = $('#mtgDetailView');
+  if (detailView && detailView.scrollTo) detailView.scrollTo({ top: 0 });
+  await loadMeetingDetail(sessionId);
+}
+
+function backToMtgList() {
+  mtgStopPoll();
+  mtg.current = null;
+  mtg.detail = null;
+  showMtgDetail(false);
+  if ($('#meetings') && !$('#meetings').hidden) loadMeetings({ quiet: true });
+}
+
+function renderMtgLoading() {
+  if ($('#mtgSid')) $('#mtgSid').textContent = mtg.current || '—';
+  if ($('#mtgDTitle')) $('#mtgDTitle').textContent = '读取中…';
+  if ($('#mtgDMeta')) $('#mtgDMeta').textContent = '';
+  setMtgDErr('');
+  if ($('#mtgFacts')) $('#mtgFacts').replaceChildren(mk('p', 'hint', '正在读取会议数据…'));
+  if ($('#mtgSegs')) $('#mtgSegs').replaceChildren();
+  if ($('#mtgAnswers')) $('#mtgAnswers').replaceChildren();
+  if ($('#mtgSegCount')) $('#mtgSegCount').textContent = '…';
+  if ($('#mtgAnsCount')) $('#mtgAnsCount').textContent = '…';
+  if ($('#mtgOffline')) {
+    $('#mtgOffline').replaceChildren(mk('h3', null, '离线归集纪要'), mk('p', 'hint', '正在读取…'));
+  }
+}
+
+async function loadMeetingDetail(sessionId, opts) {
+  const o = opts || {};
+  const btn = $('#mtgDRefresh');
+  if (!o.quiet && btn) btn.disabled = true;
+  try {
+    const data = await getJson('/api/meetings/' + encodeURIComponent(sessionId));
+    if (mtg.current !== sessionId) return;   // 已经返回列表或换了一场
+    mtg.detail = data;
+    setMtgDErr('');
+    renderMtgDetail(data);
+    const st = Number((data.meeting || {}).offline_diarization_status || 0);
+    if (st === 1) startMtgPoll(sessionId);
+    else mtgStopPoll();
+  } catch (e) {
+    if (mtg.current !== sessionId) return;
+    setMtgDErr('读不到这场会议：' + e.message);
+    if ($('#mtgDTitle')) $('#mtgDTitle').textContent = '读不到这场会议';
+    resetMtgSections('会议数据没读到，点「刷新」再试一次。');
+    if (!o.quiet) toast('读不到这场会议：' + e.message, true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// 详情读取失败时，把四个区域都换成可读的占位，避免停在「读取中…」
+function resetMtgSections(text) {
+  if ($('#mtgFacts')) $('#mtgFacts').replaceChildren(mk('p', 'hint', text));
+  if ($('#mtgSegs')) $('#mtgSegs').replaceChildren();
+  if ($('#mtgAnswers')) $('#mtgAnswers').replaceChildren();
+  if ($('#mtgSegCount')) $('#mtgSegCount').textContent = '0 段';
+  if ($('#mtgAnsCount')) $('#mtgAnsCount').textContent = '0 条';
+  if ($('#mtgOffline')) {
+    $('#mtgOffline').replaceChildren(mk('h3', null, '离线归集纪要'), mk('p', 'hint', text));
+  }
+}
+
+function renderMtgDetail(data) {
+  const m = (data && data.meeting) || {};
+  if ($('#mtgSid')) $('#mtgSid').textContent = m.session_id || mtg.current || '—';
+  if ($('#mtgDTitle')) $('#mtgDTitle').textContent = m.summary || '多人会议';
+  const bits = [];
+  if (m.create_time) bits.push('创建 ' + fmtTime(m.create_time));
+  if (m.finish_time) bits.push('结束 ' + fmtTime(m.finish_time));
+  else if (Number(m.is_recording)) bits.push('录音中');
+  if (m.meeting_id) bits.push('编号 ' + m.meeting_id);
+  if ($('#mtgDMeta')) $('#mtgDMeta').textContent = bits.join(' · ') || '—';
+  renderMtgFacts(m, data || {});
+  renderMtgSegments(data || {});
+  renderMtgAnswers(data || {});
+  renderMtgOffline(m, data || {});
+}
+
+function renderMtgFacts(m, data) {
+  const box = $('#mtgFacts');
+  if (!box) return;
+  box.replaceChildren();
+  const speakers = Array.isArray(data.speakers) ? data.speakers : [];
+  const facts = [
+    ['时长', fmtDur(m.duration_sec)],
+    ['说话人数', Number(m.speaker_count || speakers.length || 0) + ' 人'],
+    ['转写段数', Number(m.segment_count || 0) + ' 段'],
+    ['AI 问答', Number(m.answer_count || 0) + ' 条'],
+    ['创建时间', fmtTime(m.create_time)],
+    ['结束时间', m.finish_time ? fmtTime(m.finish_time) : (Number(m.is_recording) ? '录音中' : '—')],
+  ];
+  facts.forEach(([k, v]) => {
+    const cell = mk('div', 'mtg-fact');
+    cell.append(mk('span', 'mtg-fact-k', k), mk('b', 'mtg-fact-v', v));
+    box.append(cell);
+  });
+
+  if (speakers.length) {
+    const cell = mk('div', 'mtg-fact is-wide');
+    cell.append(mk('span', 'mtg-fact-k', '发言人'));
+    const chips = mk('div', 'mtg-chips');
+    speakers.forEach((s, i) => {
+      const n = speakerNo(String(s.spk_id || ''), null, i + 1);
+      chips.append(mk('span', 'mtg-chip', 'S' + n + ' ' + (s.name || '发言人')));
+    });
+    cell.append(chips);
+    box.append(cell);
+  }
+
+  const audio = mk('div', 'mtg-fact is-wide');
+  audio.append(mk('span', 'mtg-fact-k', '音频文件'));
+  audio.append(mk('b', 'mtg-fact-v', m.audio_file_path || '—'));
+  box.append(audio);
+}
+
+function speakerNo(spkId, byId, fallback) {
+  if (byId && byId[spkId] != null) return byId[spkId];
+  const hit = /(\d+)\s*$/.exec(String(spkId || ''));
+  if (hit) {
+    const n = Number(hit[1]);
+    if (n > 0) return n;
+  }
+  return fallback || 0;
+}
+
+function speakerIndexOf(speakers) {
+  const map = {};
+  (speakers || []).forEach((s, i) => {
+    if (s && s.spk_id) map[s.spk_id] = i + 1;
+  });
+  return map;
+}
+
+function renderMtgSegments(data) {
+  const ul = $('#mtgSegs');
+  if (!ul) return;
+  ul.replaceChildren();
+  const segs = (Array.isArray(data.segments) ? data.segments : []).slice()
+    .sort((a, b) => Number(a.start_ts || 0) - Number(b.start_ts || 0));
+  if ($('#mtgSegCount')) $('#mtgSegCount').textContent = segs.length + ' 段';
+  if (!segs.length) {
+    ul.append(mk('li', 'mtg-none', '还没有转写内容（可能是静音，或转写模型没配）。'));
+    return;
+  }
+  const byId = speakerIndexOf(data.speakers);
+  segs.forEach((seg) => {
+    const n = speakerNo(String(seg.spk_id || ''), byId, 0);
+    const name = seg.name || '发言人';
+    const li = mk('li', 'mtg-seg');
+    const who = mk('span', 'mtg-who spk' + (n % 4));
+    who.textContent = n ? 'S' + n + ' ' + name : name;
+    who.title = String(seg.spk_id || '');
+    const ts = mk('span', 'mtg-ts', fmtMs(seg.start_ts));
+    ts.title = '结束 ' + fmtMs(seg.end_ts);
+    li.append(who, ts, mk('p', 'mtg-text', String(seg.content || '')));
+    ul.append(li);
+  });
+}
+
+function renderMtgAnswers(data) {
+  const box = $('#mtgAnswers');
+  if (!box) return;
+  box.replaceChildren();
+  const list = (Array.isArray(data.answers) ? data.answers : []).slice()
+    .sort((a, b) => String(a.create_time || '').localeCompare(String(b.create_time || ''))
+      || Number(a.id || 0) - Number(b.id || 0));
+  if ($('#mtgAnsCount')) $('#mtgAnsCount').textContent = list.length + ' 条';
+  if (!list.length) {
+    box.append(mk('p', 'hint', '这场会议还没有 AI 提问记录。'));
+    return;
+  }
+  list.forEach((a) => {
+    const item = mk('div', 'mtg-ans');
+    const head = mk('div', 'mtg-ans-head');
+    head.append(mk('b', 'mtg-ans-t', fmtTime(a.create_time)));
+    if (a.id != null) head.append(mk('span', 'mtg-ans-id', '#' + a.id));
+    item.append(head);
+
+    const ctx = String(a.context_snapshot || '').trim();
+    if (ctx) {
+      const det = document.createElement('details');
+      det.className = 'mtg-ctx';
+      const sum = document.createElement('summary');
+      sum.textContent = '上下文：' + truncateText(ctx, 70);
+      det.append(sum, mk('pre', 'mtg-ctx-full', ctx));
+      item.append(det);
+    }
+
+    const body = mk('div', 'mtg-ans-body');
+    body.append(mk('span', 'mtg-ans-k', 'AI 回答'));
+    body.append(mk('p', 'mtg-ans-text', String(a.answer || '（空）')));
+    item.append(body);
+    box.append(item);
+  });
+}
+
+function renderMtgOffline(m, data) {
+  const box = $('#mtgOffline');
+  if (!box) return;
+  box.replaceChildren();
+  const st = Number(m.offline_diarization_status || 0);
+  const info = offlineInfo(st);
+  const head = mk('h3', null, '离线归集纪要');
+  head.append(mk('span', 'mtg-badge ' + info.cls, info.text));
+  box.append(head);
+
+  if (st === 0) {
+    box.append(mk('p', 'hint',
+      '把这场会议的录音离线再跑一遍分人与要点，生成按说话人分组的纪要。提交后需要等一会儿。'));
+    if (Number(m.is_recording)) {
+      box.append(mk('p', 'hint', '这场会议还在录音，先结束后再提交更稳妥。'));
+    }
+    const acts = mk('div', 'mtg-offline-acts');
+    const btn = mk('button', 'btn btn-save', '生成离线归集纪要');
+    btn.type = 'button';
+    btn.onclick = () => submitMtgOffline(btn);
+    acts.append(btn);
+    box.append(acts);
+    return;
+  }
+
+  if (st === 1) {
+    box.append(mk('p', 'hint', '已提交，后台正在处理。这里会自动刷新，也可以手动刷新。'));
+    const acts = mk('div', 'mtg-offline-acts');
+    const btn = mk('button', 'btn', '立即刷新');
+    btn.type = 'button';
+    btn.onclick = () => mtgRefreshDetail(btn, '立即刷新');
+    acts.append(btn);
+    box.append(acts);
+    return;
+  }
+
+  if (st === 2) {
+    const summary = data.offline_summary;
+    const groups = summary && Array.isArray(summary.groups) ? summary.groups : [];
+    if (!groups.length) {
+      box.append(mk('p', 'hint', '标记为已完成，但还没读到纪要内容；点上方「刷新」再试一次。'));
+      return;
+    }
+    if (summary.generated_at) box.append(mk('p', 'meta', '生成于 ' + fmtTime(summary.generated_at)));
+    const wrap = mk('div', 'mtg-groups');
+    groups.forEach((g) => {
+      const card = mk('div', 'mtg-group');
+      const gh = mk('div', 'mtg-group-head');
+      gh.append(mk('b', null, g.name || '发言人'));
+      gh.append(mk('span', 'mtg-group-sec',
+        fmtSecShort(g.seconds) + (g.spk_id ? ' · ' + g.spk_id : '')));
+      card.append(gh);
+      const ul = mk('ul', 'mtg-points');
+      const points = Array.isArray(g.points) ? g.points : [];
+      if (!points.length) ul.append(mk('li', 'muted', '（没有要点）'));
+      points.forEach((p) => ul.append(mk('li', null, String(p))));
+      card.append(ul);
+      wrap.append(card);
+    });
+    box.append(wrap);
+    return;
+  }
+
+  box.append(mk('p', 'hint', '未知的归集状态：' + st));
+}
+
+async function submitMtgOffline(btn) {
+  const sid = mtg.current;
+  if (!sid || mtg.submitting) return;
+  mtg.submitting = true;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '提交中…';
+  }
+  try {
+    const r = await post('/api/meeting/offline', { session: sid });
+    if (!r || !r.ok) throw new Error((r && r.error) || '提交失败');
+    toast('已提交，稍后刷新');
+    const meeting = (mtg.detail && mtg.detail.meeting) || null;
+    if (meeting && meeting.session_id === sid) {
+      meeting.offline_diarization_status = Number(r.status != null ? r.status : 1);
+      renderMtgOffline(meeting, mtg.detail);
+      if (Number(meeting.offline_diarization_status) === 2) return;
+    }
+    startMtgPoll(sid);
+  } catch (e) {
+    toast('提交失败：' + e.message, true);
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '生成离线归集纪要';
+    }
+  } finally {
+    mtg.submitting = false;
+  }
+}
+
+async function mtgRefreshDetail(btn, label) {
+  const sid = mtg.current;
+  if (!sid) return;
+  const text = label || '刷新';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '刷新中…';
+  }
+  await loadMeetingDetail(sid);
+  if (btn) {
+    btn.disabled = false;
+    btn.textContent = text;
+  }
+}
+
+function meetingBindOnce() {
+  if (mtg.bound) return;
+  mtg.bound = true;
+  if ($('#mtgRefresh')) $('#mtgRefresh').onclick = () => loadMeetings({ toast: true });
+  if ($('#mtgReload')) $('#mtgReload').onclick = () => loadMeetings({ toast: true });
+  if ($('#mtgBack')) $('#mtgBack').onclick = backToMtgList;
+  if ($('#mtgDRefresh')) $('#mtgDRefresh').onclick = () => mtgRefreshDetail($('#mtgDRefresh'), '刷新');
+  document.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.key !== 'Escape') return;
+    const box = $('#meetings');
+    const detail = $('#mtgDetailView');
+    if (box && !box.hidden && detail && !detail.hidden) backToMtgList();
+  });
+}
+
 /* ---------------- 绑定 ---------------- */
 
 /* ---------------- 模块 02（旧）：单人对话分析 ----------------
@@ -524,19 +1070,27 @@ const conv = {
 
 function setModule(name) {
   const onPreset = name === 'preset';
-  const showPeople = !onPreset;
+  const onMeeting = name === 'meeting';
+  const showPeople = !onPreset && !onMeeting;
   if ($('#presets')) $('#presets').hidden = !onPreset;
+  if ($('#meetings')) $('#meetings').hidden = !onMeeting;
   if ($('#contentPeople')) $('#contentPeople').hidden = !showPeople;
   if ($('#listcol')) $('#listcol').hidden = !showPeople;
-  [['#modPeople', showPeople], ['#modPreset', onPreset]].forEach(([sel, on]) => {
+  [['#modPeople', showPeople], ['#modPreset', onPreset],
+    ['#modMeeting', onMeeting]].forEach(([sel, on]) => {
     const el = $(sel);
     if (!el) return;
     el.classList.toggle('is-active', !!on);
     el.setAttribute('aria-current', on ? 'page' : 'false');
   });
+  if (!onMeeting) mtgStopPoll();
   if (onPreset) {
     presetBindOnce();
     loadPresets();
+  }
+  if (onMeeting) {
+    meetingBindOnce();
+    loadMeetings();
   }
 }
 
@@ -962,6 +1516,7 @@ function bind() {
   if ($('#btnAdd2')) $('#btnAdd2').onclick = add;
   if ($('#modPeople')) $('#modPeople').onclick = () => setModule('people');
   if ($('#modPreset')) $('#modPreset').onclick = () => setModule('preset');
+  if ($('#modMeeting')) $('#modMeeting').onclick = () => setModule('meeting');
   if ($('#search')) $('#search').oninput = renderPeople;
   if ($('#edCancel')) $('#edCancel').onclick = closeEditor;
   if ($('#edSave')) $('#edSave').onclick = savePerson;

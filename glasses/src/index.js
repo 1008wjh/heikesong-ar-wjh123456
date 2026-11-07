@@ -1,5 +1,17 @@
 "use strict";
 
+// 模拟器里 JS 异常只会让客户端显示"应用需要处理"；把堆栈打出来便于定位。
+try {
+  if (typeof process !== "undefined" && process.on) {
+    process.on("uncaughtException", (e) => {
+      console.error("[uncaught] " + ((e && e.stack) || e));
+    });
+    process.on("unhandledRejection", (e) => {
+      console.error("[unhandled] " + ((e && e.stack) || e));
+    });
+  }
+} catch (e) { /* 非 Node 环境忽略 */ }
+
 /**
  * MemoryLens 眼镜端（IrisView / FusionUI）
  *
@@ -67,6 +79,15 @@ let inFlight = false;
 let shownRev = -1;
 let background = false;
 let lastMeeting = null;      // 最近一场会议的 session；会议结束后仍可用文本指令回看
+
+// ---------- PRD 多人会议模块 ----------
+// 会议模块自己管一套 UI 状态：未录制/录制中、底部实时字幕、AI 回答浮窗。
+// 单人模块完全不受影响：只有 mode=meeting 的 capture 才会走这里。
+const MEETING_SLICE_MS = Number(process.env.MEMORYLENS_MEETING_SLICE_MS || 8000);
+const MEETING_FIRST_SLICE_MS = Number(process.env.MEMORYLENS_MEETING_FIRST_SLICE_MS || 6000);
+const MEETING_POPUP_ROWS = 5;      // 浮窗一次显示几行（超出用上下键滚）
+const MEETING_SUB_ROWS = 3;        // 底部常驻字幕行数
+let meeting = null;   // {session, meetingId, recording, stopping, startedAt, segments, speakers, popup, ...}
 
 // 实测结论（simulator）：单个 Text 只画得出一百多像素宽，再长就被硬切。
 // 所以一行文字拆成若干个 Text，横向拼起来（每块 x 依次 +124）。
@@ -163,6 +184,36 @@ function buildHud() {
 
   retained.foot = makeText(retained.board, 8, H - 40, 200, 22, 13, COL.dim);
   putText(retained.foot, "按一下就说");
+
+  // ---------- 多人会议模块专用控件 ----------
+  // 右上角常驻「录制中 / 未录制」；底部 3 行实时字幕；中间可滚动 AI 回答浮窗。
+  retained.recBadge = makeText(retained.board, 400, 20, 220, 26, 14, COL.amber, TextAlign.RIGHT_MID);
+  retained.subTitle = makeText(retained.board, 8, 330, 220, 20, 12, COL.dim);
+  putText(retained.subTitle, "实时转写 · 按确认开始");
+  retained.subRows = [];
+  for (let i = 0; i < MEETING_SUB_ROWS; i++) {
+    retained.subRows.push(makeSlot(retained.board, 8, 352 + i * 26, 14, COL.white, 3));
+  }
+  // 浮窗：半透明 Board + 4 列 Text 拼一行（单个 Text 画不宽，见文件头注释）
+  // MEMORYLENS_UI_POPUP=0 是排障开关：真机/模拟器渲染异常时可以关掉浮窗定位。
+  // 注意：这个模拟器运行时不允许在根 Board 下再挂第二个 Board（会报
+  // IV-RT:1116 / display could not be updated），所以浮窗不用嵌套 Board：
+  // 用一个带背景色的空 Text 当"半透明底板"，文字直接挂在根 Board 上，
+  // 靠创建顺序保证叠在底板之上。MEMORYLENS_UI_POPUP=0 可整体关掉浮窗排障。
+  if (process.env.MEMORYLENS_UI_POPUP !== "0") {
+    retained.popupBg = makeText(retained.board, 8, 116, 500, 226, 12, COL.white);
+    try { retained.popupBg.getLocalStyle().setBackgroundColor(Color.fromRGB8(6, 10, 14)); } catch (e) { /* 忽略 */ }
+    putText(retained.popupBg, " ");
+    retained.popupTitle = makeText(retained.board, 18, 120, 466, 24, 14, COL.cyan);
+    retained.popupLines = [];
+    for (let i = 0; i < MEETING_POPUP_ROWS; i++) {
+      retained.popupLines.push(makeSlot(retained.board, 18, 152 + i * 28, 12, COL.white, 4));
+    }
+    retained.popupFoot = makeText(retained.board, 18, 318, 466, 18, 11, COL.dim);
+    retained.popupWidgets = [retained.popupBg, retained.popupTitle,
+      ...retained.popupLines.reduce((a, s) => a.concat(s.tiles), []), retained.popupFoot];
+  }
+  hideMeetingUi();
 }
 // ---------- 网络 ----------
 
@@ -277,6 +328,13 @@ function paintIdle(msg) {
   hideModeSel();
   // 录音期间屏幕必须一直是「在听」：任何路径想画待机都直接忽略
   if (capture) return;
+  // 会议模块优先：任何"待机"路径都不要把会议 UI 冲掉
+  if (meeting) {
+    if (msg) meeting.note = msg;
+    paintMeeting();
+    return;
+  }
+  hideMeetingUi();
   stopScroll();
   viewMode = "idle";
   complexRows = null;
@@ -293,6 +351,11 @@ function paintIdle(msg) {
 function paintOffline(err) {
   const msg = String(err || "");
   const slow = /timeout|timed out|aborted|ETIMEDOUT/i.test(msg);
+  if (meeting) {
+    meeting.note = slow ? "后台有点慢 · 稍等" : "后台没连上 · 重试中";
+    paintMeeting();
+    return;
+  }
   if (capture) {
     // 正在听/正在想的时候后端偶尔慢：绝不能把整页换成"后台没连上"，
     // 只在状态行闪一句，按钮/卡片都留在原地。
@@ -445,6 +508,333 @@ function stopScroll() {
   if (scrollTimer) { clearInterval(scrollTimer); scrollTimer = null; }
   cardRows = [];
   rowOffset = 0;
+}
+
+// ---------------- 多人会议（PRD）UI ----------------
+// 与单人共用一套 Text 控件，但会议只用底部字幕 + 浮窗，不改单人卡片。
+
+function setHiddenSafe(widget, hidden) {
+  if (!widget) return;
+  try {
+    if (typeof widget.setHidden === "function") widget.setHidden(!!hidden);
+  } catch (e) { /* 旧版 SDK 没有 hidden */ }
+}
+
+function hideMeetingPopup() {
+  (retained.popupWidgets || []).forEach((w) => setHiddenSafe(w, true));
+  // 清空内容：真机上隐藏控件就看不到了，单测替身则靠"文字为空"判断已关闭
+  putText(retained.popupTitle, "");
+  (retained.popupLines || []).forEach((slot) => putSlot(slot, ""));
+  putText(retained.popupFoot, "");
+}
+
+function hideMeetingUi() {
+  setHiddenSafe(retained.recBadge, true);
+  setHiddenSafe(retained.subTitle, true);
+  (retained.subRows || []).forEach((slot) => slot.tiles.forEach((t) => setHiddenSafe(t, true)));
+  hideMeetingPopup();
+}
+
+function showMeetingUi() {
+  setHiddenSafe(retained.recBadge, false);
+  setHiddenSafe(retained.subTitle, false);
+  (retained.subRows || []).forEach((slot) => slot.tiles.forEach((t) => setHiddenSafe(t, false)));
+}
+
+// 按"字宽"切行：中文 1，英文/数字约 0.55（沿用 splitLines 的规则）
+function wrapMeetingText(text, budget) {
+  const out = [];
+  for (const raw of String(text || "").split(/\r?\n/)) {
+    if (!raw.trim()) { out.push(""); continue; }
+    out.push(...splitLines(raw, budget));
+  }
+  while (out.length && !out[0].trim()) out.shift();
+  while (out.length && !out[out.length - 1].trim()) out.pop();
+  return out.length ? out : ["（没有内容）"];
+}
+
+function setMeetingPopup(answer, degraded) {
+  const lines = wrapMeetingText(answer, 30);
+  if (degraded) {
+    lines.push("");
+    lines.push(...wrapMeetingText("· 本地兜底：补 DEEPSEEK_API_KEY 后自动升级为大模型", 30));
+  }
+  if (meeting) meeting.popup = { open: true, lines: lines, offset: 0 };
+}
+
+function closeMeetingPopup() {
+  if (meeting && meeting.popup) meeting.popup.open = false;
+  hideMeetingPopup();
+}
+
+function scrollMeetingPopup(dir) {
+  if (!meeting || !meeting.popup || !meeting.popup.open) return;
+  const maxOffset = Math.max(0, meeting.popup.lines.length - MEETING_POPUP_ROWS);
+  const next = Math.max(0, Math.min(maxOffset, (meeting.popup.offset || 0) + dir));
+  meeting.popup.offset = next;
+  paintMeetingPopup();
+}
+
+function paintMeetingPopup() {
+  if (!meeting || !meeting.popup || !meeting.popup.open) { hideMeetingPopup(); return; }
+  if (!retained.popupLines) return;
+  (retained.popupWidgets || []).forEach((w) => setHiddenSafe(w, false));
+  const lines = meeting.popup.lines || [];
+  const maxOffset = Math.max(0, lines.length - MEETING_POPUP_ROWS);
+  const off = Math.max(0, Math.min(maxOffset, meeting.popup.offset || 0));
+  meeting.popup.offset = off;
+  putText(retained.popupTitle, "AI 回答 · 第" + (off + 1) + "/" + Math.max(1, lines.length) + "行"
+    + (meeting.answerDegraded ? " · 兜底" : ""));
+  for (let i = 0; i < MEETING_POPUP_ROWS; i++) {
+    putSlot(retained.popupLines[i], lines[off + i] || "");
+  }
+  putText(retained.popupFoot, "左键刷新 · 右键关闭 · 上/下 滚动");
+}
+
+function meetingSpeakerNo(seg) {
+  const list = (meeting && meeting.speakers) || [];
+  let i = list.findIndex((s) => (s.id && s.id === seg.spk_id)
+    || (s.spk_id && s.spk_id === seg.spk_id));
+  if (i < 0) {
+    const m = /(\d+)$/.exec(seg.spk_id || "");
+    if (m) i = Math.max(0, Number(m[1]) - 1);
+  }
+  return i + 1;
+}
+
+function meetingRoleLine() {
+  const speakers = (meeting && meeting.speakers) || [];
+  if (!speakers.length) return meeting && meeting.segments && meeting.segments.length
+    ? (meeting.segments.length + " 段 · " + (meeting.segmentCount || 0) + " 条转写")
+    : "按确认开始录制";
+  return speakers.slice(0, 3).map((s, i) =>
+    "S" + (i + 1) + " " + (s.name && !/^发言人/.test(s.name) ? s.name : "发言人")).join(" · ")
+    + (speakers.length > 3 ? " …" : "");
+}
+
+function meetingSubtitleRows() {
+  const rows = [];
+  const segs = (meeting && meeting.segments) || [];
+  for (const seg of segs.slice(-MEETING_SUB_ROWS)) {
+    const text = String(seg.content || "").replace(/\s+/g, " ").trim();
+    if (!text) continue;
+    const line = "S" + meetingSpeakerNo(seg) + " " + text;
+    const parts = splitLines(line, 22);
+    rows.push(parts[0] + (parts.length > 1 ? "…" : ""));
+  }
+  while (rows.length < MEETING_SUB_ROWS) rows.unshift("");
+  return rows.slice(-MEETING_SUB_ROWS);
+}
+
+function paintMeeting() {
+  if (!meeting) return;
+  hideModeSel();
+  showMeetingUi();
+  const rec = !!meeting.recording;
+  const secs = rec && meeting.startedAt ? clockOf(Date.now() - meeting.startedAt, 1) : "";
+  let status;
+  if (meeting.thinking) status = "AI 正在想…";
+  else if (meeting.note) status = String(meeting.note).slice(0, 28);
+  else status = rec ? ("多人会议 · 录制中 " + secs) : "多人会议 · 未录制";
+  putText(retained.brand, "● MemoryLens");
+  putText(retained.status, status);
+  putText(retained.name, "多人会议");
+  putText(retained.role, meetingRoleLine());
+  putText(retained.sim, "");
+  putText(retained.recBadge, rec ? "● 录制中 " + secs : "○ 未录制");
+  retained.info.forEach((t) => putText(t, " "));
+  // 浮窗开着时，把上半区文字让出来（底板是空 Text，下面的字透出来会乱）
+  if (meeting.popup && meeting.popup.open) {
+    putText(retained.name, " ");
+    putText(retained.role, " ");
+    putText(retained.sim, " ");
+  }
+
+  const rows = meetingSubtitleRows();
+  retained.subRows.forEach((slot, i) => putSlot(slot, rows[i] || ""));
+  putText(retained.subTitle, rec ? "实时转写 · 录音中" : (meeting.saved ? "会议已保存 · 可回看" : "实时转写 · 按确认开始"));
+  putText(retained.foot, rec
+    ? "确认 停止 · 左AI 右关 · 上下滚"
+    : (meeting.saved ? "确认 再录 · 左AI · 返回退出" : "确认 开始 · 左AI · 返回退出"));
+
+  if (meeting.popup && meeting.popup.open) paintMeetingPopup();
+  else hideMeetingPopup();
+}
+
+async function ensureMeetingSession() {
+  if (!meeting) return "";
+  if (meeting.session) return meeting.session;
+  try {
+    const r = await postJson("/api/meeting/start", {}, 8000);
+    if (r && r.ok && r.session) {
+      meeting.session = r.session;
+      meeting.meetingId = r.meeting_id || "";
+    }
+  } catch (e) { /* 后台没起 */ }
+  return meeting.session || "";
+}
+
+async function enterMeeting() {
+  hideModeSel();
+  stopScroll();
+  lastScene = null;
+  viewMode = "idle";
+  complexRows = null;
+  meeting = {
+    session: "", meetingId: "", recording: false, stopping: false, startedAt: 0,
+    segments: [], speakers: [], segmentCount: 0, duration: 0, note: "",
+    saved: false, thinking: false, answerAsked: false, answerDegraded: false,
+    popup: { open: false, lines: [], offset: 0 },
+  };
+  paintMeeting();
+  await ensureMeetingSession();
+  paintMeeting();
+}
+
+async function startMeetingRecording() {
+  if (!meeting || meeting.recording || meeting.stopping) return;
+  const sid = await ensureMeetingSession();
+  if (!sid) {
+    meeting.note = "后台没连上 · 先启动 start.bat";
+    paintMeeting();
+    return;
+  }
+  meeting.recording = true;
+  meeting.stopping = false;
+  meeting.startedAt = Date.now();
+  meeting.saved = false;
+  meeting.thinking = false;
+  meeting.note = "";
+  meeting.segments = [];
+  meeting.speakers = [];
+  meeting.segmentCount = 0;
+  meeting.answerAsked = false;
+  closeMeetingPopup();
+  paintMeeting();
+  try {
+    await startListening("meeting", sid);
+  } catch (e) { /* 下面统一判断 */ }
+  if (!capture) {
+    meeting.recording = false;
+    meeting.note = "麦克风没起来 · 再按一次确认";
+    paintMeeting();
+  }
+}
+
+async function stopMeetingRecording() {
+  if (!meeting) return;
+  if (meeting.stopping && meeting.stopPromise) {
+    await meeting.stopPromise;
+    return;
+  }
+  if (!meeting.recording) return;
+  meeting.stopping = true;
+  const p = (async () => {
+    try { await stopAndArchive(); } catch (e) { /* stopAndArchive 自己会维护 UI */ }
+    if (meeting) {
+      meeting.stopping = false;
+      meeting.recording = false;
+      if (!meeting.note) meeting.note = "已停止 · 按确认继续录";
+      paintMeeting();
+    }
+  })();
+  meeting.stopPromise = p;
+  await p;
+}
+
+async function askMeeting() {
+  if (!meeting) return;
+  const sid = meeting.session || (await ensureMeetingSession());
+  if (!sid) {
+    meeting.note = "后台没连上 · 先启动 start.bat";
+    paintMeeting();
+    return;
+  }
+  meeting.thinking = true;
+  meeting.note = "AI 正在想…";
+  paintMeeting();
+  try {
+    const r = await postJson("/api/meeting/ask", { session: sid }, 30000);
+    if (r && r.ok) {
+      meeting.answerAsked = true;
+      meeting.answer = r.answer || "";
+      meeting.answerDegraded = !!r.degraded;
+      setMeetingPopup(r.answer || "", !!r.degraded);
+      meeting.note = "";
+    } else {
+      meeting.note = "AI 失败：" + ((r && r.error) || "未知错误");
+    }
+  } catch (e) {
+    meeting.note = "AI 请求失败 · 检查后端";
+  }
+  meeting.thinking = false;
+  paintMeeting();
+}
+
+async function exitMeeting() {
+  if (!meeting) return;
+  closeMeetingPopup();
+  if (meeting.recording || meeting.stopping) {
+    await stopMeetingRecording();
+  }
+  const sid = meeting.session;
+  const empty = !meeting.segments.length && !meeting.answerAsked;
+  meeting = null;
+  hideMeetingUi();
+  lastScene = null;
+  if (sid && empty) {
+    postJson("/api/meeting/discard", { session: sid }, 5000).catch(() => {});
+  }
+  // PRD：返回键退出多人模块，回到"模块选择页"
+  openMode();
+}
+
+function navMeeting(act) {
+  if (!meeting) return;
+  // 确认键：录音启停（浮窗开着也照常）
+  if (act === "activate") {
+    if (meeting.recording) stopMeetingRecording();
+    else startMeetingRecording();
+    return;
+  }
+  if (act === "left") { askMeeting(); return; }
+  if (act === "right") { if (meeting.popup && meeting.popup.open) closeMeetingPopup(); return; }
+  if (act === "up" || act === "down") {
+    // 上下键只在浮窗开启时滚动文本；关着时保持系统原逻辑（会议模块内无动作）
+    if (meeting.popup && meeting.popup.open) scrollMeetingPopup(act === "up" ? -1 : 1);
+    return;
+  }
+  if (act === "back") { exitMeeting(); return; }
+}
+
+function onMeetingFeed(res) {
+  if (!meeting || !res) return;
+  if (res.session && meeting.session && res.session !== meeting.session) return;
+  if (Array.isArray(res.segments)) meeting.segments = res.segments;
+  if (Array.isArray(res.speakers)) meeting.speakers = res.speakers;
+  meeting.segmentCount = res.segment_count || (meeting.segments || []).length;
+  meeting.duration = res.duration_sec || meeting.duration;
+  if (!meeting.thinking) meeting.note = "";
+  paintMeeting();
+}
+
+async function meetingFeed(c, wav) {
+  try {
+    const res = await postJson("/api/meeting/feed",
+      { session: c.agentSession, audio: wav, auto_add: true }, 45000);
+    if (capture && capture !== c) return;
+    c.sent += 1;
+    if (res && res.ok) onMeetingFeed(res);
+    else if (meeting && !meeting.thinking) {
+      meeting.note = "转写失败 · 等下一片";
+      paintMeeting();
+    }
+  } catch (e) {
+    if (meeting && !meeting.thinking) {
+      meeting.note = "转写超时 · 继续录";
+      paintMeeting();
+    }
+  }
 }
 // ---------- 录音：持续听，按 3.5 秒切片送识别 ----------
 //
@@ -735,10 +1125,12 @@ function pump() {
   const sliceStart = c.sliceStart || c.startedAt;
   const elapsed = Date.now() - sliceStart;
   // 单人：不自动切片，一切由「识别人 / 三个按钮 + 确认」手动驱动；
-  // 多人：第一片 15 秒认人，之后每 55 秒自动切一片（会议是免手操作场景）。
-  const cutAfterMs = c.sent === 0 && FIRST_SLICE_MS > 0 ? FIRST_SLICE_MS : SLICE_MS;
+  // 多人：PRD 要"实时字幕"，所以会议模式按 6s 首片 / 8s 后续切，边录边出字。
+  const cutAfterMs = c.mode === "meeting"
+    ? (c.sent === 0 && MEETING_FIRST_SLICE_MS > 0 ? MEETING_FIRST_SLICE_MS : MEETING_SLICE_MS)
+    : (c.sent === 0 && FIRST_SLICE_MS > 0 ? FIRST_SLICE_MS : SLICE_MS);
   const shouldCut = c.mode === "meeting"
-    && c.samples >= 16000 * (cutAfterMs / 1000) && elapsed >= 5000;
+    && c.samples >= 16000 * (cutAfterMs / 1000) && elapsed >= 4000;
   if (shouldCut) cutSlice(c);
   if (Date.now() - c.sessionStartedAt >= MAX_SESSION_MS) {
     if (!c.stopped) { restartSession(c); return; }
@@ -789,6 +1181,10 @@ async function drain(c) {
       const wav = item && item.wav ? item.wav : item;
       const manual = !!(item && item.manual);
       const preset = (item && item.preset) || "";
+      if (c.mode === "meeting") {
+        await meetingFeed(c, wav);
+        continue;
+      }
       if (!c.personId) {
         await identify(c, wav);
         continue;
@@ -806,7 +1202,7 @@ async function drain(c) {
 
 
 
-async function startListening(mode) {
+async function startListening(mode, agentSession) {
   if (capture || background) return;
   // 新的一段：capture 是全新的对象，identified 从头就是 null，
   // 不会沿用上一段的人（上一段的异步结果由 capture!==c 的守卫挡掉）。
@@ -854,7 +1250,7 @@ async function startListening(mode) {
     session: null, chunks: [], samples: 0,    startedAt: Date.now(), sessionStartedAt: 0,
     slices: 0, sent: 0, queue: [], busy: false,
     mode: mode === "meeting" ? "meeting" : "single",
-    agentSession: "g-" + Date.now().toString(36),
+    agentSession: agentSession || ("g-" + Date.now().toString(36)),
     personId: "", personName: "", sessionId: null,
     lastCard: null, stopped: false, dropped: 0, pumpTimer: null,
   };
@@ -864,7 +1260,8 @@ async function startListening(mode) {
   viewMode = "idle";
   complexRows = null;
   openSession();
-  paintListening();
+  if (capture && capture.mode === "meeting" && meeting) paintMeeting();
+  else paintListening();
 }
 
 // 按「返回」：收尾最后一片 → 等队列传完 → 让模型析出要点 → 写进那个人的档案
@@ -962,7 +1359,9 @@ async function stopAndArchive(msg) {
   // finish() 会把排队音频发完再给 end；必须等 closeSession 收完音频再组 WAV
   await new Promise((resolve) => closeSession(closing, c, resolve));
   const bytes = c.samples * 2;
-  if (bytes >= 16000 * 2 * (SLICE_MIN_MS / 1000)) {
+  // 会议的最后 1-2 秒常常就是"下周三之前"这种关键句，不能按单人的 5 秒门槛丢掉
+  const tailMin = c.mode === "meeting" ? 1200 : SLICE_MIN_MS;
+  if (bytes >= 16000 * 2 * (tailMin / 1000)) {
     c.queue.push({ wav: toWav(c.chunks, bytes), manual: true });
   }
   c.samples = 0;
@@ -980,17 +1379,34 @@ async function stopAndArchive(msg) {
     await new Promise((r) => setTimeout(r, 100));
   }
   if (c.mode === "meeting") {
-    paintIdle("正在保存会议…");
+    const m = meeting;
+    if (m && m.session === c.agentSession) {
+      m.note = "正在保存会议…";
+      paintMeeting();
+    }
+    let r = null;
     try {
-      const r = await postJson("/api/agent/archive", { session: c.agentSession }, 30000);
-      if (r && r.ok) {
-        paintIdle("会议已保存 · " + (r.speaker_count || 0) + " 人 / "
-          + ((r.action_items || []).length) + " 条待办");
-      } else {
-        paintIdle("会议保存失败 · " + ((r && r.error) || "未知错误"));
-      }
+      // PRD：停止录制时断开语音连接、持久化音频与转写；后端顺便归档会议图状态
+      r = await postJson("/api/meeting/stop", { session: c.agentSession }, 30000);
     } catch (e) {
-      paintIdle("会议保存失败 · " + (e && e.message));
+      r = { ok: false, error: (e && e.message) || "后台没响应" };
+    }
+    if (m && m.session === c.agentSession) {
+      m.recording = false;
+      m.stopping = false;
+      m.thinking = false;
+      m.saved = !!(r && r.ok);
+      if (r && r.ok) {
+        m.segmentCount = r.segment_count || m.segmentCount;
+        m.duration = r.duration_sec || m.duration;
+        m.note = "会议已保存 · " + (r.speaker_count || 0) + " 人 / "
+          + (r.segment_count || 0) + " 段";
+      } else {
+        m.note = "会议保存失败 · " + ((r && r.error) || "未知错误");
+      }
+      paintMeeting();
+    } else {
+      paintIdle("会议已保存");
     }
     return;
   }
@@ -1272,7 +1688,11 @@ function navMode(act) {
   if (act === "activate") {
     const mode = MODE_ITEMS[modeSelect.index].key;
     modeSelect = null;
-    startListening(mode).catch(() => {});
+    if (mode === "meeting") {
+      enterMeeting().catch(() => {});
+      return;
+    }
+    startListening("single").catch(() => {});
     return;
   }
 }
@@ -1282,6 +1702,8 @@ function handleNavigation() {
   if (!act) return;
   if (modeSelect) { navMode(act); return; }
   if (textMode) { navText(act); return; }
+  // 多人会议模块：确认录/停、左键 AI、右键关浮窗、上下滚浮窗、返回退出
+  if (meeting) { navMeeting(act); return; }
   if (capture && !capture.stopped) {
     const thinking = capture.thinkingUntil && Date.now() < capture.thinkingUntil;
     // 还没认出对方：确认 = 录 20 秒找人（再按一次提前结束），上下不切换
@@ -1431,7 +1853,8 @@ function clearView() {
 }
 
 async function poll() {
-
+  // 会议模块自己维护字幕/浮窗，不让 /api/latest 的单人卡片顶上来
+  if (meeting) return;
   inFlight = true;
   try {
     const data = await getJson("/api/latest");
@@ -1499,6 +1922,11 @@ function tick() {
   const now = Date.now();
   if (now - lastPaintAt < 400) return;
   lastPaintAt = now;
+  if (meeting) {
+    // 会议界面每 400ms 刷一次计时/录制动效；内容由 paintMeeting 内部去重
+    paintMeeting();
+    return;
+  }
   if (capture) {
     // 在听的时候：详情页照常显示，但状态行继续走计时
     if (complexRows) {
@@ -1518,8 +1946,11 @@ function tick() {
 
 function start() {
   if (retained.window) return;
+  console.log("[boot] buildHud begin");
   buildHud();
+  console.log("[boot] buildHud done");
   paintIdle("按一下开始听…");   // 先把空闲态画出来，别留控件的默认 "Text"
+  console.log("[boot] paintIdle done");
   loadUiSettings().catch(() => {});
   loadPresetList().catch(() => {});
   poll();
