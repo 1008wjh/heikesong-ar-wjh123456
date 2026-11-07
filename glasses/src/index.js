@@ -65,7 +65,8 @@ const CHUNK_PX = 124;             // 每块占的横向宽度
 const CHUNK_TEXT_PX = 112;        // 每块能画出的文字宽度
 
 const putText = (t, s) => {
-  t.setText(s);
+  if (!t) return;
+  t.setText(s === undefined || s === null ? " " : String(s));
   t.setSize([t.__w, t.__h, 0]);
 };
 
@@ -433,12 +434,21 @@ function clockOf(ms) {
 function listenLine() {
   const c = capture;
   const tail = c.sent ? " · " + c.sent + " 段" : "";
-  return "在听 " + clockOf(Date.now() - c.startedAt) + tail;
+  const silent = c.samples === 0 && Date.now() - c.startedAt > 3000;
+  return "在听 " + clockOf(Date.now() - c.startedAt) + (silent ? " · 没声音" : tail);
 }
 
 // 只刷"状态行 + 底栏"；卡片内容由切片结果负责画，避免每 400ms 把卡片冲掉
+let listenSig = "";
 function paintListening() {
   if (!capture) return;
+  const c0 = capture.lastCard;
+  // 整屏指纹：文字没变就整帧跳过（否则每 400ms 重设一遍，镜片上会闪）
+  const sig = listenLine() + "|" + (c0
+    ? [c0.name, c0.role, c0.status, c0.similarity, (c0.lines || []).join("~")].join("|")
+    : "none");
+  if (sig === listenSig) return;
+  listenSig = sig;
   retained.status.setText(listenLine());
   if (capture.lastCard && !complexRows) {
     // 认出来之后：名字/身份/信息行保持卡片内容，别被"在听"的提示冲掉
@@ -455,8 +465,9 @@ function paintListening() {
     return;
   }
   if (!capture.lastCard) {
+    const silent = capture.samples === 0 && Date.now() - capture.startedAt > 3000;
     putText(retained.name, "在听…");
-    putText(retained.role, "直接说话就行，不用按键");
+    putText(retained.role, silent ? "点「确认采集」" : "直接说话就行，不用按键");
     putText(retained.sim, " ");
     const hint = [
       "前 15 秒用来认人",
@@ -547,6 +558,7 @@ async function drain(c) {
 
 function startListening(mode) {
   if (capture || background) return;
+  listenSig = "";
   let availability;
   try {
     availability = input.getVoiceInputAvailability("audio");
@@ -560,8 +572,7 @@ function startListening(mode) {
   }
   capture = {
     lastCard: null,
-    session: null, chunks: [], samples: 0,
-    startedAt: Date.now(), sessionStartedAt: 0,
+    session: null, chunks: [], samples: 0,    startedAt: Date.now(), sessionStartedAt: 0,
     slices: 0, sent: 0, queue: [], busy: false,
     mode: mode === "meeting" ? "meeting" : "single",
     agentSession: "g-" + Date.now().toString(36),
@@ -651,6 +662,7 @@ async function stopAndArchive(msg) {
   }
   const c = capture;
   if (!c) return;
+  listenSig = "";
   c.stopped = true;
   if (c.pumpTimer) clearTimeout(c.pumpTimer);
   try { if (c.session) c.session.finish(); } catch (e) { /* 已经结束 */ }

@@ -7552,163 +7552,13 @@
    },
    "complex": {
     "对话要点": {
-     "日期": "明天下午三点在三楼会议室开会",
-     "跟进": "需带电脑和充电器",
+     "日期": "明天下午三点开会",
+     "跟进": "开会需带电脑和充电器",
      "答应的事": "下周三前发报价单",
      "其他": "会议地点在三楼会议室"
     }
    },
    "conversations": [
-    {
-     "at": "2026-11-07 19:33",
-     "summary": "提醒王姐明天下午三点三楼会议室开会并带电脑充电器",
-     "transcript": "会记得带上电脑和充电器明天下午三点在三楼会议室开会记得带上电脑和充电器",
-     "items": [
-      {
-       "key": "日期",
-       "value": "明天下午三点在三楼会议室开会"
-      },
-      {
-       "key": "跟进",
-       "value": "需带电脑和充电器"
-      }
-     ]
-    },
-    {
-     "at": "2026-11-07 19:34",
-     "summary": "提醒王姐明天下午三点三楼会议室开会并带电脑充电器",
-     "transcript": "明天下午三点在三楼会议室开会记得带上电脑和充电器明天下午三点在三楼会议室开会记得带上电脑和充电器明天下午三点",
-     "items": [
-      {
-       "key": "日期",
-       "value": "明天下午三点在三楼会议室开会"
-      },
-      {
-       "key": "跟进",
-       "value": "记得带上电脑和充电器"
-      }
-     ]
-    },
-    {
-     "at": "2026-11-07 19:34",
-     "summary": "提醒王姐明天下午三点三楼会议室开会并带电脑充电器",
-     "transcript": "在三楼会议室开会记得带上电脑和充电器明天下午三点在三楼会议室开会记得带上电脑和充电器明天下午三点在三楼会议室开",
-     "items": [
-      {
-       "key": "日期",
-       "value": "明天下午三点在三楼会议室开会"
-      },
-      {
-       "key": "跟进",
-       "value": "开会记得带上电脑和充电器"
-      }
-     ]
-    },
-    {
-     "at": "2026-11-07 19:34",
-     "summary": "提醒王姐明天下午三点三楼会议室开会并带电脑和充电器",
-     "transcript": "会记得带上电脑和充电器明天下午三点在三楼会议室开会记得带上电脑和充电器",
-     "items": [
-      {
-       "key": "日期",
-       "value": "明天下午三点在三楼会议室开会"
-      },
-      {
-       "key": "跟进",
-       "value": "需带电脑和充电器"
-      }
-     ]
-    },
-    {
-     "at": "2026-11-07 19:35",
-     "summary": "提醒王姐明天下午三点三楼会议室开会并带电脑充电器",
-     "transcript": "明天下午三点在三楼会议室开会记得带上电脑和充电器明天下午三点在三楼会议室开会记得带上电脑和充电器明天下午三点",
-     "items": [
-      {
-       "key": "日期",
-       "value": "明天下午三点在三楼会议室开会"
-      },
-      {
-       "key": "跟进",
-       "value": "记得带上电脑和充电器"
-      }
-     ]
-    },
-    {
-     "at": "2026-11-07 19:35",
-     "summary": "提醒王姐明天下午三点三楼会议室开会并带电脑充电器",
-     "transcript": "在三楼会议室开会记得带上电脑和充电器明天下午三点在三楼会议室开会记得带上电脑和充电器明天下午三点在三楼会议室开",
-     "items": [
-      {
-       "key": "日期",
-       "value": "明天下午三点在三楼会议室开会"
-      },
-      {
-       "key": "跟进",
-       "value": "开会记得带上电脑和充电器"
-      }
-     ]
-    },
-    {
-     "at": "2026-11-07 19:35",
-     "summary": "提醒王姐明天下午三点三楼会议室开会并带电脑充电器",
-     "transcript": "会记得带上电脑和充电器明天下午三点在三楼会议室开会记得带上电脑和充电器",
-     "items": [
-      {
-       "key": "日期",
-       "value": "明天下午三点在三楼会议室开会"
-      },
-      {
-       "key": "跟进",
-       "value": "记得带上电脑和充电器"
-      }
-     ]
-    },
-    {
-     "at": "2026-11-07 19:36",
-     "summary": "提醒王姐明天下午三点三楼会议室开会并带电脑充电器",
-     "transcript": "明天下午三点在三楼会议室开会记得带上电脑和充电器明天下午三点在三楼会议室开会记得带上电脑和充电器明天下午三点",
-     "items": [
-      {
-       "key": "日期",
-       "value": "明天下午三点在三楼会议室开会"
-      },
-      {
-       "key": "跟进",
-       "value": "记得带上电脑和充电器"
-      }
-     ]
-    },
-    {
-     "at": "2026-11-07 19:36",
-     "summary": "提醒王姐明天下午三点在三楼会议室开会并带电脑和充电器。",
-     "transcript": "在三楼会议室开会记得带上电脑和充电器明天下午三点在三楼会议室开会记得带上电脑和充电器明天下午三点在三楼会议室开",
-     "items": [
-      {
-       "key": "日期",
-       "value": "明天下午三点在三楼会议室开会"
-      },
-      {
-       "key": "跟进",
-       "value": "开会记得带上电脑和充电器"
-      }
-     ]
-    },
-    {
-     "at": "2026-11-07 19:36",
-     "summary": "提醒王姐明天下午三点三楼会议室开会并带电脑和充电器",
-     "transcript": "会记得带上电脑和充电器明天下午三点在三楼会议室开会记得带上电脑和充电器",
-     "items": [
-      {
-       "key": "日期",
-       "value": "明天下午三点在三楼会议室开会"
-      },
-      {
-       "key": "跟进",
-       "value": "需带电脑和充电器"
-      }
-     ]
-    },
     {
      "at": "2026-11-07 19:36",
      "summary": "提醒王姐明天下午三点三楼会议室开会并带电脑充电器",
@@ -7858,13 +7708,163 @@
        "value": "需带电脑和充电器"
       }
      ]
+    },
+    {
+     "at": "2026-11-07 20:28",
+     "summary": "对方通知明天下午三点三楼会议室开会并提醒带电脑和充电器。",
+     "transcript": "明天下午三点在三楼会议室开会记得带上电脑和充电器明天下午三点在三楼会议室开会记得带上电脑和充电器明天下午三点",
+     "items": [
+      {
+       "key": "日期",
+       "value": "明天下午三点在三楼会议室开会"
+      },
+      {
+       "key": "跟进",
+       "value": "记得带上电脑和充电器"
+      }
+     ]
+    },
+    {
+     "at": "2026-11-07 20:28",
+     "summary": "提醒王姐明天下午三点三楼会议室开会并带电脑充电器",
+     "transcript": "在三楼会议室开会记得带上电脑和充电器明天下午三点在三楼会议室开会记得带上电脑和充电器明天下午三点在三楼会议室开",
+     "items": [
+      {
+       "key": "日期",
+       "value": "明天下午三点在三楼会议室开会"
+      },
+      {
+       "key": "跟进",
+       "value": "开会记得带上电脑和充电器"
+      }
+     ]
+    },
+    {
+     "at": "2026-11-07 20:28",
+     "summary": "提醒王姐明天下午三点三楼会议室开会并带电脑和充电器",
+     "transcript": "会记得带上电脑和充电器明天下午三点在三楼会议室开会记得带上电脑和充电器",
+     "items": [
+      {
+       "key": "日期",
+       "value": "明天下午三点在三楼会议室开会"
+      },
+      {
+       "key": "跟进",
+       "value": "记得带上电脑和充电器"
+      }
+     ]
+    },
+    {
+     "at": "2026-11-07 20:29",
+     "summary": "提醒王姐明天下午三点三楼会议室开会并带电脑充电器",
+     "transcript": "明天下午三点在三楼会议室开会记得带上电脑和充电器明天下午三点在三楼会议室开会记得带上电脑和充电器明天下午三点",
+     "items": [
+      {
+       "key": "日期",
+       "value": "明天下午三点在三楼会议室开会"
+      },
+      {
+       "key": "跟进",
+       "value": "记得带上电脑和充电器"
+      }
+     ]
+    },
+    {
+     "at": "2026-11-07 20:29",
+     "summary": "提醒王姐明天下午三点三楼会议室开会并带电脑充电器",
+     "transcript": "在三楼会议室开会记得带上电脑和充电器明天下午三点在三楼会议室开会记得带上电脑和充电器明天下午三点在三楼会议室开",
+     "items": [
+      {
+       "key": "日期",
+       "value": "明天下午三点在三楼会议室开会"
+      },
+      {
+       "key": "跟进",
+       "value": "记得带上电脑和充电器"
+      }
+     ]
+    },
+    {
+     "at": "2026-11-07 20:29",
+     "summary": "提醒王姐明天下午三点三楼会议室开会并带电脑充电器",
+     "transcript": "会记得带上电脑和充电器明天下午三点在三楼会议室开会记得带上电脑和充电器",
+     "items": [
+      {
+       "key": "日期",
+       "value": "明天下午三点在三楼会议室开会"
+      },
+      {
+       "key": "跟进",
+       "value": "需带电脑和充电器"
+      }
+     ]
+    },
+    {
+     "at": "2026-11-07 20:32",
+     "summary": "提醒王姐明天下午三点三楼会议室开会并带电脑充电器",
+     "transcript": "明天下午三点在三楼会议室开会记得带上电脑和充电器明天下午三点在三楼会议室开会记得带上电脑和充电器明天下午三点",
+     "items": [
+      {
+       "key": "日期",
+       "value": "明天下午三点开会"
+      },
+      {
+       "key": "跟进",
+       "value": "记得带电脑和充电器"
+      }
+     ]
+    },
+    {
+     "at": "2026-11-07 20:32",
+     "summary": "提醒王姐明天下午三点三楼会议室开会并带电脑充电器",
+     "transcript": "在三楼会议室开会记得带上电脑和充电器明天下午三点在三楼会议室开会记得带上电脑和充电器明天下午三点在三楼会议室开",
+     "items": [
+      {
+       "key": "日期",
+       "value": "明天下午三点在三楼会议室开会"
+      },
+      {
+       "key": "跟进",
+       "value": "记得带上电脑和充电器"
+      }
+     ]
+    },
+    {
+     "at": "2026-11-07 20:32",
+     "summary": "提醒王姐明天下午三点三楼会议室开会并带电脑充电器",
+     "transcript": "会记得带上电脑和充电器明天下午三点在三楼会议室开会记得带上电脑和充电器",
+     "items": [
+      {
+       "key": "日期",
+       "value": "明天下午三点在三楼会议室开会"
+      },
+      {
+       "key": "跟进",
+       "value": "记得带上电脑和充电器"
+      }
+     ]
+    },
+    {
+     "at": "2026-11-07 20:34",
+     "summary": "通知王姐明天下午三点三楼会议室开会并带电脑充电器",
+     "transcript": "明天下午三点在三楼会议室开会记得带上电脑和充电器",
+     "items": [
+      {
+       "key": "日期",
+       "value": "明天下午三点开会"
+      },
+      {
+       "key": "跟进",
+       "value": "开会需带电脑和充电器"
+      }
+     ]
     }
    ]
   },
   {
    "id": "p_bc628c",
-   "name": "陌生人A",
-   "role": "陌生人 · 眼镜端自动建的",
+   "name": "对面",
+   "role": "测试",
    "info": [
     "语音自动入库，回头改个名字",
     "",
@@ -8075,59 +8075,15 @@
    "notes": [],
    "talking_points": [],
    "simple": {
-    "身份": "陌生人 · 眼镜端自动建的",
-    "信息1": "语音自动入库，回头改个名字"
+    "身份": "对面",
+    "信息1": "测试"
    },
    "complex": {
     "对话要点": {
-     "其他": "在做眼镜演示的语音管线测试"
+     "其他": "正在测试眼镜演示的语音管线"
     }
    },
    "conversations": [
-    {
-     "at": "2026-11-07 18:52",
-     "summary": "对方在测试眼镜演示的语音管线，内容为重复的测试语句。",
-     "transcript": "this is a quick test of the voice pipeline for the glasses demo hello this is a quick test of the voice pieline for the glasis demo hello this is a quick test of the ice ice peline for the glasses demo hello this is",
-     "items": [
-      {
-       "key": "其他",
-       "value": "在测试眼镜演示的语音管线"
-      }
-     ]
-    },
-    {
-     "at": "2026-11-07 19:01",
-     "summary": "对方在测试眼镜演示的语音管线，重复同一句话。",
-     "transcript": "this is a quick test of the voice pipeline for the glasses demo hello this is a quick test of the voice pieline for the glasis demo hello this is a quick test of the ice ice peline for the glasses demo hello this is",
-     "items": [
-      {
-       "key": "其他",
-       "value": "正在测试眼镜演示的语音管线"
-      }
-     ]
-    },
-    {
-     "at": "2026-11-07 19:03",
-     "summary": "对方在测试眼镜演示的语音管线，内容为重复的测试语句。",
-     "transcript": "this is a quick test of the voice pipeline for the glasses demo hello this is a quick test of the voice pieline for the glasis demo hello this is a quick test of the ice ice peline for the glasses demo hello this is",
-     "items": [
-      {
-       "key": "其他",
-       "value": "正在测试眼镜演示的语音管线"
-      }
-     ]
-    },
-    {
-     "at": "2026-11-07 19:04",
-     "summary": "对方在测试眼镜演示的语音管线，内容为重复的测试语句。",
-     "transcript": "this is a quick test of the voice pipeline for the glasses demo hello this is a quick test of the voice pieline for the glasis demo hello this is a quick test of the ice ice peline for the glasses demo hello this is",
-     "items": [
-      {
-       "key": "其他",
-       "value": "在测试眼镜演示的语音管线"
-      }
-     ]
-    },
     {
      "at": "2026-11-07 19:04",
      "summary": "对方在测试眼镜演示的语音管线，内容为重复的测试语句。",
@@ -8290,6 +8246,61 @@
       {
        "key": "其他",
        "value": "在做眼镜演示的语音管线测试"
+      }
+     ]
+    },
+    {
+     "at": "2026-11-07 20:28",
+     "summary": "对方在测试眼镜演示的语音管线",
+     "transcript": "quick test test the voice pipeline for the glasses demo hello this is a quick test of the voice pipeline for the glasses demo hello this is",
+     "items": [
+      {
+       "key": "其他",
+       "value": "正在测试眼镜演示的语音管线"
+      }
+     ]
+    },
+    {
+     "at": "2026-11-07 20:29",
+     "summary": "对方重复测试眼镜演示的语音管线。",
+     "transcript": "hello this is a quick test of the voice pipeline for the glasses demo hello this is a quick test of the voice pipeline for glasses demo hello this is a quick test of the voice pipeline for the glasses demo hello",
+     "items": [
+      {
+       "key": "其他",
+       "value": "在做眼镜演示的语音管线测试"
+      }
+     ]
+    },
+    {
+     "at": "2026-11-07 20:29",
+     "summary": "对方在测试眼镜演示的语音管线，反复念同一句测试语。",
+     "transcript": "this is a quick test of the voice pipeline for the glasses demo hello this is a quick test of the voice pieline for the glasis demo hello this is a quick test of the ice ice peline for the glasses demo hello this is",
+     "items": [
+      {
+       "key": "其他",
+       "value": "正在测试眼镜演示的语音管线"
+      }
+     ]
+    },
+    {
+     "at": "2026-11-07 20:33",
+     "summary": "对方在测试眼镜演示的语音管线，反复念同一句测试语。",
+     "transcript": "this is a quick test of the voice pipeline for the glasses demo hello this is a quick test of the voice pieline for the glasis demo hello this is a quick test of the ice ice peline for the glasses demo hello this is",
+     "items": [
+      {
+       "key": "其他",
+       "value": "对方在测试眼镜演示的语音管线"
+      }
+     ]
+    },
+    {
+     "at": "2026-11-07 20:33",
+     "summary": "对方在测试眼镜演示的语音管线",
+     "transcript": "quick test test the voice pipeline for the glasses demo hello this is a quick test of the voice pipeline for the glasses demo hello this is",
+     "items": [
+      {
+       "key": "其他",
+       "value": "正在测试眼镜演示的语音管线"
       }
      ]
     }

@@ -81,6 +81,8 @@ if ($Cmd -eq 'gui') {
            "--add-host host.docker.internal:host-gateway " +
            "-e DISPLAY=`$DISPLAY -e WAYLAND_DISPLAY=wayland-0 " +
            "-e XDG_RUNTIME_DIR=/mnt/wslg/runtime-dir " +
+           "-e PULSE_SERVER=unix:/mnt/wslg/PulseServer " +
+           "-e PULSE_COOKIE=/mnt/wslg/.config/pulse/cookie " +
            "-e MEMORYLENS_BACKEND=$Backend " +
            "-v /tmp/.X11-unix:/tmp/.X11-unix -v /mnt/wslg:/mnt/wslg " +
            "-v `"$wslKit`":/kit -v `"$wslProj`":/work -w /work " +
