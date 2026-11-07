@@ -98,7 +98,7 @@ wsl -d Ubuntu bash /mnt/e/ar-memory/tools/kit.sh package   # → dist/memorylens
 ```
 
 > 包后缀是 `.fuiapp`；`versionCode` 每次发布必须递增（同码不同内容会被拒装），
-> 我们现在是 `1.6.2 / versionCode 18`。`verify` 只认已签名的包，debug-unsigned 会被它拒绝，
+> 我们现在是 `2.9.15 / versionCode 62`。`verify` 只认已签名的包，debug-unsigned 会被它拒绝，
 > 这是正常的——自测用 `run --allow-debug-unsigned`。
 
 `run` 的常用参数：`--display-mode mono|stereo`（单眼/双眼）、
@@ -173,12 +173,12 @@ docker run --rm -it --device /dev/dri -v $PWD:/w ubuntu:22.04 bash
   之所以是窄列、每行不超过 6 个汉字，是因为**镜片上单个 Text 只画得出约 110px**（见下面"排版坑"）。
 - 状态行会区分来源：`听到 · 53ms`（声纹）或 `看到 · 34ms`（人脸），评委一眼能看懂。
 - 打包：`powershell -File tools/kit-docker.ps1 package`（容器里跑，不依赖 WSL）
-  → `dist/memorylens.fuiapp`（2.0.0 / versionCode 22 / debug-unsigned，24944 B，
+  → `dist/memorylens.fuiapp`（2.9.15 / versionCode 62 / debug-unsigned，62285 B，
   sha256 `0c75f41ff8cd0b756b4fa22e6c21dcda0885a0fff03ea3a697b4a38cdba19d72`）。
 - 信息多的时候**自动滚动**：一屏 6 行，超过就每 1.4s 往下滚 1 行，到底从头开始；
   页脚显示 `1/2` 这样的页码。进后台会自动停滚。
   两张对比图：`test/glasses_scroll_a.png`（第 1 屏）、`test/glasses_scroll_b.png`（滚了 3 行）。
-- 真机镜片截图：`test/glasses_card.png`（简单卡片）、`test/glasses_detail.png`（按「确认」展开的详情页），
+- 真实镜片截图：`test/gui_listening_real.png`（在听页 + 波形）、`test/agent_card.png`（认人后的卡片），
   都是模拟器 mono 模式，单色绿。
 - 能力声明：`display.keep-awake` + `input.audio` + `input.navigation`，`minimumHostVersion: 2`。
 - 连哪台机器由 `MEMORYLENS_BACKEND` 决定，默认 `http://127.0.0.1:8765`。
@@ -191,13 +191,12 @@ docker run --rm -it --device /dev/dri -v $PWD:/w ubuntu:22.04 bash
 | 屏幕状态 | 按「确认」 | 按「返回」 |
 |---|---|---|
 | 空 | 开始录音 | — |
-| 简单卡片 | `GET /api/card/<id>/full` → 详情页 | 清屏 |
-| 详情页 | 收起，回简单卡片 | 清屏 |
+| 在听 | 把这段交给智能体 → 三条提词（`c.showUntil` 停 20 秒） | 结束这段并入库 |
 
 - 简单数据（`simple`）跟着卡片一起下发；复杂数据（`complex`）按需拉，**没按就永远不出网**，顺带就是隐私闸门。
 - JSON 是服务端摊平成一行行字的（`src/cards.py: flatten`），眼镜端不解析 JSON。
-- 一屏 6 行、超出自动滚动；详情页复用同一套滚动组件，只是页脚变成 `确认 收起 · 返回 清屏 · 1/2`。
-- 联调捷径：`MEMORYLENS_AUTO_DETAIL=1` 时认出已知的人会自动翻到详情页，方便截图。
+- 一屏 6 行；提词直接占用这几行，状态行继续走计时（其余内容不动）。
+- 联调捷径：`MEMORYLENS_FAKE_MIC=1` 用正弦波顶替麦克风、`MEMORYLENS_AUTO_LISTEN=1` 启动后自动进单人模式，便于在无声卡环境验证全链路。
 
 ### 排版坑（都是实跑踩出来的）
 
@@ -225,7 +224,7 @@ ok  HUD 出现身份
 ok  HUD 出现两条信息
 ok  状态是「听到」
 ok  按一下展开详情
-ok  详情页有内容
+ok  提词显示在在听页上（卡片没有被刷掉）
 ok  再按一下回到简单卡片
 ok  返回键清屏
 ok  陌生声音显示「陌生人」       （zira，SIM 0.30）
