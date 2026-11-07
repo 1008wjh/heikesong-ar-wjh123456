@@ -86,7 +86,7 @@ def build_card(person, similarity, threshold):
             "role": "",
             "accent": "amber",
             "similarity": round(float(similarity), 3),
-            "lines": ["不在你的人脉库里", "按「记住他」录入，或去控制台新增"],
+            "lines": ["不在你的人脉库里", "去控制台「+ 新增人物」录入"],
             "has_complex": False,
         }
 
