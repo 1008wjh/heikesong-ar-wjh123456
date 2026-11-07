@@ -74,7 +74,10 @@ LLM_KEY = _env(
 
 # ---- 转写（ASR）
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ASR_DIR = _env("AR_ASR_DIR", default=os.path.join(HERE, "models", "asr", "paraformer-zh-small"))
+_ASR_SENSE = os.path.join(HERE, "models", "asr", "sense-voice")
+ASR_DIR = _env("AR_ASR_DIR", default=(
+    _ASR_SENSE if os.path.exists(os.path.join(_ASR_SENSE, "model.int8.onnx"))
+    else os.path.join(HERE, "models", "asr", "paraformer-zh-small")))
 ASR_LOCAL_MODEL = os.path.join(ASR_DIR, "model.int8.onnx")
 ASR_LOCAL_TOKENS = os.path.join(ASR_DIR, "tokens.txt")
 
@@ -116,7 +119,7 @@ def status():
         "stub": STUB,
         "model": LLM_MODEL,
         "base": LLM_BASE,
-        "asr": ASR_MODEL if ASR_PROVIDER == "http" else "paraformer-zh-small",
+        "asr": ASR_MODEL if ASR_PROVIDER == "http" else ("sense-voice" if os.path.basename(ASR_DIR).startswith("sense") else "paraformer-zh-small"),
         "asrProvider": ASR_PROVIDER,
         "asrBase": ASR_BASE if ASR_PROVIDER == "http" else "local",
         "preset": LLM_PRESET or "custom",
@@ -142,14 +145,26 @@ def _recognizer():
     if not (os.path.exists(ASR_LOCAL_MODEL) and os.path.exists(ASR_LOCAL_TOKENS)):
         _local_error = "本地 ASR 模型不在 %s（要 model.int8.onnx 和 tokens.txt）" % ASR_DIR
         raise LLMUnavailable(_local_error)
-    _local_recognizer = sherpa_onnx.OfflineRecognizer.from_paraformer(
-        paraformer=ASR_LOCAL_MODEL,
-        tokens=ASR_LOCAL_TOKENS,
-        num_threads=2,
-        sample_rate=16000,
-        feature_dim=80,
-        decoding_method="greedy_search",
-    )
+    # 放的是 sense-voice 就用 sense-voice，放的是 paraformer 就用 paraformer
+    # （目录里有 sense-voice 的标记文件就优先，见 tools/get_asr_model.ps1 -Kind sensevoice）
+    if os.path.exists(os.path.join(ASR_DIR, "sense-voice")):
+        _local_recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
+            model=ASR_LOCAL_MODEL,
+            tokens=ASR_LOCAL_TOKENS,
+            num_threads=int(os.environ.get("AR_ASR_THREADS", "4")),
+            use_itn=True,          # 带标点、数字规整
+            debug=False,
+            language="auto",
+        )
+    else:
+        _local_recognizer = sherpa_onnx.OfflineRecognizer.from_paraformer(
+            paraformer=ASR_LOCAL_MODEL,
+            tokens=ASR_LOCAL_TOKENS,
+            num_threads=int(os.environ.get("AR_ASR_THREADS", "4")),
+            sample_rate=16000,
+            feature_dim=80,
+            decoding_method="greedy_search",
+        )
     return _local_recognizer
 
 
@@ -160,6 +175,21 @@ def _local_transcribe(wav_bytes):
     if samples is None or len(samples) < 1600:  # < 0.1s
         raise LLMUnavailable("这段音频太短，听不出字")
     rec = _recognizer()
+    # 长音频切窗解码：paraformer-small 直接吃 55 秒会吐空，切到 25 秒一段最稳
+    win = 25 * 16000
+    if len(samples) > win:
+        parts = []
+        for i in range(0, len(samples), win):
+            seg = samples[i:i + win]
+            if len(seg) < 1600:
+                continue
+            st = rec.create_stream()
+            st.accept_waveform(16000, seg)
+            rec.decode_stream(st)
+            t = (st.result.text or '').strip()
+            if t:
+                parts.append(t)
+        return ''.join(parts)
     stream = rec.create_stream()
     stream.accept_waveform(16000, samples)
     rec.decode_stream(stream)
