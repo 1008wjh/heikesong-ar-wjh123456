@@ -49,7 +49,9 @@ const COL = {
 const retained = {};
 let rafId = null;
 let lastPaintAt = 0;
-let lastScene = null;          // {card, rev, ms} 或 {idle:"..."}，用来周期性重绘
+let lastScene = null;
+let lastCardKey = "";
+let endedAt = 0;          // {card, rev, ms} 或 {idle:"..."}，用来周期性重绘
 let pollTimer = null;
 let navTimer = null;
 let outboxTimer = null;
@@ -298,8 +300,11 @@ function paintCard(card, rev, ms) {
   putText(retained.sim, known && typeof card.similarity === "number"
     ? "SIM " + card.similarity.toFixed(2) : "");
 
-  // tick 每 400ms 会重画一次同一张卡，别把滚动位置重置了
-  const same = lastScene && lastScene.card === card && lastScene.rev === rev;
+  // tick 每 400ms 会重画一次同一张卡，别把滚动位置重置了。
+  // 指纹用内容而不是对象引用：换卡但 rev 没变时，行也必须跟着换。
+  const cardKey = [card.name, card.state, card.role, (card.lines || []).join("|")].join("\u0001");
+  const same = cardKey === lastCardKey;
+  lastCardKey = cardKey;
   lastScene = { card, rev, ms };       // 先更新，页脚提示才拿得到这张卡的状态
   if (!same) {
     cardRows = [];
@@ -435,6 +440,20 @@ function listenLine() {
 function paintListening() {
   if (!capture) return;
   retained.status.setText(listenLine());
+  if (capture.lastCard && !complexRows) {
+    // 认出来之后：名字/身份/信息行保持卡片内容，别被"在听"的提示冲掉
+    const card = capture.lastCard;
+    putText(retained.name, card.name || "陌生人");
+    putText(retained.role, card.layout === "notice" ? "多人对话 · 没入库" : (card.role || ""));
+    putText(retained.sim, card.status !== "unknown" && typeof card.similarity === "number"
+      ? "SIM " + card.similarity.toFixed(2) : "");
+    const rows = [];
+    for (const ln of (card.lines || [])) rows.push(...splitLines(ln, 6));
+    if (rows.join("|") !== cardRows.join("|")) { cardRows = rows; rowOffset = 0; }
+    paintRows();
+    putText(retained.foot, "确认 详情 · 返回 结束");
+    return;
+  }
   if (!capture.lastCard) {
     putText(retained.name, "在听…");
     putText(retained.role, "直接说话就行，不用按键");
@@ -520,52 +539,13 @@ async function drain(c) {
   }
 }
 
-async function identify(c, wav) {
-  let res;
-  try {
-    // auto_add：陌生人直接建号（陌生人A、陌生人B…），否则这整段话没有归属
-    res = await postJson("/api/voice/scan", { audio: wav, auto_add: true });
-  } catch (e) {
-    if (!outbox.push(wav)) c.dropped += 1;
-    return;
-  }
-  const f = res && res.faces && res.faces[0];
-  if (!f || !f.person_id) return;
-  c.personId = f.person_id;
-  c.personName = f.name || "他";
-  c.slices += 1;
-  c.lastCard = f;
-  c.lastRev = res.rev;
-  c.lastMs = res.ms;
-  paintCard(f, res.rev, res.ms);   // 认出来就换卡片
-  paintListening();                // 再把状态行/底栏盖回"在听"
-  c.queue.unshift(wav);            // 这一片也要进对话，别漏掉开头那 15 秒
-  if (AUTO_ARCHIVE) await ensureSession(c);
-}
 
-async function ensureSession(c) {
-  if (c.sessionId) return true;
-  try {
-    const r = await postJson("/api/converse/start", { person_id: c.personId });
-    c.sessionId = (r && r.session) || null;
-  } catch (e) {
-    c.sessionId = null;
-  }
-  return !!c.sessionId;
-}
 
-async function pushChunk(c, wav) {
-  if (!AUTO_ARCHIVE) return;                       // 只认人、不入库的用法
-  if (!(await ensureSession(c))) { if (!outbox.push(wav)) c.dropped += 1; return; }
-  try {
-    await postJson("/api/converse/chunk", { session: c.sessionId, audio: wav });
-    c.sent += 1;
-  } catch (e) {
-    if (!outbox.push(wav)) c.dropped += 1;
-  }
-}
 
-function startListening() {
+
+
+
+function startListening(mode) {
   if (capture || background) return;
   let availability;
   try {
@@ -582,6 +562,8 @@ function startListening() {
     session: null, chunks: [], samples: 0,
     startedAt: Date.now(), sessionStartedAt: 0,
     slices: 0, sent: 0, queue: [], busy: false,
+    mode: mode === "meeting" ? "meeting" : "single",
+    agentSession: "g-" + Date.now().toString(36),
     personId: "", personName: "", sessionId: null,
     lastCard: null, stopped: false, dropped: 0, pumpTimer: null,
   };
@@ -592,7 +574,80 @@ function startListening() {
 }
 
 // 按「返回」：收尾最后一片 → 等队列传完 → 让模型析出要点 → 写进那个人的档案
+async function identify(c, wav) {
+  // 第一片：声纹认人（陌生人由后端自动建号）+ 让智能体给出第一版要点
+  let res;
+  try {
+    res = await postJson("/api/agent/feed", {
+      session: c.agentSession, audio: wav, auto_add: true, mode: c.mode,
+    });
+  } catch (e) {
+    if (!outbox.push(wav)) c.dropped += 1;
+    return;
+  }
+  c.sent += 1;
+  const v = (res && res.view) || null;
+  if (!v) return;
+  c.personId = v.person_id || "";
+  c.personName = v.person || "";
+  if (!c.personId) return;
+  c.slices += 1;
+  c.lastCard = agentCard(v);
+  c.lastRev = res.rev;
+  c.lastMs = v.ms || 0;
+  shownRev = res.rev;
+  lastScene = { card: c.lastCard, rev: res.rev, ms: v.ms || 0 };
+  paintCard(c.lastCard, res.rev, v.ms || 0);
+  paintListening();                // 再把状态行/底栏盖回"在听"
+}
+
+function agentCard(v) {
+  return {
+    kind: "agent",
+    status: v.person ? "known" : "unknown",
+    name: v.person || "这段对话",
+    role: v.role || "",
+    similarity: v.similarity || 0,
+    lines: v.rows || [],
+    state: v.state,
+    layout: v.layout,
+    options: v.options || [],
+    degraded: !!v.degraded,
+  };
+}
+
+async function ensureSession(c) {
+  return !!c.agentSession;
+}
+
+async function pushChunk(c, wav) {
+  // 之后每 55 秒一片：交给同一个智能体会话，它会拼档案 + 给下一步建议
+  try {
+    const res = await postJson("/api/agent/feed", {
+      session: c.agentSession, audio: wav, auto_add: true, mode: c.mode,
+    });
+    c.sent += 1;
+    const v = (res && res.view) || null;
+    if (!v) return;
+    if (v.person_id) { c.personId = v.person_id; c.personName = v.person; }
+    if (v.rows && v.rows.length) {
+      c.lastCard = agentCard(v);
+      c.lastRev = res.rev;
+      c.lastMs = v.ms || 0;
+        lastScene = { card: c.lastCard, rev: res.rev, ms: v.ms || 0 };
+      paintCard(c.lastCard, res.rev, v.ms || 0);
+      paintListening();
+    }
+  } catch (e) {
+    if (!outbox.push(wav)) c.dropped += 1;
+  }
+}
+
 async function stopAndArchive(msg) {
+  if (capture) {
+    capture.stopped = true;
+    retained.status.setText("收尾 · 传剩余录音…");
+  }
   const c = capture;
   if (!c) return;
   c.stopped = true;
@@ -606,6 +661,7 @@ async function stopAndArchive(msg) {
   c.chunks = [];
   capture = null;
   const revAtStop = shownRev;
+  endedAt = Date.now();
   putText(retained.foot, "收尾 · 传剩余录音…");
   await drain(c);
   if (!c.personId) {
@@ -613,7 +669,7 @@ async function stopAndArchive(msg) {
     return;
   }
   if (!AUTO_ARCHIVE || !c.sessionId) {
-    if (shownRev === revAtStop) paintIdle("这段结束了 · 按一下再开一段");
+    if (shownRev === revAtStop) clearView();
     return;
   }
   paintIdle("整理 " + c.personName + " 这段…");
@@ -749,9 +805,54 @@ function navText(act) {
   paintText();
 }
 
+// ---------------- 开场：先选单人还是多人（纯代码，不问模型） ----------------
+let modeSelect = null;   // {index:0|1}
+
+const MODE_ITEMS = [
+  { key: "single", label: "单人", hint: "和对面一个人聊 · 15 秒认人" },
+  { key: "meeting", label: "多人", hint: "三个人以上 · 只转写不入库" },
+];
+
+function openMode() {
+  modeSelect = { index: 0 };
+  paintMode();
+}
+
+function closeMode() {
+  modeSelect = null;
+  if (lastScene && lastScene.card) { paintCard(lastScene.card, lastScene.rev, lastScene.ms); return; }
+  paintIdle("按一下开始 · 先选单人还是多人");
+}
+
+function paintMode() {
+  if (!modeSelect) return;
+  putText(retained.status, "选模式 · 左右选 · 确认进入");
+  putText(retained.name, "开始记录");
+  putText(retained.role, "先选这一段是什么");
+  putText(retained.sim, "");
+  const rows = MODE_ITEMS.map((m, i) => (i === modeSelect.index ? "【" + m.label + "】" : "  " + m.label));
+  retained.info.forEach((t, i) => putText(t, rows[i] || ""));
+  retained.info[2] && putText(retained.info[2], MODE_ITEMS[modeSelect.index].hint);
+  putText(retained.foot, "确认进入 · 返回关掉");
+}
+
+function navMode(act) {
+  if (!modeSelect) return;
+  if (act === "left" || act === "up") { modeSelect.index = (modeSelect.index + 1) % MODE_ITEMS.length; paintMode(); return; }
+  if (act === "right" || act === "down") { modeSelect.index = (modeSelect.index + 1) % MODE_ITEMS.length; paintMode(); return; }
+  if (act === "back") { closeMode(); return; }
+  if (act === "activate") {
+    const mode = MODE_ITEMS[modeSelect.index].key;
+    modeSelect = null;
+    startListening(mode);
+    return;
+  }
+}
+
 function handleNavigation() {
   const act = input.takeNavigationAction();
   if (!act) return;
+  if (modeSelect) { navMode(act); return; }
   if (textMode) { navText(act); return; }
   if (capture) {
     if (act === "activate") { toggleDetail(); return; }   // 录音中看详情，不打断
@@ -763,8 +864,8 @@ function handleNavigation() {
   if (act === "up") { openText("keys"); return; }
   if (act === "down") { openText("opts"); return; }
   if (act === "activate") {
-    if (viewMode === "simple" || viewMode === "complex") { toggleDetail(); return; }
-    startListening();
+    // 不在录音时，确认键只有一个含义：开一段新的（先问单人还是多人）
+    openMode();
     return;
   }
   if (act === "back") { clearView(); return; }
@@ -778,18 +879,23 @@ function clearView() {
 }
 
 async function poll() {
-  if (inFlight || background || capture) return;
+
   inFlight = true;
   try {
     const data = await getJson("/api/latest");
-    if (!data || data.rev === shownRev) return;          // 没新结果就别动屏幕
+
     const faces = data.faces || [];
     if (!faces.length) {
       paintIdle("按一下开始听…");
       shownRev = data.rev;
       return;
     }
-    paintCard(faces[0], data.rev, data.ms);
+    const c0 = faces[0];
+    if (c0.kind === "agent" && (!capture || Date.now() - endedAt < 15000)) {
+      // 上一段晚到的对话结果：不画，也不吃掉 rev（后面的人脸结果还要用这个 rev 上屏）
+      return;
+    }
+    paintCard(c0, data.rev, data.ms);
     // 演示/联调用：MEMORYLENS_AUTO_DETAIL=1 时，认出已知的人后自动翻到详情页
     if (process.env.MEMORYLENS_AUTO_DETAIL === "1" && faces[0].person_id && !autoDetailDone) {
       autoDetailDone = true;
@@ -817,8 +923,10 @@ async function flushOutbox() {
 }
 
 function tick() {
-  if (textMode) { paintText(); return; }
+  // 先续上下一帧，再按状态分派 —— 否则一旦进键盘/选模式就永远回不来了
   rafId = typeof os.requestAnimationFrame === "function" ? os.requestAnimationFrame(tick) : null;
+  if (modeSelect) { paintMode(); return; }
+  if (textMode) { paintText(); return; }
   const now = Date.now();
   if (now - lastPaintAt < 400) return;
   lastPaintAt = now;
@@ -833,10 +941,10 @@ function tick() {
     }
     return;
   }
+  // 注意：这里不要无条件重画 lastScene.card —— 新结果（比如人脸）刚上屏，
+  // 下一帧就被旧卡片盖回去。卡片只在 poll() 拿到新 rev 时画。
   if (!lastScene) return;
   if (complexRows) paintComplex(lastScene.card ? lastScene.card.name : "");
-  else if (lastScene.card) paintCard(lastScene.card, lastScene.rev, lastScene.ms);
-  else paintIdle(lastScene.idle);
 }
 
 function start() {

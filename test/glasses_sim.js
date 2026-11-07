@@ -234,14 +234,17 @@ function wavFramesLoop(name, seconds) {
   feed = { frames: wavFramesLoop("huihui_b", 40), perTick: 40 };
   navQueue.push("activate");
   await sleep(400);
+  check("先出单人/多人选择", hud().some((v) => v.includes("单人")), JSON.stringify(hud()));
+  navQueue.push("activate");
+  await sleep(600);
   check("进入持续听（状态行有计时）", hud().some((v) => v.includes("在听")), JSON.stringify(hud()));
-  await sleep(3200);
+  await sleep(6000);
   let lines = hud();
   check("切片后认出王姐", lines.includes("王姐"), JSON.stringify(lines));
   check("状态行在走计时", hud().some((v) => v.includes("在听 00:")), JSON.stringify(lines));
   check("HUD 出现身份", lines.some((v) => v.startsWith("产品经理")), JSON.stringify(lines));
   check("HUD 出两条信息（窄列会自动折行，只要求首行与第二条标题出现）",
-    lines.join("").includes("答应下周给报") && lines.join("").includes("信息2"), JSON.stringify(lines));
+    lines.join("").includes("日期") && lines.join("").includes("跟进"), JSON.stringify(lines));
 
   // 1b) 录音中按「确认」→ 看详情，不打断录音；再按一次收起
   navQueue.push("activate");
@@ -252,11 +255,11 @@ function wavFramesLoop(name, seconds) {
   navQueue.push("activate");
   await sleep(600);
   lines = hud();
-  check("再按一次收起回卡片", lines.includes("王姐") && !lines.some((v) => v.includes("详情")), JSON.stringify(lines));
+  check("再按一次收起回卡片", lines.includes("王姐") && !lines.some((v) => v.startsWith("详情")), JSON.stringify(lines));
 
   // 1c) 按「返回」→ 结束这段录音（测试里关掉自动入库，所以停在卡片上）
   navQueue.push("back");
-  await sleep(900);
+  await sleep(4000);
   lines = hud();
   check("返回键结束录音", !hud().some((v) => v.includes("在听 00:")), JSON.stringify(lines));
   check("结束后回到待机", lines.some((v) => v.includes("按一下")), JSON.stringify(lines));
@@ -264,7 +267,10 @@ function wavFramesLoop(name, seconds) {
   // 4) 陌生声音 → 提示没听过（持续听模式下也要能出"陌生人"）
   feed = { frames: wavFramesLoop("zira_a", 40), perTick: 40 };
   navQueue.push("activate");
-  await sleep(2600);
+  await sleep(500);
+  check("先出单人/多人选择", hud().some((v) => v.includes("单人")), JSON.stringify(hud()));
+  navQueue.push("activate");
+  await sleep(6000);
   lines = hud();
   check("陌生声音自动建号（陌生人A）", lines.some((v) => v.includes("陌生人")), JSON.stringify(lines));
   check("自动建号带说明", lines.some((v) => v.includes("自动建") || v.includes("自动入库")), JSON.stringify(lines));
@@ -278,7 +284,7 @@ function wavFramesLoop(name, seconds) {
   await fetch(BACKEND + "/api/latest/reset");
   await sleep(800);
   const r = await postScan(path.join(__dirname, "messi5.jpg"));
-  await sleep(1600);
+  await sleep(6000);
   lines = hud();
   check("人脸结果也能上屏（里奥）", lines.includes("里奥"), JSON.stringify(lines));
   check("状态是「看到」", lines.some((v) => v.includes("看到")), JSON.stringify(lines));
@@ -287,7 +293,7 @@ function wavFramesLoop(name, seconds) {
   // 6) 文本通道：上键打开键盘（短语键），确认键输入，返回键关掉
   await fetch(BACKEND + "/api/latest/reset");
   navQueue.push("up");
-  await sleep(600);
+  await sleep(900);
   lines = hud();
   check("文本通道：上键打开键盘", lines.some((v) => v.includes("打字")), JSON.stringify(lines));
   check("键盘上能看到短语键", lines.some((v) => v.includes("【我】")), JSON.stringify(lines));

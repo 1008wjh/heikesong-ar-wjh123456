@@ -346,6 +346,10 @@ class Handler(BaseHTTPRequestHandler):
         auto_add = body.get("auto_add", True)
         view = agent.run_feed(session, text=text, audio=audio, auto_add=bool(auto_add))
         person = store.get(view.get("person_id") or "")
+        try:
+            view["role"] = (person or {}).get("role") or ""
+        except Exception:
+            pass
         card = {
             "kind": "agent",
             "status": "known" if view.get("person") else "unknown",

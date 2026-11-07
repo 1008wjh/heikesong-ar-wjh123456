@@ -139,11 +139,16 @@ def node_ingest(state: AgentState) -> dict:
             text = llm.transcribe(decode_audio_ref(audio))
         except Exception as e:
             return {"text": "", "notes": (state.get("notes") or []) + ["转写失败：%s" % e]}
-    return {"text": text[:MAX_TRANSCRIPT]}
+    window = ((state.get("window") or "") + " " + text).strip()[-2000:]
+    return {"text": text[:MAX_TRANSCRIPT], "window": window,
+            "slice_no": int(state.get("slice_no") or 0) + 1}
 
 
 def node_route(state: AgentState) -> dict:
-    """单人还是多人。先看规则，拿不准再问模型。"""
+    """单人还是多人。用户自己点按钮选的优先；没选才用规则/模型兜底。"""
+    picked = (state.get("mode") or "").lower()
+    if picked in ("single", "meeting"):
+        return {"mode": picked}
     text = state.get("text") or ""
     speakers = len({m.group(1) for m in re.finditer(r"(?:^|\n)\s*([^：:\n]{1,6})[：:]", text)})
     # 只看"有几个说话人"，别因为内容里出现"开会"就当成会议
@@ -210,9 +215,33 @@ def node_render(state: AgentState) -> dict:
         "person_id": state.get("person_id") or "",
         "matched_by": state.get("matched_by") or "none",
         "similarity": state.get("similarity") or 0.0,
-        "options": suggest_options(state_name, name),
+        "options": (state.get("next_actions") or suggest_options(state_name, name))[:3],
         "degraded": state.get("degraded", False),
     }}
+
+
+def node_recommend(state: AgentState) -> dict:
+    """下一步做什么：把档案 + 这段对话交给模型，让它给三条可点的建议。"""
+    if state.get("mode") == "meeting":
+        return {}
+    # 第一片只做"认人 + 要点"；下一步建议从第二片起（也就是 55 秒那一片）才调模型
+    if int(state.get("slice_no") or 1) <= 1:
+        return {}
+    person = store_ref.get(state.get("person_id") or "") if state.get("person_id") else None
+    profile = ""
+    if person:
+        lines = cards.simple_lines(person, 6)
+        facts = (person.get("complex") or {}).get("对话要点") or {}
+        extra = ["%s: %s" % (k, v) for k, v in list(facts.items())[:6]]
+        profile = " / ".join([x for x in lines + extra if x])[:600]
+    try:
+        got = llm.recommend(state.get("window") or state.get("text") or "",
+                            state.get("person_name") or "", profile, state.get("items") or [])
+        nxt = got.get("next") or []
+        return {"next_actions": nxt, "summary": state.get("summary") or got.get("summary") or ""}
+    except llm.LLMUnavailable:
+        return {"degraded": True,
+                "notes": (state.get("notes") or []) + ["给建议时模型不可用，用固定三条"]}
 
 
 def node_commit(state: AgentState) -> dict:
@@ -233,6 +262,7 @@ def build(memory=None):
     g.add_node("route", node_route)
     g.add_node("identify", node_identify)
     g.add_node("extract", node_extract)
+    g.add_node("recommend", node_recommend)
     g.add_node("render", node_render)
     g.add_node("commit", node_commit)
 
@@ -241,7 +271,8 @@ def build(memory=None):
     g.add_conditional_edges("route", lambda s: "meeting" if s.get("mode") == "meeting" else "single",
                             {"single": "identify", "meeting": "render"})
     g.add_edge("identify", "extract")
-    g.add_edge("extract", "render")
+    g.add_edge("extract", "recommend")
+    g.add_edge("recommend", "render")
     g.add_conditional_edges("render", lambda s: "skip" if s.get("mode") == "meeting" else "commit",
                             {"commit": "commit", "skip": END})
     g.add_edge("commit", END)
@@ -266,11 +297,13 @@ def graph():
         return _GRAPH
 
 
-def run_feed(session: str, text: str = "", audio: str = "", auto_add: bool = True) -> dict:
+def run_feed(session: str, text: str = "", audio: str = "", auto_add: bool = True,
+             mode: str = "") -> dict:
     """跑一片。session 相同的片会落在同一个 thread 里（上下文自动保留）。"""
     t0 = time.time()
     state: AgentState = {"session": session, "text": text, "audio": audio,
-                         "auto_add": auto_add, "degraded": False, "notes": []}
+                         "auto_add": auto_add, "degraded": False, "notes": [],
+                         "mode": (mode or "").lower()}
     cfg = {"configurable": {"thread_id": session}}
     try:
         out = graph().invoke(state, cfg)

@@ -321,6 +321,23 @@ def pick_person(transcript, names):
     return None
 
 
+def recommend(transcript, person_name, profile, items):
+    """下一步该做什么：给三条可点的行动建议（要贴着这个人的档案说）。"""
+    who = person_name or "一个刚认识的陌生人"
+    facts = profile or "（没有档案）"
+    done = "；".join("%s：%s" % (i.get("key", ""), i.get("value", "")) for i in (items or [])[:6]) or "（这段还没抽出要点）"
+    out = _chat_plain(
+        "你在帮用户和对面的人聊天。根据这个人的档案和这一段对话，给出三条「下一步可以做什么」的短建议。"
+        "要求：每条不超过 12 个字，动词开头，能直接照着做；不要解释；只输出 JSON。\n"
+        '格式：{"summary":"一句话总结这段对话","next":["建议1","建议2","建议3"]}',
+        "对面的人：%s\n档案：%s\n这段的要点：%s\n对话原文：%s" % (who, facts, done, (transcript or "")[-1200:]),
+        max_tokens=180,
+    )
+    obj = _loads_loose(out) or {}
+    nxt = [str(x).strip()[:14] for x in (obj.get("next") or []) if str(x).strip()][:3]
+    return {"summary": str(obj.get("summary") or "")[:60], "next": nxt}
+
+
 def analyze(transcript, person):
     """对话原文 → {summary, items[]}。person 只用 name/role 做上下文。"""
     transcript = (transcript or "").strip()
