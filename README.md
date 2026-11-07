@@ -14,8 +14,8 @@
 
 | 文档 | 看它做什么 |
 |---|---|
-| **[使用说明](docs/00-使用说明.md)** | 上手就跑：三条路（只看效果 / 跑模拟器 / 真机）、控制台、3 分钟演示、故障表 |
-| **[开发者文档](docs/08-开发者文档.md)** | 协作开发：架构、数据模型、13 个接口、识别管线、7 条坑、扩展指南 |
+| **[使用说明](使用说明.md)** | 上手就跑：三条路（只看效果 / 跑模拟器 / 真机）、控制台、3 分钟演示、故障表 |
+| **[开发者文档](开发者文档.md)** | 协作开发：架构、数据模型、13 个接口、识别管线、7 条坑、扩展指南 |
 | [IrisView 工具包](docs/07-IrisView-工具包.md) | 亮亮视野开发包：命令、本机踩的坑、我们怎么接 |
 
 ```powershell
@@ -130,8 +130,8 @@ python src/server.py        # 打开 http://127.0.0.1:8765
 | `dist/memorylens.fuiapp` | 打好的包（1.6.2 / versionCode 18 / debug-unsigned），给模拟器或真机 |
 | `tools/kit-docker.ps1` | Windows 入口：在容器里跑 `test/build/package/run`（推荐） |
 | `tools/kit.sh` | 同一套命令的 WSL 版（备用；Windows 上 `new` 会崩，见 docs/07） |
-| `docs/00-使用说明.md` | **上手就跑**：环境、三条路、控制台、演示脚本、故障表 |
-| `docs/08-开发者文档.md` | **协作开发**：架构、数据模型、API、管线、坑、扩展指南 |
+| `使用说明.md` | **上手就跑**：环境、三条路、控制台、演示脚本、故障表 |
+| `开发者文档.md` | **协作开发**：架构、数据模型、API、管线、坑、扩展指南 |
 | `docs/07-IrisView-工具包.md` | 亮亮视野开发包：是什么、命令、本机踩的坑、我们的接法 |
 | `tools/enroll.py` | 命令行批量导脸：`python tools/enroll.py 张三 photos/zhangsan/` |
 | `tools/hud_preview.py` | 按眼镜端坐标把 HUD 画成 PNG：`python tools/hud_preview.py voice huihui_b` |
