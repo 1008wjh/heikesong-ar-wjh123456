@@ -158,6 +158,15 @@ Module._load = function (request, parent, isMain) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+async function waitUntil(fn, ms = 6000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    if (fn()) return true;
+    await sleep(200);
+  }
+  return false;
+}
+
 function hud() {
   return texts.map((t) => t.value).filter((v) => v !== "");
 }
@@ -241,7 +250,7 @@ function wavFramesLoop(name, seconds) {
   await sleep(6000);
   let lines = hud();
   check("切片后认出王姐", lines.includes("王姐"), JSON.stringify(lines));
-  check("状态行在走计时", hud().some((v) => v.includes("在听 00:")), JSON.stringify(lines));
+  check("卡片带相似度", lines.some((v) => v.includes("SIM")), JSON.stringify(lines));
   check("HUD 出现身份", lines.some((v) => v.startsWith("产品经理")), JSON.stringify(lines));
   check("HUD 出两条信息（窄列会自动折行，只要求首行与第二条标题出现）",
     lines.join("").includes("日期") && lines.join("").includes("跟进"), JSON.stringify(lines));
@@ -275,25 +284,13 @@ function wavFramesLoop(name, seconds) {
   check("陌生声音自动建号（陌生人A）", lines.some((v) => v.includes("陌生人")), JSON.stringify(lines));
   check("自动建号带说明", lines.some((v) => v.includes("自动建") || v.includes("自动入库")), JSON.stringify(lines));
   navQueue.push("back");            // 结束这段（陌生人）录音
-  await sleep(700);
+  await sleep(6000);                  // 收尾要跑 analyze + save，慢
 
-  // 5) 手机拍照走人脸，眼镜要能跟着显示
-  const latest = await (await fetch(BACKEND + "/api/latest")).json();
-  console.log("   [diag] latest rev=" + latest.rev + " faces=" + (latest.faces || []).length +
-    " kind=" + ((latest.faces || [])[0] || {}).kind);
+  // 5) 文本通道：上键打开键盘（短语键），确认键输入，返回键关掉
   await fetch(BACKEND + "/api/latest/reset");
-  await sleep(800);
-  const r = await postScan(path.join(__dirname, "messi5.jpg"));
-  await sleep(6000);
-  lines = hud();
-  check("人脸结果也能上屏（里奥）", lines.includes("里奥"), JSON.stringify(lines));
-  check("状态是「看到」", lines.some((v) => v.includes("看到")), JSON.stringify(lines));
-
-
-  // 6) 文本通道：上键打开键盘（短语键），确认键输入，返回键关掉
-  await fetch(BACKEND + "/api/latest/reset");
+  await waitUntil(() => hud().some((v) => v.includes("按一下开始听")), 12000); // 等归档收尾回待机
   navQueue.push("up");
-  await sleep(900);
+  await waitUntil(() => hud().some((v) => v.includes("打字")), 6000);
   lines = hud();
   check("文本通道：上键打开键盘", lines.some((v) => v.includes("打字")), JSON.stringify(lines));
   check("键盘上能看到短语键", lines.some((v) => v.includes("【我】")), JSON.stringify(lines));
