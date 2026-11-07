@@ -24,7 +24,7 @@ const BACKEND = process.env.MEMORYLENS_BACKEND || "http://127.0.0.1:8765";
 const POLL_MS = 700;        // 拉结果
 const NAV_MS = 120;         // 读按键/手势
 const HTTP_TIMEOUT_MS = 1500;
-const MAX_SAMPLES = 16000 * 30;
+const MAX_SAMPLES = 16000 * 60;   // 平台单会话上限 60 秒；55 秒片不能被 30 秒常量截断
 const OUTBOX_RETRY_MS = 8000;  // 离线录音的重发间隔
 // 卡片（认人结果/55 秒建议）露一会儿就收起来，录音不停
 const HOLD_MS = 9000;      // 认人卡片在镜片上停留多久
@@ -69,8 +69,10 @@ const CHUNK_TEXT_PX = 112;        // 每块能画出的文字宽度
 
 const putText = (t, s) => {
   if (!t) return;
-  t.setText(s === undefined || s === null ? " " : String(s));
-  t.setSize([t.__w, t.__h, 0]);
+  const v = s === undefined || s === null || s === "" ? " " : String(s);
+  if (t.__text === v) return;       // 值没变就别碰控件：400ms 全量 setText 会闪
+  t.__text = v;
+  t.setText(v);                     // 不再每次 setSize：Text 创建时已经设过尺寸
 };
 
 function makeText(board, x, y, w, h, size, color, align) {
@@ -219,7 +221,9 @@ function postJson(path, body) {
 // ---------- WAV 封装：16kHz / 单声道 / 16bit ----------
 
 function toWav(chunks, totalBytes) {
-  const n = Math.min(totalBytes, MAX_SAMPLES * 2);
+  const actual = chunks.reduce((n, c) => n + c.length, 0);
+  let n = Math.min(totalBytes || actual, actual, MAX_SAMPLES * 2);
+  n -= n % 2;                       // 16-bit PCM：data 长度必须是偶数
   const buf = Buffer.alloc(44 + n);
   buf.write("RIFF", 0, "ascii");
   buf.writeUInt32LE(36 + n, 4);
@@ -493,7 +497,7 @@ function paintListening() {
     : "none");
   if (sig === listenSig) return;
   listenSig = sig;
-  retained.status.setText(statusWithBar(listenLine()));
+  putText(retained.status, statusWithBar(listenLine()));
   if (c0 && !complexRows) {
     // 认出来之后：名字/身份/信息行保持卡片内容，别被"在听"的提示冲掉
     const card = c0;
@@ -554,22 +558,22 @@ function makeFakeSession() {
 }
 
 // 关掉当前会话、等平台回收完再开下一条（end 事件之后必须留出这段时间）
-function restartSession(c, delay) {
+function restartSession(c) {
   const old = c.session;
   c.session = null;
-  closeSession(old);
-  if (c.stopped) return;
-  setTimeout(() => {
-    if (!capture || capture.stopped || capture.session) return;
-    openSession();
-  }, delay || 600);
+  closeSession(old, c, () => {
+    if (!capture || capture.stopped) return;
+    setTimeout(() => {
+      if (!capture || capture.stopped || capture.session) return;
+      openSession();
+    }, 300);
+  });
 }
 
-// 关掉一条语音会话，并把它的 end 事件消费掉 —— 平台只有看到 end 被读走，
-// 才会认为设备已释放；否则下一次 requestVoiceInput 会报"麦克风繁忙"。
-function closeSession(session, done) {
+// 关掉一条语音会话：先 finish() 让平台把排队音频发完，再把 audio 收进当前切片、
+// 把 end 读走。不能先 cancel()（会丢弃排队音频），也不能把 audio 丢掉。
+function closeSession(session, c, done) {
   if (!session) { if (done) done(); return; }
-  try { session.cancel(); } catch (e) { /* 已结束 */ }
   try { session.finish(); } catch (e) { /* 已结束 */ }
   const t0 = Date.now();
   (function drainEnd() {
@@ -578,7 +582,14 @@ function closeSession(session, done) {
       while (guard++ < 64) {
         const ev = session.takeEvent();
         if (!ev) break;
-        if (ev.type === "end") { if (done) done(); return; }
+        if (ev.type === "audio" && c) {
+          const buf = Buffer.from(ev.data);
+          c.chunks.push(buf);
+          c.samples += ev.sampleCount;
+        } else if (ev.type === "end") {
+          if (done) done();
+          return;
+        }
       }
     } catch (e) { /* 会话已失效 */ }
     if (Date.now() - t0 < 1500) setTimeout(drainEnd, 60);
@@ -855,7 +866,7 @@ async function pushChunk(c, wav) {
 async function stopAndArchive(msg) {
   if (capture) {
     capture.stopped = true;
-    retained.status.setText("收尾 · 传剩余录音…");
+    putText(retained.status, "收尾 · 传剩余录音…");
   }
   const c = capture;
   if (!c) return;
@@ -864,7 +875,8 @@ async function stopAndArchive(msg) {
   if (c.pumpTimer) clearTimeout(c.pumpTimer);
   const closing = c.session;
   c.session = null;
-  closeSession(closing);
+  // finish() 会把排队音频发完再给 end；必须等 closeSession 收完音频再组 WAV
+  await new Promise((resolve) => closeSession(closing, c, resolve));
   const bytes = c.samples * 2;
   if (bytes >= 16000 * 2 * (SLICE_MIN_MS / 1000)) {
     c.queue.push(toWav(c.chunks, bytes));
@@ -1197,7 +1209,7 @@ function tick() {
     // 在听的时候：详情页照常显示，但状态行继续走计时
     if (complexRows) {
       paintComplex(lastScene && lastScene.name ? lastScene.name : capture.personName);
-      retained.status.setText(statusWithBar(listenLine()));
+      putText(retained.status, statusWithBar(listenLine()));
       putText(retained.foot, "确认 收起 · 返回 结束");
     } else {
       paintListening();
