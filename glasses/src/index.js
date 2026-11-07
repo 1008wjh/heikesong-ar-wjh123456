@@ -409,6 +409,8 @@ const SLICE_MS = 3500;          // 每片多长：太短认不准，太长反馈
 const SLICE_MIN_MS = 1000;      // 停止时最后一片不足这个数就丢掉
 const MAX_SESSION_MS = 55000;   // 平台上限 60 秒，提前换会话
 const MAX_LISTEN_MS = 5 * 60 * 1000;   // 兜底：连续听 5 分钟自动停
+const ARCHIVE_PACK_SAMPLES = 16000 * 28;   // 送去做转写的批次：28 秒一段
+const AUTO_ARCHIVE = process.env.MEMORYLENS_ARCHIVE !== "0";   // 停止后把整段对话整理进档案
 
 let capture = null;   // {session,chunks,samples,startedAt,sessionStartedAt,slices,queue,busy,lastCard,stopped,dropped}
 
@@ -459,8 +461,11 @@ function pump() {
   let ev;
   while ((ev = c.session.takeEvent())) {
     if (ev.type === "audio") {
-      c.chunks.push(Buffer.from(ev.data));
+      const buf = Buffer.from(ev.data);
+      c.chunks.push(buf);
       c.samples += ev.sampleCount;
+      // 同时留一份整段录音：停止后要送去转写+析出，不能只留最近一片
+      if (c.keepSamples < 16000 * 300) { c.keep.push(buf); c.keepSamples += ev.sampleCount; }
     } else if (ev.type === "end") {
       // 平台把这条会话关了：换一条接着听（保留已累积的缓冲）
       if (!c.stopped) { openSession(); return; }
@@ -517,6 +522,51 @@ async function drain(c) {
   }
 }
 
+// 停止后把整段对话送去转写 + 析出，最后写进那个人的档案。
+// 认不出人就不做（没有档案可写），太短也不做（转不出东西）。
+async function archiveConversation(c) {
+  const pid = c.lastCard.person_id;
+  const name = c.lastCard.name || "他";
+  paintIdle("整理这段对话…");
+  let sid = null;
+  try {
+    const started = await postJson("/api/converse/start", { person_id: pid });
+    sid = started && started.session;
+    if (!sid) throw new Error("开会话失败");
+    let buf = [];
+    let bufSamples = 0;
+    let packs = 0;
+    const flushPack = async () => {
+      if (!bufSamples) return;
+      const wav = toWav(buf, bufSamples * 2);
+      buf = [];
+      bufSamples = 0;
+      await postJson("/api/converse/chunk", { session: sid, audio: wav });
+      packs += 1;
+      paintIdle("整理这段对话 · 已转 " + packs + " 段");
+    };
+    for (const part of c.keep) {
+      buf.push(part);
+      bufSamples += part.length / 2;
+      if (bufSamples >= ARCHIVE_PACK_SAMPLES) await flushPack();
+    }
+    await flushPack();
+    const analyzed = await postJson("/api/converse/analyze", { session: sid });
+    const items = (analyzed && analyzed.items) || [];
+    if (!items.length) {
+      paintIdle("这段没析出要点 · 只留了转写");
+      return;
+    }
+    const saved = await postJson("/api/converse/save", { session: sid, items });
+    paintIdle("已记入 " + name + " · " + ((saved && saved.saved) || items.length) + " 条");
+  } catch (e) {
+    // 模型没配 / 断网：至少把音频留着，别整段丢掉
+    let kept = 0;
+    for (const part of c.keep) if (outbox.push(toWav([part], part.length))) kept += 1;
+    paintIdle(kept ? "没配上模型 · 录音已存本地" : "整理失败 · " + (e && e.message));
+  }
+}
+
 function startListening() {
   if (capture || background) return;
   let availability;
@@ -532,6 +582,7 @@ function startListening() {
   }
   capture = {
     session: null, chunks: [], samples: 0,
+    keep: [], keepSamples: 0,
     startedAt: Date.now(), sessionStartedAt: 0,
     slices: 0, queue: [], busy: false, lastCard: null, stopped: false, dropped: 0,
     pumpTimer: null,
@@ -563,6 +614,10 @@ function stopListening(msg) {
     paintCard(c.lastCard, c.lastRev, c.lastMs);
   } else {
     paintIdle(msg || "已停止 · 这次没认出来");
+  }
+  // 认出是谁了，就把这段整段录音整理进他的档案（转写 + 析出要点 + 落库）
+  if (AUTO_ARCHIVE && c.lastCard && c.lastCard.person_id && c.keepSamples >= 16000 * 4) {
+    archiveConversation(c).catch(() => { /* archiveConversation 内部已经提示过 */ });
   }
 }
 

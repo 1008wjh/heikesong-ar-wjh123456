@@ -16,6 +16,8 @@ const Module = require("node:module");
 
 const BACKEND = process.env.MEMORYLENS_BACKEND || "http://127.0.0.1:8765";
 process.env.MEMORYLENS_BACKEND = BACKEND;
+// 仿真里不跑"整段入库"：那会真调模型、还会改掉王姐的档案
+if (!process.env.MEMORYLENS_ARCHIVE) process.env.MEMORYLENS_ARCHIVE = "0";
 
 const texts = [];          // 所有 Text 控件，按创建顺序
 let created = 0;
