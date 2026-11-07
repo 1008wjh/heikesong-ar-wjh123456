@@ -38,3 +38,6 @@ data/photos/
 models/asr/
 env.local.bat
 certs/
+# 演示会议生成物
+test/demo_meeting*.wav
+test/demo_meeting*.labels.json
