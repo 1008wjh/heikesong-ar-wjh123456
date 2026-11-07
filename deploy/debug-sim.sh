@@ -53,6 +53,30 @@ PY
   sleep "${SCAN_WAIT:-4}"
 fi
 
+if [[ "${AGENT:-0}" == "1" ]]; then
+  echo "== trigger agent feed =="
+  python3 - <<'PY'
+import base64, json, os, urllib.request
+backend = os.environ.get("MEMORYLENS_BACKEND", "http://host.docker.internal:8765")
+wav = os.environ.get("AGENT_WAV", "/work/test/voice/huihui_b.wav")
+data = "data:audio/wav;base64," + base64.b64encode(open(wav, "rb").read()).decode()
+req = urllib.request.Request(backend + "/api/agent/feed",
+    data=json.dumps({"session": "sim-demo", "audio": data, "auto_add": False}).encode(),
+    headers={"Content-Type": "application/json"})
+resp = json.load(urllib.request.urlopen(req, timeout=120))
+v = resp.get("view") or {}
+print("agent ->", v.get("state"), v.get("person"), (v.get("rows") or [])[:2])
+PY
+  sleep "${AGENT_WAIT:-5}"
+fi
+
+# 想截"文本键盘"就点一下 Client 控制台里的「上」（坐标按 1280x960 量）
+if [[ "${PRESS_UP:-0}" == "1" ]]; then
+  echo "== press up =="
+  timeout 10 xdotool mousemove "${UP_X:-1016}" "${UP_Y:-244}" click 1 2>/dev/null || echo "click failed"
+  sleep "${UP_WAIT:-3}"
+fi
+
 # 想截"详情页"就点一下 Client 控制台里的「确认」按钮（坐标是 1280x960 布局下量的）
 if [[ "${PRESS_CONFIRM:-0}" == "1" ]]; then
   echo "== press confirm =="

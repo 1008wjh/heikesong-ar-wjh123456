@@ -173,8 +173,8 @@ docker run --rm -it --device /dev/dri -v $PWD:/w ubuntu:22.04 bash
   之所以是窄列、每行不超过 6 个汉字，是因为**镜片上单个 Text 只画得出约 110px**（见下面"排版坑"）。
 - 状态行会区分来源：`听到 · 53ms`（声纹）或 `看到 · 34ms`（人脸），评委一眼能看懂。
 - 打包：`powershell -File tools/kit-docker.ps1 package`（容器里跑，不依赖 WSL）
-  → `dist/memorylens.fuiapp`（1.6.2 / versionCode 18 / debug-unsigned，17489 B，
-  sha256 `8d4c2d66387464c63dfa03934fc60bbf40564d03f60aa469ece6269cf36fd5ed`）。
+  → `dist/memorylens.fuiapp`（2.0.0 / versionCode 22 / debug-unsigned，24944 B，
+  sha256 `0c75f41ff8cd0b756b4fa22e6c21dcda0885a0fff03ea3a697b4a38cdba19d72`）。
 - 信息多的时候**自动滚动**：一屏 6 行，超过就每 1.4s 往下滚 1 行，到底从头开始；
   页脚显示 `1/2` 这样的页码。进后台会自动停滚。
   两张对比图：`test/glasses_scroll_a.png`（第 1 屏）、`test/glasses_scroll_b.png`（滚了 3 行）。

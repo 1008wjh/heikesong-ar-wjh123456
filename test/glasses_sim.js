@@ -16,6 +16,8 @@ const Module = require("node:module");
 
 const BACKEND = process.env.MEMORYLENS_BACKEND || "http://127.0.0.1:8765";
 process.env.MEMORYLENS_BACKEND = BACKEND;
+// 仿真里不跑"整段入库"：那会真调模型、还会改掉王姐的档案
+if (!process.env.MEMORYLENS_ARCHIVE) process.env.MEMORYLENS_ARCHIVE = "0";
 
 const texts = [];          // 所有 Text 控件，按创建顺序
 let created = 0;
@@ -75,6 +77,7 @@ const fusionui = {
 
 const navQueue = [];
 let pendingPcm = null;      // 按下 activate 时要"说"的那段音频（Buffer[]）
+let feed = null;            // 持续供流：{frames, perTick, timer}
 
 const input = {
   getVoiceInputAvailability: () => ({ available: true, canRequest: true, reason: "none" }),
@@ -109,6 +112,25 @@ const input = {
         }));
       }, 60);
     }
+    // 持续供流：每 40ms 灌 perTick 帧（1 帧 = 20ms 音频），模拟"一直有人在说话"
+    if (feed) {
+      const f = feed;
+      feed = null;
+      f.timer = setInterval(() => {
+        for (let i = 0; i < f.perTick && f.frames.length; i++) {
+          const chunk = f.frames.shift();
+          session._events.push({
+            type: "audio", sampleRate: 16000, channels: 1, format: "s16le",
+            sequence: 0, sampleOffset: 0, timeUs: 0,
+            sampleCount: chunk.length / 2, data: chunk,
+          });
+        }
+        if (!f.frames.length) {
+          clearInterval(f.timer);
+          f.timer = null;
+        }
+      }, 40);
+    }
     return session;
   },
 };
@@ -136,6 +158,15 @@ Module._load = function (request, parent, isMain) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+async function waitUntil(fn, ms = 6000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    if (fn()) return true;
+    await sleep(200);
+  }
+  return false;
+}
+
 function hud() {
   return texts.map((t) => t.value).filter((v) => v !== "");
 }
@@ -162,6 +193,15 @@ function wavFrames(name) {
   const frames = [];
   for (let i = 0; i < pcm.length; i += 640) frames.push(pcm.subarray(i, i + 640));
   return frames;
+}
+
+/** 循环拼出约 seconds 秒的帧，用来喂"持续听"（1 帧 20ms）。 */
+function wavFramesLoop(name, seconds) {
+  const one = wavFrames(name);
+  const need = Math.ceil((seconds * 1000) / 20);
+  const out = [];
+  while (out.length < need) out.push(...one);
+  return out.slice(0, need);
 }
 
 // ---------- 跑 ----------
@@ -199,51 +239,77 @@ function wavFrames(name) {
   navQueue.push("back");
   await sleep(700);
 
-  // 1) 按一下，说一句 → 应该认出王姐
-  pendingPcm = wavFrames("huihui_b");
+  // 1) 按一下 → 开始听：前 15 秒切片认人，认出后卡片浮出
+  feed = { frames: wavFramesLoop("huihui_b", 40), perTick: 40 };
   navQueue.push("activate");
-  await sleep(900);
-  check("录音中状态", hud().some((v) => v.includes("在听") || v.includes("认人") || v.includes("听")),
-    JSON.stringify(hud()));
-  await sleep(2200);
+  await sleep(400);
+  check("先出单人/多人选择", hud().some((v) => v.includes("单人")), JSON.stringify(hud()));
+  navQueue.push("activate");
+  await sleep(600);
+  check("进入持续听（状态行有计时）", hud().some((v) => v.includes("在听")), JSON.stringify(hud()));
+  await sleep(6000);
   let lines = hud();
-  check("HUD 出现「王姐」", lines.includes("王姐"), JSON.stringify(lines));
+  check("切片后认出王姐", lines.includes("王姐"), JSON.stringify(lines));
+  check("卡片带相似度", lines.some((v) => v.includes("SIM")), JSON.stringify(lines));
   check("HUD 出现身份", lines.some((v) => v.startsWith("产品经理")), JSON.stringify(lines));
-  check("HUD 出现两条信息",
-    lines.join("").includes("答应下周给报") && lines.join("").includes("养了一只叫豆"), JSON.stringify(lines));
-  check("状态是「听到」", lines.some((v) => v.includes("听到")), JSON.stringify(lines));
+  check("HUD 出两条信息（窄列会自动折行，只要求首行与第二条标题出现）",
+    lines.join("").includes("日期") && lines.join("").includes("跟进"), JSON.stringify(lines));
 
-  // 2) 简单卡片时按一下 → 展开详情；再按一下 → 回到简单数据
+  // 1b) 录音中按「确认」→ 看详情，不打断录音；再按一次收起
   navQueue.push("activate");
   await sleep(600);
   lines = hud();
-  check("按一下展开详情", lines.some((v) => v.includes("详情")), JSON.stringify(lines));
-  check("详情页有内容", lines.some((v) => v.includes("没有更详细的记录") || v.includes(":")), JSON.stringify(lines));
+  check("录音中按确认看详情", lines.some((v) => v.includes("详情")), JSON.stringify(lines));
+  check("详情页可以看", lines.some((v) => v.includes("王姐")), JSON.stringify(lines));
   navQueue.push("activate");
   await sleep(600);
   lines = hud();
-  check("再按一下回到简单卡片", lines.includes("王姐") && !lines.some((v) => v.includes("详情")), JSON.stringify(lines));
+  check("再按一次收起回卡片", lines.includes("王姐") && !lines.some((v) => v.startsWith("详情")), JSON.stringify(lines));
 
-  // 3) 返回键清屏
+  // 1c) 按「返回」→ 结束这段录音（测试里关掉自动入库，所以停在卡片上）
   navQueue.push("back");
-  await sleep(600);
+  await sleep(4000);
   lines = hud();
-  check("返回键清屏", lines.some((v) => v.includes("按一下开始听")), JSON.stringify(lines));
+  check("返回键结束录音", !hud().some((v) => v.includes("在听 00:")), JSON.stringify(lines));
+  check("结束后回到待机", lines.some((v) => v.includes("按一下")), JSON.stringify(lines));
 
-  // 4) 陌生声音 → 提示没听过
-  pendingPcm = wavFrames("zira_a");
+  // 4) 陌生声音 → 提示没听过（持续听模式下也要能出"陌生人"）
+  feed = { frames: wavFramesLoop("zira_a", 40), perTick: 40 };
   navQueue.push("activate");
-  await sleep(3000);
+  await sleep(500);
+  check("先出单人/多人选择", hud().some((v) => v.includes("单人")), JSON.stringify(hud()));
+  navQueue.push("activate");
+  await sleep(6000);
   lines = hud();
-  check("陌生声音显示「陌生人」", lines.includes("陌生人"), JSON.stringify(lines));
-  check("陌生声音提示录入", lines.some((v) => v.includes("控制台")), JSON.stringify(lines));
+  check("陌生声音自动建号（陌生人A）", lines.some((v) => v.includes("陌生人")), JSON.stringify(lines));
+  check("自动建号带说明", lines.some((v) => v.includes("自动建") || v.includes("自动入库")), JSON.stringify(lines));
+  navQueue.push("back");            // 结束这段（陌生人）录音
+  await sleep(6000);                  // 收尾要跑 analyze + save，慢
 
-  // 5) 手机拍照走人脸，眼镜要能跟着显示
-  const r = await postScan(path.join(__dirname, "messi5.jpg"));
-  await sleep(1200);
+  // 5) 文本通道：上键打开键盘（短语键），确认键输入，返回键关掉
+  await fetch(BACKEND + "/api/latest/reset");
+  await waitUntil(() => hud().some((v) => v.includes("按一下开始听")), 12000); // 等归档收尾回待机
+  navQueue.push("up");
+  await waitUntil(() => hud().some((v) => v.includes("打字")), 6000);
   lines = hud();
-  check("人脸结果也能上屏（里奥）", lines.includes("里奥"), JSON.stringify(lines));
-  check("状态是「看到」", lines.some((v) => v.includes("看到")), JSON.stringify(lines));
+  check("文本通道：上键打开键盘", lines.some((v) => v.includes("打字")), JSON.stringify(lines));
+  check("键盘上能看到短语键", lines.some((v) => v.includes("【我】")), JSON.stringify(lines));
+
+  navQueue.push("activate");          // 输入「我」
+  await sleep(400);
+  lines = hud();
+  check("确认键把字打进去了", lines.some((v) => v.includes("我") && !v.includes("（还没输入）")),
+    JSON.stringify(lines));
+
+  navQueue.push("right");
+  navQueue.push("activate");          // 输入「你」
+  await sleep(400);
+  lines = hud();
+  check("连续输入拼成一句", lines.some((v) => v.includes("我你")), JSON.stringify(lines));
+
+  navQueue.push("back");
+  await sleep(400);
+  check("返回键关掉键盘", !hud().some((v) => v.includes("【")), JSON.stringify(hud()));
 
   // 6) 会议模式：空屏按「上」建会 → 确认录一段 → 返回分离
   navQueue.push("back");            // 先清掉人脸卡片，回到 idle

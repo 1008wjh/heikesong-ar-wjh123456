@@ -38,7 +38,9 @@ Xvfb :99 -screen 0 1280x960x24 -nolisten tcp >/tmp/xvfb.log 2>&1 &
 XVFB_PID=$!
 sleep 2
 # 起个最小窗口管理器：没有 WM 时 windowraise 不生效，Client 控制台会一直盖住镜片
-twm >/tmp/twm.log 2>&1 &
+if [[ "${WITH_TWM:-0}" == "1" ]]; then
+  twm >/tmp/twm.log 2>&1 &
+fi
 TWM_PID=$!
 sleep 1
 if ! xdpyinfo >/dev/null 2>&1; then
@@ -49,9 +51,14 @@ if ! xdpyinfo >/dev/null 2>&1; then
   exit 3
 fi
 
-echo "== 模拟器启动（port $PORT / $CLIENT_MODE）=="
+echo "== 模拟器启动（port $PORT / $CLIENT_MODE / state ${STATE_DIR:-shared}）=="
+STATE_ARGS=()
+if [[ -n "${STATE_DIR:-}" ]]; then
+  mkdir -p "$STATE_DIR"
+  STATE_ARGS=(--state-dir "$STATE_DIR")
+fi
 python3 "$SDK" run "$PKG" --port "$PORT" --allow-debug-unsigned --display-mode mono \
-  --client-mode "$CLIENT_MODE" >/tmp/sim.log 2>&1 &
+  --client-mode "$CLIENT_MODE" "${STATE_ARGS[@]}" >/tmp/sim.log 2>&1 &
 SIM_PID=$!
 
 sleep "$WAIT"
@@ -92,7 +99,9 @@ import -window root /work/test/simulator.png 2>/tmp/import-root.log || {
   echo "整屏截屏失败：" >&2; cat /tmp/import-root.log >&2
 }
 if [[ -n "$LENS_WIN" ]]; then
-  convert /work/test/simulator.png -crop 640x480+${LENS_X}+${LENS_Y} +repage /work/test/glasses_lens.png
+  # 直接抓镜片子窗口，比裁 root 干净（不会把 Client 控制台一起截进来）
+  import -window "$LENS_WIN" /work/test/glasses_lens.png 2>/dev/null \
+    || convert /work/test/simulator.png -crop 640x480+${LENS_X}+${LENS_Y} +repage /work/test/glasses_lens.png
 fi
 ls -l /work/test/simulator.png /work/test/glasses_lens.png 2>/dev/null || true
 

@@ -41,3 +41,6 @@ certs/
 # 演示会议生成物
 test/demo_meeting*.wav
 test/demo_meeting*.labels.json
+# 模拟器运行时状态
+simstate/
+.simstate.lock

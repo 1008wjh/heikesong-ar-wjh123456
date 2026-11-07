@@ -17,7 +17,8 @@ param(
     [int]$Port = 28045,
     [int]$WaitSec = 25,
     [string]$Backend = 'http://host.docker.internal:8765',
-    [string]$Kit = ''
+    [string]$Kit = '',
+    [string]$StateDir = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -48,6 +49,7 @@ $sdk = '/kit/sdk/fusionui-app-sdk/fusionui_sdk.py'
 
 $argsList = @('run', '--rm', '-e', 'FUSIONUI_DEVELOPER_KIT_ROOT=/kit')
 $argsList += @('-e', "MEMORYLENS_BACKEND=$Backend")
+if ($StateDir) { $argsList += @('-e', "STATE_DIR=/work/$StateDir") }
 $argsList += @('--add-host', 'host.docker.internal:host-gateway')
 $argsList += @('-v', "${kit}:/kit", '-v', "${proj}:/work")
 $argsList += @('-w', '/work', $image, 'bash', '-lc')
