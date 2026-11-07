@@ -453,7 +453,8 @@ const MAX_LISTEN_MS = 30 * 60 * 1000;   // 兜底：连续听 30 分钟自动停
 const AUTO_ARCHIVE = process.env.MEMORYLENS_ARCHIVE !== "0";   // 停止后把整段对话整理进档案
 
 let capture = null;
-let prevIdentified = null;   // {session,chunks,samples,queue,busy,personId,personName,sessionId,slices,sent,lastCard,stopped,dropped}
+let prevIdentified = null;
+let identifiedNow = null;   // 本段已认出的人（不依赖 capture 引用）   // {session,chunks,samples,queue,busy,personId,personName,sessionId,slices,sent,lastCard,stopped,dropped}
 
 // 在听页每秒改一次文字会让整块面板重绘（镜片上就是闪），所以按 10 秒取整
 function clockOf(ms, step) {
@@ -544,7 +545,7 @@ function paintListening(msg) {
   }
 
   // 下半区：还没认出人 → 只给一个「识别人」；认出之后 → 三个预设按钮
-  if (!capture.identified) {
+  if (!(capture.identified || identifiedNow)) {
     const secs = capture.identifying ? Math.min(20, Math.round((Date.now() - capture.identAt) / 1000)) : 0;
     putText(retained.info[3], "> 识别人");
     putText(retained.info[4], capture.identifying ? (secs + "/20 秒") : "录 20 秒来找人");
@@ -788,6 +789,7 @@ async function startListening(mode) {
   if (capture || background) return;
   // 新一段开始：清掉上一段认出的人，否则第二段会沿用上一个人
   prevIdentified = null;
+  identifiedNow = null;
   listenSig = "";
   // 上一段刚结束时会话还没被平台释放，立刻再申请就会报"麦克风繁忙"
   const cool = 2200 - (Date.now() - (endedAt || 0));
@@ -1326,6 +1328,7 @@ async function finishIdentify(c) {
         if (r && r.status === "known") {
       c.identified = { id: r.person_id, name: r.name };
       prevIdentified = c.identified;
+      identifiedNow = c.identified;
       c.personId = r.person_id;
       c.personName = r.name;
       c.lastCard = r.card || null;
@@ -1347,6 +1350,7 @@ async function finishIdentify(c) {
 function submitPreset() {
   const c = capture;
   if (!c || c.stopped) return;
+  if (!c.personId && identifiedNow) { c.personId = identifiedNow.id; c.personName = identifiedNow.name; }
   if (!c.personId) { paintListening("还在认人 · 再说两句"); return; }
   const bytes = (c.samples || 0) * 2;
   if (bytes < 16000 * 2 * 1.5) { paintListening("再说两句再提交"); return; }
