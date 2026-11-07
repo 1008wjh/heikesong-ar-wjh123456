@@ -7,6 +7,8 @@ import json
 import os
 import sys
 import urllib.request
+import _data_guard
+_data_guard.snapshot()
 
 BASE = "http://127.0.0.1:8765"
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))

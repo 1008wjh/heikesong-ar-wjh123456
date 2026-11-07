@@ -16,6 +16,16 @@ const Module = require("node:module");
 
 const BACKEND = process.env.MEMORYLENS_BACKEND || "http://127.0.0.1:8765";
 process.env.MEMORYLENS_BACKEND = BACKEND;
+
+// 这个脚本会通过后端改动 data/people.json；跑完还原，免得一直弄脏 git 工作区
+const DATA_FILE = path.join(__dirname, '..', 'data', 'people.json');
+const DATA_BACKUP = fs.existsSync(DATA_FILE) ? fs.readFileSync(DATA_FILE) : null;
+function restoreData() {
+  if (!DATA_BACKUP) return;
+  try { fs.writeFileSync(DATA_FILE, DATA_BACKUP); } catch (e) { /* 被占用就算了 */ }
+}
+process.on('exit', restoreData);
+process.on('SIGINT', () => { restoreData(); process.exit(1); });
 // 仿真里不跑"整段入库"：那会真调模型、还会改掉王姐的档案
 if (!process.env.MEMORYLENS_ARCHIVE) process.env.MEMORYLENS_ARCHIVE = "0";
 
@@ -266,6 +276,7 @@ function wavFramesLoop(name, seconds) {
     JSON.stringify(lines));
 
   // 1b) 录音中按「确认」→ 看详情，不打断录音；再按一次收起
+  await sleep(900);   // 首片刚切走，缓冲里的新音频还不够 1.5 秒，先让麦再灌一会儿
   navQueue.push("activate");
   await waitUntil(() => hud().some((v) => v.includes("在想")), 6000);
   lines = hud();

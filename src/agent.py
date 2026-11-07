@@ -222,8 +222,21 @@ def node_identify(state: AgentState) -> dict:
     if not merged.get("person_id"):
         merged.update(tool_semantic_match({**state, **merged}))
     if not merged.get("person_id"):
-        # 没有配对的两人，不要让上一片的 person_* 通过 MemorySaver 漏进来
-        merged.update({"person_id": None, "person_name": "", "similarity": -1.0})
+        # 纯文本续接（这片没带音频）说明还是同一个人在说，沿用上一片；
+        # 带了音频却对不上，才真的清空 —— 否则 MemorySaver 会把上一个人漏进来。
+        if not state.get("audio") and state.get("person_id"):
+            prev_name = state.get("person_name") or ""
+            if not prev_name and store_ref:
+                prev = store_ref.get(state.get("person_id")) or {}
+                prev_name = prev.get("name") or ""
+            merged.update({
+                "person_id": state.get("person_id"),
+                "person_name": prev_name,
+                "similarity": state.get("similarity") or -1.0,
+                "matched_by": state.get("matched_by") or "carry",
+            })
+        else:
+            merged.update({"person_id": None, "person_name": "", "similarity": -1.0})
     return merged
 
 
@@ -308,7 +321,12 @@ def node_recommend(state: AgentState) -> dict:
         lines = cards.simple_lines(person, 6)
         facts = (person.get("complex") or {}).get("对话要点") or {}
         extra = ["%s: %s" % (k, v) for k, v in list(facts.items())[:6]]
-        profile = " / ".join([x for x in lines + extra if x])[:600]
+        # 最近两段对话的摘要也带上，模型才知道"上次聊到哪"
+        for cv in (person.get("conversations") or [])[-2:]:
+            sm = (cv or {}).get("summary") or ""
+            if sm:
+                extra.append("上次聊到: " + sm[:60])
+        profile = " / ".join([x for x in lines + extra if x])[:800]
     t0 = time.time()
     try:
         got = llm.recommend(state.get("window") or state.get("text") or "",
