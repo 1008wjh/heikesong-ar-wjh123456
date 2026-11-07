@@ -156,6 +156,17 @@ def tool_extract(state: AgentState) -> dict:
     text = state.get("text") or ""
     person = {"name": state.get("person_name") or "这个人", "role": ""}
     t0 = time.time()
+    # 「提词」按钮要的是快：这一段不让"抽要点"再等一次模型，规则抽取够用。
+    # 提词本身靠"档案 + 对话原文"，不靠要点列表。
+    if state.get("manual") and (state.get("preset") or "") == "hint" and len(text.strip()) >= 8:
+        return {"items": rule_extract(text), "summary": "",
+                "llm_ms": int((time.time() - t0) * 1000), "rule_fallback": False,
+                "notes": ["提词优先：跳过二次要点抽取"]}
+    # 「以前」只看档案，不需要从这段对话抽要点
+    if (state.get("preset") or "") == "recall":
+        return {"items": [], "summary": "",
+                "llm_ms": int((time.time() - t0) * 1000), "rule_fallback": False,
+                "notes": ["以前：跳过要点抽取"]}
     if len(text.strip()) < 8:
         # 主动跳过：五六个字的片段让模型抽要点只会瞎编，用规则过一遍更实在
         return {"items": rule_extract(text), "summary": "", "skipped_short": True,
@@ -166,6 +177,7 @@ def tool_extract(state: AgentState) -> dict:
         return {"items": got.get("items") or [], "summary": got.get("summary") or "",
                 "llm_ms": int((time.time() - t0) * 1000), "rule_fallback": False}
     except llm.LLMUnavailable as e:
+        calllog.emit(kind="llm.fallback", tag="extract", reason="unavailable", err=str(e)[:200])
         return {"items": rule_extract(text), "summary": "",
                 "degraded": True, "rule_fallback": True,
                 "llm_ms": int((time.time() - t0) * 1000),
@@ -314,6 +326,10 @@ def node_render(state: AgentState) -> dict:
         return {"view": {"state": "异常", "layout": "notice",
                          "rows": ["已取消", "按一下重新问"], "person": "",
                          "degraded": False}}
+    if state.get("asr_src") == "failed" and not (state.get("text") or "").strip():
+        return {"view": {"state": "异常", "layout": "notice",
+                         "rows": ["这段没听清", "再说一遍，或用手打"], "person": "",
+                         "degraded": False}}
     if preset == "todo":
         # 只留待办：内容变少 + 布局变 focus（对应评分里的"重点/布局变化"）
         keep = [it for it in items if str(it.get("key")) in ("答应的事", "跟进", "日期")]
@@ -387,6 +403,9 @@ def node_recommend(state: AgentState) -> dict:
     # 例外：用户手动按「确认」触发的那一片（manual），第几片都要跑。
     if state.get("cancelled"):
         return {"notes": (state.get("notes") or []) + ["已取消，跳过提词"]}
+    # 「待办 / 以前」在 render 里是确定性分支，不用再问一次模型（省 ~1 秒）
+    if (state.get("preset") or "") in ("todo", "recall"):
+        return {}
     if int(state.get("slice_no") or 1) <= 1 and not state.get("manual") and not state.get("preset"):
         return {}
     person = store_ref.get(state.get("person_id") or "") if state.get("person_id") else None
@@ -417,6 +436,12 @@ def node_recommend(state: AgentState) -> dict:
         got = llm.recommend(dialog,
                             state.get("person_name") or "", profile, state.get("items") or [],
                             system_prompt=system_prompt)
+        if got.get("fallback"):
+            # 模型重试两次仍不可用：用规则给三条，界面照常出卡，但标记降级
+            return {"next_actions": got.get("next") or [],
+                    "rec_ms": int((time.time() - t0) * 1000),
+                    "degraded": True,
+                    "notes": (state.get("notes") or []) + ["模型暂时出问题，先用规则兜底"]}
         nxt = got.get("next") or []
         return {"next_actions": nxt, "rec_ms": int((time.time() - t0) * 1000),
                 "summary": state.get("summary") or got.get("summary") or ""}

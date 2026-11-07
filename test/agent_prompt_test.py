@@ -87,7 +87,7 @@ def main():
     # 2) 总提示词进 system（不破坏 JSON 要求）
     seen = {}
 
-    def fake_chat(system, user, max_tokens=64, temperature=0.0):
+    def fake_chat(system, user, max_tokens=64, temperature=0.0, tag="chat"):
         seen["system"] = system
         seen["user"] = user
         return json.dumps({"hint": "聊报价单", "say": ["报价单周三前发你", "豆豆还好吗", "带充电器"]},

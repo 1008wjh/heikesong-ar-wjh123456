@@ -36,8 +36,19 @@ $env:AR_LLM_PRESET = "deepseek"
 
 import json
 import os
+import threading
+import time
 import urllib.error
 import urllib.request
+
+import calllog
+
+try:                                   # 有 requests 就用连接池，省掉每次 TLS 握手
+    import requests
+    _SESSION = requests.Session()
+except Exception:                      # 没装就退回 urllib
+    requests = None
+    _SESSION = None
 
 # ---------------------------------------------------------------- 文本模型预设
 
@@ -104,6 +115,26 @@ class LLMUnavailable(RuntimeError):
     """没配 Key / 请求失败：调用方应当当成"功能没开"，而不是"程序坏了"。"""
 
 
+# 运行统计：给 /api/agent/status 和演示日志看，不参与业务逻辑
+_STATS = {"calls": 0, "failures": 0, "retries": 0, "fallbacks": 0,
+          "last_ms": 0, "last_error": ""}
+_STATS_LOCK = threading.Lock()
+
+
+def _stat(**kv):
+    with _STATS_LOCK:
+        for k, v in kv.items():
+            if k in ("calls", "failures", "retries", "fallbacks"):
+                _STATS[k] += int(v)
+            else:
+                _STATS[k] = v
+
+
+def stats():
+    with _STATS_LOCK:
+        return dict(_STATS)
+
+
 def available():
     return LLM_READY
 
@@ -123,6 +154,7 @@ def status():
         "asrProvider": ASR_PROVIDER,
         "asrBase": ASR_BASE if ASR_PROVIDER == "http" else "local",
         "preset": LLM_PRESET or "custom",
+        "stats": stats(),
     }
 
 
@@ -196,26 +228,85 @@ def _local_transcribe(wav_bytes):
     return (getattr(stream.result, "text", "") or "").strip()
 
 
+def warmup_asr() -> float:
+    """预加载本地转写模型，返回耗时秒数（服务启动时后台调用）。
+
+    不预热的话，重启后第一次提词要多等 ~1.3 秒（模型加载）。
+    """
+    t0 = time.time()
+    if ASR_PROVIDER == "local":
+        _recognizer()
+    return round(time.time() - t0, 2)
+
+
 # ---------------------------------------------------------------- HTTP 调用
 
 
-def _post_json(path, payload):
-    req = urllib.request.Request(
-        LLM_BASE.rstrip("/") + path,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": "Bearer " + LLM_KEY,
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
-            return json.loads(r.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", "replace")[:300]
-        raise LLMUnavailable(f"模型接口返回 {e.code}：{detail}")
-    except Exception as e:
-        raise LLMUnavailable(f"模型接口连不上：{e}")
+RETRIES = max(0, int(os.environ.get("AR_LLM_RETRIES", "2")))
+RETRY_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
+
+
+class _HTTPFail(Exception):
+    def __init__(self, code, detail):
+        super().__init__("HTTP %s: %s" % (code, detail))
+        self.code = code
+        self.detail = detail
+
+
+def _post_json(path, payload, tag="llm", attempts=None):
+    """POST 一个 JSON，失败按退避重试；每次尝试都写一行 llm.call 日志。
+
+    重试只针对"可能自己好"的错误：超时、连不上、429、5xx。
+    400 这种（key 错、参数错）立刻失败，重试也没用。
+    """
+    url = LLM_BASE.rstrip("/") + path
+    n = attempts if attempts is not None else (RETRIES + 1)
+    last = "unknown"
+    for i in range(max(1, n)):
+        t0 = time.time()
+        try:
+            if _SESSION is not None:
+                r = _SESSION.post(url, json=payload, timeout=TIMEOUT,
+                                  headers={"Authorization": "Bearer " + LLM_KEY})
+                code, body = r.status_code, r.text
+                if code >= 400:
+                    raise _HTTPFail(code, body[:300])
+                data = json.loads(body)
+            else:
+                req = urllib.request.Request(
+                    url,
+                    data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                    headers={"Content-Type": "application/json",
+                             "Authorization": "Bearer " + LLM_KEY},
+                )
+                with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+                    data = json.loads(r.read().decode("utf-8"))
+            ms = int((time.time() - t0) * 1000)
+            _stat(calls=1, last_ms=ms)
+            calllog.emit(kind="llm.call", tag=tag, attempt=i + 1, ok=True, ms=ms,
+                         model=LLM_MODEL, req_chars=len(json.dumps(payload, ensure_ascii=False)))
+            return data
+        except Exception as e:                     # noqa: BLE001 - 统一归类
+            ms = int((time.time() - t0) * 1000)
+            if isinstance(e, _HTTPFail):
+                code = e.code
+                retryable = code in RETRY_CODES
+                detail = e.detail
+            else:
+                code = 0
+                retryable = not isinstance(e, LLMUnavailable)
+                detail = str(e)[:200]
+            last = detail
+            _stat(failures=1, last_error=detail[:200])
+            calllog.emit(kind="llm.call", tag=tag, attempt=i + 1, ok=False, ms=ms,
+                         model=LLM_MODEL, code=code or None, err=detail[:200])
+            if not retryable or i >= n - 1:
+                break
+            _stat(retries=1)
+            time.sleep(min(1.2, 0.25 * (i + 1)))
+    if isinstance(last, str) and last.startswith("HTTP "):
+        raise LLMUnavailable("模型接口返回：" + last)
+    raise LLMUnavailable("模型接口连不上：" + str(last))
 
 
 def _post_multipart(path, fields, files):
@@ -299,8 +390,8 @@ PROMPT = """你在帮一个人整理他和某个人的对话记录。只根据�
 key 只能从这里选：答应的事 / 偏好 / 近况 / 关系 / 日期 / 跟进 / 其他"""
 
 
-def _chat_plain(system, user, max_tokens=64, temperature=0.0):
-    """只要一句短回答的调用（分类、选人）。"""
+def _chat_plain(system, user, max_tokens=64, temperature=0.0, tag="chat"):
+    """只要一段短回答的调用（分类、选人、提词）。"""
     if STUB:
         raise LLMUnavailable("stub 模式没有这个能力")
     if not LLM_KEY:
@@ -316,6 +407,7 @@ def _chat_plain(system, user, max_tokens=64, temperature=0.0):
                 {"role": "user", "content": user},
             ],
         },
+        tag=tag,
     )
     try:
         return (data["choices"][0]["message"]["content"] or "").strip()
@@ -351,11 +443,24 @@ def pick_person(transcript, names):
     return None
 
 
+def _fallback_next(items):
+    """模型彻底不可用时，用规则给三条能说的话（不装成模型输出）。"""
+    vals = []
+    for it in (items or [])[:3]:
+        v = str(it.get("value") or "").strip()
+        if v:
+            vals.append(v[:14])
+    return vals or ["先接一句近况", "问问刚才提到的事", "确认下一步"]
+
+
 def recommend(transcript, person_name, profile, items, system_prompt=""):
     """下一步该说什么：给三条「提词」（不是总结，是接下来能直接说出口的话）。
 
     system_prompt：控制台「预设」页里的总提示词，放在最前面定风格/结构；
     后面仍接内置的格式要求，保证返回的 JSON 能解析。
+
+    可靠性：第一次 JSON 不合法会带着"上次格式不对"再问一次；两次都不行就回兜底，
+    不把异常抛给界面。每次失败都进日志（llm.call / llm.fallback）。
     """
     who = person_name or "一个刚认识的陌生人"
     facts = profile or "（没有档案）"
@@ -371,14 +476,33 @@ def recommend(transcript, person_name, profile, items, system_prompt=""):
     )
     custom = (system_prompt or "").strip()
     system = (custom + "\n\n" + base) if custom else base
-    out = _chat_plain(
-        system,
-        "对面的人：%s\n档案：%s\n这段的要点：%s\n对话原文：%s" % (who, facts, done, (transcript or "")[-1200:]),
-        max_tokens=200,
-    )
-    obj = _loads_loose(out) or {}
-    say = [str(x).strip()[:14] for x in (obj.get("say") or obj.get("next") or []) if str(x).strip()][:3]
-    return {"summary": str(obj.get("hint") or obj.get("summary") or "")[:40], "next": say}
+    user = "对面的人：%s\n档案：%s\n这段的要点：%s\n对话原文：%s" % (
+        who, facts, done, (transcript or "")[-1200:])
+
+    for attempt in range(2):
+        try:
+            out = _chat_plain(system, user, max_tokens=160, tag="recommend")
+        except LLMUnavailable as e:
+            _stat(fallbacks=1)
+            calllog.emit(kind="llm.fallback", tag="recommend", reason="unavailable",
+                         err=str(e)[:200], attempt=attempt + 1)
+            return {"summary": "", "next": _fallback_next(items),
+                    "degraded": True, "fallback": True}
+        obj = _loads_loose(out) or {}
+        say = [str(x).strip()[:14] for x in (obj.get("say") or obj.get("next") or [])
+               if str(x).strip()][:3]
+        if say:
+            return {"summary": str(obj.get("hint") or obj.get("summary") or "")[:40], "next": say}
+        # 格式不对：提醒一次"只输出 JSON"，再问
+        _stat(retries=1)
+        calllog.emit(kind="llm.call", tag="recommend", attempt=attempt + 1, ok=False,
+                     model=LLM_MODEL, err="JSON 不合法：%s" % str(out)[:120])
+        user = ("上一次输出不是合法 JSON，无法解析。请严格只输出这种 JSON，不要解释、不要代码块：\n"
+                '{"hint":"一句≤18字的接话提示","say":["可以说的1","可以说的2","可以说的3"]}\n\n' + user)
+
+    _stat(fallbacks=1)
+    calllog.emit(kind="llm.fallback", tag="recommend", reason="bad-json")
+    return {"summary": "", "next": _fallback_next(items), "degraded": True, "fallback": True}
 
 
 def analyze(transcript, person):
@@ -399,25 +523,37 @@ def analyze(transcript, person):
         raise LLMUnavailable("没配文本模型 Key（AR_LLM_KEY / MIMO_API_KEY / DEEPSEEK_API_KEY）")
 
     ctx = "对面这个人：%s（%s）" % (person.get("name", "?"), person.get("role") or "身份未知")
-    data = _post_json(
-        "/chat/completions",
-        {
-            "model": LLM_MODEL,
-            "temperature": 0.2,
-            "messages": [
-                {"role": "system", "content": PROMPT},
-                {"role": "user", "content": ctx + "\n\n对话原文：\n" + transcript[-6000:]},
-            ],
-        },
-    )
-    content = ""
-    try:
-        content = data["choices"][0]["message"]["content"]
-    except Exception:
-        raise LLMUnavailable("模型回的格式不对")
-
-    obj = _loads_loose(content)
+    user = ctx + "\n\n对话原文：\n" + transcript[-6000:]
+    obj = None
+    for attempt in range(2):
+        data = _post_json(
+            "/chat/completions",
+            {
+                "model": LLM_MODEL,
+                "temperature": 0.2,
+                "messages": [
+                    {"role": "system", "content": PROMPT},
+                    {"role": "user", "content": user},
+                ],
+            },
+            tag="analyze",
+        )
+        try:
+            content = data["choices"][0]["message"]["content"]
+        except Exception:
+            raise LLMUnavailable("模型回的格式不对")
+        obj = _loads_loose(content)
+        if isinstance(obj, dict) and isinstance(obj.get("items"), list):
+            break
+        _stat(retries=1)
+        calllog.emit(kind="llm.call", tag="analyze", attempt=attempt + 1, ok=False,
+                     model=LLM_MODEL, err="JSON 不合法：%s" % str(content)[:120])
+        user = ("上一次输出不是合法 JSON，无法解析。请严格只输出这种 JSON，不要解释、不要代码块：\n"
+                '{"summary":"一句话总结","items":[{"key":"答应的事","value":"下周三前发报价单","quote":"原话"}]}\n\n'
+                + user)
     if not isinstance(obj, dict):
+        _stat(fallbacks=1)
+        calllog.emit(kind="llm.fallback", tag="analyze", reason="bad-json")
         raise LLMUnavailable("模型没按 JSON 回，换个说法再试一次")
 
     items = []

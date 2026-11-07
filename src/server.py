@@ -170,6 +170,17 @@ class Handler(BaseHTTPRequestHandler):
     # ---------- 路由 ----------
 
     def do_GET(self):
+        # 读接口也兜一层：异常也要返回 JSON + 打日志，别让连接直接被掐断
+        try:
+            return self._do_get()
+        except Exception as e:
+            traceback.print_exc()
+            try:
+                return self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+            except Exception:
+                return None
+
+    def _do_get(self):
         path = self.path.split("?")[0]
         query = parse_qs(self.path.split("?")[1]) if "?" in self.path else {}
         if path == "/api/photo":
@@ -759,6 +770,10 @@ if __name__ == "__main__":
             print(f"[warmup] 分轨模型就绪 {diar.warmup():.1f}s")
         except Exception as e:
             print(f"[warmup] 分轨模型加载失败: {e}")
+        try:
+            print(f"[warmup] 转写模型就绪 {llm.warmup_asr():.1f}s")
+        except Exception as e:
+            print(f"[warmup] 转写模型加载失败: {e}")
         print(f"[warmup] 全部就绪，共 {time.time() - t0:.1f}s")
 
     threading.Thread(target=_warm_models, name="warmup", daemon=True).start()
