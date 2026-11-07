@@ -503,7 +503,7 @@ function paintListening(msg) {
   const c0 = held ? capture.lastCard : null;
   // 整屏指纹：文字没变就整帧跳过（否则每 400ms 重设一遍，镜片上会闪）
   const head = thinking || flash || statusWithBar(listenLine());
-  const sig = head + "|" + (c0 ? "" : levelBar()) + "|" + (c0
+  const sig = head + "|" + (c0 ? "" : levelBar() + "|" + presetIdx) + "|" + (c0
     ? [c0.name, c0.role, c0.status, c0.similarity, (c0.lines || []).join("~")].join("|")
     : "none");
   if (sig === listenSig) return;
@@ -520,7 +520,7 @@ function paintListening(msg) {
     for (const ln of (card.lines || [])) rows.push(...splitLines(ln, 6));
     if (rows.join("|") !== cardRows.join("|")) { cardRows = rows; rowOffset = 0; }
     paintRows();
-    putText(retained.foot, "确认详情 返回结束");
+    putText(retained.foot, "上下换 确认发");
     return;
   }
   if (!c0) {
@@ -530,13 +530,11 @@ function paintListening(msg) {
     putText(retained.sim, " ");
     const bar = levelBar();
     const quiet = capture.peaks.slice(-12).every((v) => v < 0.03);
-    const hint = [
-      "55秒一片",
-      quiet ? "（等声音…）" : bar,
-      "返回结束并入库",
-    ];
-    retained.info.forEach((t, i) => putText(t, hint[i] || ""));
+    // 主页面就是"快捷预设"面板：上=换焦点，下=提交
+    const chips = PRESETS.map((p, i) => (i === presetIdx ? "> " : "  ") + p.label);
+    retained.info.forEach((t, i) => putText(t, chips[i] || ""));
     paintedRows = "";
+    if (quiet) putText(retained.status, head + " 麦克风没声音");
   }
   putText(retained.foot, "确认详情 返回结束");
 }
@@ -727,8 +725,10 @@ function cutSlice(c, minMs) {
   }
   const need = minMs || SLICE_MIN_MS;
   if (bytes < 16000 * 2 * (need / 1000)) return;
-  c.queue.push({ wav: toWav(chunks, bytes), manual: !!c.manualNext });
+  c.queue.push({ wav: toWav(chunks, bytes), manual: !!c.manualNext,
+                 preset: c.pendingPreset || "" });
   c.manualNext = false;
+  c.pendingPreset = "";
   drain(c);
 }
 
@@ -742,11 +742,12 @@ async function drain(c) {
       const item = c.queue.shift();
       const wav = item && item.wav ? item.wav : item;
       const manual = !!(item && item.manual);
+      const preset = (item && item.preset) || "";
       if (!c.personId) {
         await identify(c, wav);
         continue;
       }
-      await pushChunk(c, wav, manual);
+      await pushChunk(c, wav, manual, preset);
     }
   } finally {
     c.busy = false;
@@ -859,12 +860,12 @@ async function ensureSession(c) {
   return !!c.agentSession;
 }
 
-async function pushChunk(c, wav, manual) {
+async function pushChunk(c, wav, manual, preset) {
   // 认人之后：每按一次确认 = 一次（manual）；老路径（55 秒自动）保留 manual=false
   try {
     const res = await postJson("/api/agent/feed", {
       session: c.agentSession, audio: wav, auto_add: true, mode: c.mode,
-      manual: !!manual,
+      manual: !!manual, preset: preset || "",
     }, 30000);
     c.sent += 1;
     const v = (res && res.view) || null;
@@ -962,6 +963,27 @@ const KEY_ROWS = [
   ["一", "次", "下", "周", "报"],
   ["删除", "发送", "关闭"],
 ];
+// 主页面快捷预设：id 与服务端 PRESETS 对应，提交时会把 hint 一起发过去
+let PRESETS = [
+  { id: "hint", label: "提词" },
+  { id: "todo", label: "待办" },
+  { id: "recall", label: "以前" },
+];
+let presetIdx = 0;
+
+// 按钮在后台可编辑，启动时拉一次（失败就用上面的默认三个）
+async function loadPresetList() {
+  try {
+    const d = await getJson("/api/presets");
+    const items = (d && d.items) || [];
+    if (items.length) {
+      PRESETS = items.slice(0, 3).map((x) => ({ id: x.id, label: x.label }));
+      if (presetIdx >= PRESETS.length) presetIdx = 0;
+      listenSig = "";
+    }
+  } catch (e) { /* 用默认值 */ }
+}
+
 const DEFAULT_OPTS = ["只留待办", "再说细一点", "不是他"];
 let textMode = null;   // {kind:"keys"|"opts", r, c, draft, options, index}
 
@@ -1159,10 +1181,25 @@ function handleNavigation() {
   if (modeSelect) { navMode(act); return; }
   if (textMode) { navText(act); return; }
   if (capture && !capture.stopped) {
-    if (act === "activate") { manualAsk(); return; }      // 录音中按确认 = 让智能体基于这段对话回答
-    if (act === "back") { stopAndArchive("结束了"); return; }
-    if (act === "up") { openText("keys"); return; }
-    if (act === "down") { openText("opts"); return; }
+    const thinking = capture.thinkingUntil && Date.now() < capture.thinkingUntil;
+    if (act === "back") {
+      if (thinking) { cancelThinking(); return; }         // 想太久就中断这一问
+      stopAndArchive("结束了");
+      return;
+    }
+    if (act === "up") {                                   // 上下都用来换按钮
+      presetIdx = (presetIdx - 1 + PRESETS.length) % PRESETS.length;
+      listenSig = "";
+      paintListening();
+      return;
+    }
+    if (act === "down") {
+      presetIdx = (presetIdx + 1) % PRESETS.length;
+      listenSig = "";
+      paintListening();
+      return;
+    }
+    if (act === "activate") { submitPreset(); return; }    // 确认：用当前按钮开工作流
     return;
   }
   if (act === "up") { openText("keys"); return; }
@@ -1173,6 +1210,31 @@ function handleNavigation() {
     return;
   }
   if (act === "back") { clearView(); return; }
+}
+
+// 下键：把「当前预设」+ 这段录音一起交给智能体
+function submitPreset() {
+  const c = capture;
+  if (!c || c.stopped) return;
+  if (!c.personId) { paintListening("还在认人 · 再说两句"); return; }
+  const bytes = (c.samples || 0) * 2;
+  if (bytes < 16000 * 2 * 1.5) { paintListening("再说两句再提交"); return; }
+  const p = PRESETS[presetIdx];
+  c.manualNext = true;
+  c.pendingPreset = p.id;
+  c.thinkingUntil = Date.now() + 20000;
+  cutSlice(c, 1500);
+}
+
+// 返回键在"在想…"时按下：让服务端作废这一问
+function cancelThinking() {
+  const c = capture;
+  if (!c) return;
+  c.thinkingUntil = 0;
+  c.pendingPreset = "";
+  const session = c.agentSession;
+  postJson("/api/agent/cancel", { session }, 4000).catch(() => {});
+  paintListening("已取消 · 再按一次重问");
 }
 
 // 录音中按一次确认：把"从上次发送到现在"的音频切下来，交给智能体回答
@@ -1283,6 +1345,7 @@ function start() {
   if (retained.window) return;
   buildHud();
   paintIdle("按一下开始听…");   // 先把空闲态画出来，别留控件的默认 "Text"
+  loadPresetList().catch(() => {});
   poll();
   pollTimer = setInterval(poll, POLL_MS);
   lastPaintAt = 0;

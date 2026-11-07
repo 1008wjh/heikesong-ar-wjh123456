@@ -34,6 +34,8 @@ def main():
     ap.add_argument("--session", default="demo", help="同一段对话用同一个 session")
     ap.add_argument("--audio", default="", help="换成一段 wav 文件路径")
     ap.add_argument("--auto-add", action="store_true", help="陌生人自动建号")
+    ap.add_argument("--preset", default="", help="快捷按钮 id（hint/todo/recall 或后台自定义的）")
+    ap.add_argument("--manual", action="store_true", help="模拟按确认键提交")
     args = ap.parse_args()
 
     body = {"session": args.session}
@@ -45,6 +47,10 @@ def main():
     else:
         ap.error("要么给一句话，要么给 --audio")
 
+    if args.preset:
+        body["preset"] = args.preset
+    if args.manual or args.preset:
+        body["manual"] = True
     if args.auto_add:
         body["auto_add"] = True
 
