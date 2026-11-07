@@ -1,0 +1,37 @@
+构建界面 · IrisView Developer Alpha
+中文English打印目录开发者首页开始
+认识 DevKit构建第一个应用整体介绍
+技术架构核心概念开发指南
+界面与交互构建界面处理输入动画与呈现应用基础应用生命周期应用身份与能力保存数据运行与交付使用模拟器调试与诊断构建与发布示例
+呼吸 DemoAPI 参考
+浏览接口构建界面
+在最小项目中创建窗口，设置文字、图片和布局。
+创建文字视图
+在应用创建时执行这段代码。界面显示期间保留对象引用，在销毁时释放。
+复制const os = require("@irisview/osx/os");
+const ui = require("@irisview/osx/fusionui");
+const property = os.WindowProperty.create();
+property.setTitle("Hello IrisView");
+property.setSize([0.64, 0.48, 0.01]);
+const window = os.Window.create(property);
+const root = ui.FusionRoot.acquireFusionRootFromWindow(window);
+const board = ui.Board.create();
+board.setParent(root.getRootWidget());
+board.setIgnoreLayout(true);
+board.setSize([640, 480, 0]);
+board.getLocalStyle().setBackgroundColor(ui.Color.fromRGB8(0, 0, 0));
+const text = ui.Text.create();
+text.setParent(board);
+text.setSize([640, 480, 0]);
+text.setText("Hello IrisView");
+text.getLocalStyle().setTextColor(ui.Color.fromRGB8(0, 255, 0));
+布局与样式
+固定画布可按示例设置位置和尺寸；复杂容器可阅读 FlexLayout 与 GridLayout。手工布局使用 setIgnoreLayout(true) 时，应自行维护子项位置与边界。
+通过 getLocalStyle() 设置当前 Widget 的文字、背景等样式。字体获取可能返回 null，先检查结果再调用 setTextFont。长文字需要明确换行、截断或滚动策略。
+加载资源
+将图片放在应用资源目录，通过路径设置 Image 源。运行时检查加载回调和实际画面，确认资源可用。
+相关 API
+Window → · FusionRoot → · Board → · View → · Text → · Image → · Style → · Font → · FlexLayout → · GridLayout →检查显示结果
+构建并运行修改后的包，确认文字可见、内容完整，图片加载成功。换成长文字后再检查换行与边界；如果画面没有变化，先核对启动的安装包是否是本次构建结果。对象创建后的暂停、恢复和清理见应用生命周期。
+
+关闭原始尺寸

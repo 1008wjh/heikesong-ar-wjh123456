@@ -22,10 +22,62 @@ def _days_since(date_str):
         return None
 
 
-def build_card(person, similarity, threshold):
-    """返回一张卡：{'status','name','role','lines','accent','person_id','similarity'}
+def flatten(value, depth=0):
+    """把「简单数据 / 复杂数据」这种任意 JSON 摊平成一行行文字。
 
-    lines 来自控制台填的"信息 1/2/3"（最多三条，空的跳过）。
+    规则（刻意做得很朴素，现场改数据不用记语法）：
+      {"身份": "产品经理"}          -> ["身份: 产品经理"]
+      {"家庭": {"宠物": "猫"}}      -> ["家庭:", "· 宠物: 猫"]
+      {"历史": ["a", "b"]}          -> ["历史:", "· a", "· b"]
+    嵌套只展开一层，再深就把值直接 str() 掉 —— 镜片上也放不下。
+    """
+    rows = []
+    if isinstance(value, dict):
+        for key, val in value.items():
+            key = str(key)
+            if isinstance(val, dict):
+                rows.append(f"{key}:")
+                rows.extend("· " + r for r in flatten(val, depth + 1))
+            elif isinstance(val, list):
+                rows.append(f"{key}:")
+                for item in val:
+                    if isinstance(item, (dict, list)):
+                        rows.extend("· " + r for r in flatten(item, depth + 1))
+                    else:
+                        rows.append("· " + str(item))
+            elif val is None or str(val).strip() == "":
+                continue
+            else:
+                rows.append(f"{key}: {val}")
+    elif isinstance(value, list):
+        for item in value:
+            if isinstance(item, (dict, list)):
+                rows.extend(flatten(item, depth + 1))
+            else:
+                rows.append(str(item))
+    elif value not in (None, ""):
+        rows.append(str(value))
+    return rows
+
+
+def simple_lines(person, limit=4):
+    """简单数据 -> 至多 limit 行；没有 simple 就退回老的 role/info。"""
+    simple = person.get("simple")
+    if isinstance(simple, dict) and simple:
+        rows = [r for r in flatten(simple) if r.strip()]
+        if rows:
+            return rows[:limit]
+    lines = [str(x).strip() for x in (person.get("info") or []) if str(x).strip()]
+    role = (person.get("role") or "").strip()
+    if role:
+        lines = [role] + lines
+    return lines[:limit]
+
+
+def build_card(person, similarity, threshold):
+    """返回一张卡：{'status','name','role','lines','accent','person_id','similarity','has_complex'}
+
+    眼镜上先给「简单数据」（simple），想听详情要按一次确认再取「复杂数据」（complex）。
     """
     if person is None:
         return {
@@ -35,13 +87,15 @@ def build_card(person, similarity, threshold):
             "accent": "amber",
             "similarity": round(float(similarity), 3),
             "lines": ["不在你的人脉库里", "按「记住他」录入，或去控制台新增"],
+            "has_complex": False,
         }
 
-    lines = [str(x).strip() for x in (person.get("info") or []) if str(x).strip()][:3]
+    lines = simple_lines(person)
     if not lines:
         extra = _highlight(person)
         lines = [extra] if extra else ["还没有信息，去控制台「编辑」补一条"]
 
+    complex_ = person.get("complex")
     return {
         "status": "known",
         "name": person["name"],
@@ -51,6 +105,28 @@ def build_card(person, similarity, threshold):
         "person_id": person["id"],
         "photo": person.get("photo") or "",
         "lines": lines,
+        "has_complex": bool(isinstance(complex_, dict) and complex_) or bool(person.get("notes")),
+    }
+
+
+def build_full(person):
+    """复杂数据 -> 一整页的行（眼镜端按需拉，不放进简单卡片里）。"""
+    rows = []
+    complex_ = person.get("complex")
+    if isinstance(complex_, dict) and complex_:
+        rows.extend(flatten(complex_))
+    elif isinstance(complex_, list) and complex_:
+        rows.extend(flatten(complex_))
+    else:
+        rows.append("没有更详细的记录")
+    notes = [n.get("text", "") for n in (person.get("notes") or [])][-3:]
+    if notes:
+        rows.append("笔记:")
+        rows.extend("· " + _clip(t, 18) for t in notes if t)
+    return {
+        "id": person["id"],
+        "name": person.get("name", ""),
+        "rows": [r for r in rows if str(r).strip()],
     }
 
 

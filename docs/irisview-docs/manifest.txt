@@ -1,0 +1,37 @@
+应用身份与能力 · IrisView Developer Alpha
+中文English打印目录开发者首页开始
+认识 DevKit构建第一个应用整体介绍
+技术架构核心概念开发指南
+界面与交互构建界面处理输入动画与呈现应用基础应用生命周期应用身份与能力保存数据运行与交付使用模拟器调试与诊断构建与发布示例
+呼吸 DemoAPI 参考
+浏览接口应用身份与能力
+运行环境通过 manifest 识别应用、检查版本与能力，Client 也从中读取名称和控制布局。修改这些配置后需要重新打包；画面中的文字与标题仍由应用代码设置。
+一个普通应用的 manifest
+复制{
+ "capabilities": [],
+ "controlProfile": "generic",
+ "displayName": {
+ "en": "Breathe",
+ "zh-CN": "呼吸节奏"
+ },
+ "id": "iris.example.breathing",
+ "minimumHostVersion": 2,
+ "role": "ordinary",
+ "schemaVersion": 1,
+ "version": "1.0.0",
+ "versionCode": 13
+}
+呼吸示例要求 Host API 版本 2。正常升级时保持应用 ID，递增 versionCode。
+控制布局与能力分开设置
+controlProfile 选择 Client 控制布局，capabilities 声明应用使用的能力，两者需要分别配置。showcase 要求 Host 2 与 input.user-text；预设界面中的按钮是否可用，以公开事件 API 为准。
+能力分类
+显示 | display.keep-awake | 
+输入 | input.navigation、input.text、input.user-text、input.audio、input.game-controls | 
+媒体 | media.playback、media.background | 
+专用角色 | dashboard.provider、spatial.selector | 
+
+能力名称不能重复，并须按规范排序；使用未知字段或值会导致打包失败。普通应用不能使用看板角色专用 profile。input.text 和 input.user-text 不可同时声明。
+查看完整能力契约 →修改配置后
+重新打包并校验，核对应用 ID 与版本是否对应本次修改，再在 Client 中检查显示名称和控制布局。如果声明了输入能力，还需在代码中读取并处理相应事件；接入方式见处理输入。
+
+关闭原始尺寸

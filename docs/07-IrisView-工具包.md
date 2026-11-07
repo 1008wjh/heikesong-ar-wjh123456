@@ -84,10 +84,22 @@ python3 $K doctor                       # 体检：系统/依赖/Node
 python3 $K new  ~/ml --id demo.memorylens --name MemoryLens --name-zh 记忆眼镜
 python3 $K test ~/ml                    # 静态检查 + 依赖合同校验
 python3 $K build ~/ml                   # 输出 dist/（android + linux 两套）
-python3 $K package ~/ml --output ~/memorylens.irisapp --debug-unsigned
-python3 $K run ~/memorylens.irisapp --port 28045 --allow-debug-unsigned
+python3 $K package ~/ml --output ~/memorylens.fuiapp --debug-unsigned
+python3 $K run ~/memorylens.fuiapp --port 28045 --allow-debug-unsigned
 python3 $K deploy ...                   # 推到真机（adb）
 ```
+
+本项目里这些路径都写好了，直接：
+
+```bash
+wsl -d Ubuntu bash /mnt/e/ar-memory/tools/kit.sh test
+wsl -d Ubuntu bash /mnt/e/ar-memory/tools/kit.sh build
+wsl -d Ubuntu bash /mnt/e/ar-memory/tools/kit.sh package   # → dist/memorylens.fuiapp
+```
+
+> 包后缀是 `.fuiapp`；`versionCode` 每次发布必须递增（同码不同内容会被拒装），
+> 我们现在是 `1.6.2 / versionCode 18`。`verify` 只认已签名的包，debug-unsigned 会被它拒绝，
+> 这是正常的——自测用 `run --allow-debug-unsigned`。
 
 `run` 的常用参数：`--display-mode mono|stereo`（单眼/双眼）、
 `--audio-mode desktop|silent`、`--profile release|diagnostic`。
@@ -140,41 +152,92 @@ docker run --rm -it --device /dev/dri -v $PWD:/w ubuntu:22.04 bash
 
 ---
 
-## 我们怎么接（已经写好了）
+## 我们怎么接（v2：声纹为主）
 
 ```
-手机/笔记本浏览器                     眼镜（FusionUI 应用）
-  抓拍 → POST /api/scan  ──┐         ┌── 每 700ms GET /api/latest
-                           ▼         ▼
-                     src/server.py（同一个进程）
-                     识别 → 卡片 → _LAST 快照
+眼镜（FusionUI 应用）                      手机/笔记本浏览器
+  按一下 → input.audio 采 16k PCM           抓拍 → POST /api/scan
+      → 攒成 WAV → POST /api/voice/scan           │
+                    │                             │
+                    └──────────┬──────────────────┘
+                               ▼
+                      src/server.py（同一个进程）
+                  voice.py / face.py → 卡片 → _LAST 快照
+                               │
+                    每 700ms GET /api/latest（rev 变了才重画）
 ```
 
-- 后端新增 `GET /api/latest`：返回最近一次识别的 `{rev, faces, ms, at}`，
-  每扫一次 `rev+1`。眼镜只在 `rev` 变化时重画，不会每帧抖。
-- 眼镜端源码：`glasses/src/index.js`（约 200 行），布局是
-  品牌行 / 状态行 / 姓名 40px / 身份 20px / 相似度 / 三条信息 / 页脚。
-- 打包产物：`glasses/dist/memorylens.irisapp`。
-- 连哪台机器由环境变量 `MEMORYLENS_BACKEND` 决定，默认 `http://127.0.0.1:8765`；
-  真机演示时改成笔记本在热点里的 IP，例如 `http://192.168.43.7:8765`。
+- 后端新增 `GET /api/latest`：返回最近一次结果的 `{rev, faces, ms, at, kind}`，每次识别 `rev+1`。
+- 新增 `POST /api/voice/scan`（PCM/wav → CAM++ → 余弦 + margin）与 `POST /api/voice/enroll`（绑声纹）。
+- 眼镜端源码：`glasses/src/index.js`，HUD 是窄列布局：品牌行 / 状态行 / 姓名 / 身份 / 相似度 / 六行信息 / 页脚。
+  之所以是窄列、每行不超过 6 个汉字，是因为**镜片上单个 Text 只画得出约 110px**（见下面"排版坑"）。
+- 状态行会区分来源：`听到 · 53ms`（声纹）或 `看到 · 34ms`（人脸），评委一眼能看懂。
+- 打包：`powershell -File tools/kit-docker.ps1 package`（容器里跑，不依赖 WSL）
+  → `dist/memorylens.fuiapp`（1.6.2 / versionCode 18 / debug-unsigned，17489 B，
+  sha256 `8d4c2d66387464c63dfa03934fc60bbf40564d03f60aa469ece6269cf36fd5ed`）。
+- 信息多的时候**自动滚动**：一屏 6 行，超过就每 1.4s 往下滚 1 行，到底从头开始；
+  页脚显示 `1/2` 这样的页码。进后台会自动停滚。
+  两张对比图：`test/glasses_scroll_a.png`（第 1 屏）、`test/glasses_scroll_b.png`（滚了 3 行）。
+- 真机镜片截图：`test/glasses_card.png`（简单卡片）、`test/glasses_detail.png`（按「确认」展开的详情页），
+  都是模拟器 mono 模式，单色绿。
+- 能力声明：`display.keep-awake` + `input.audio` + `input.navigation`，`minimumHostVersion: 2`。
+- 连哪台机器由 `MEMORYLENS_BACKEND` 决定，默认 `http://127.0.0.1:8765`。
+
+### 两档卡片与三个动作（v3）
+
+平台只给 6 个离散动作，**没有双击/长按**（`takeNavigationAction()` 只有 up/down/left/right/activate/back），
+所以"先看简单数据、再展开复杂数据"用一个三态状态机实现：
+
+| 屏幕状态 | 按「确认」 | 按「返回」 |
+|---|---|---|
+| 空 | 开始录音 | — |
+| 简单卡片 | `GET /api/card/<id>/full` → 详情页 | 清屏 |
+| 详情页 | 收起，回简单卡片 | 清屏 |
+
+- 简单数据（`simple`）跟着卡片一起下发；复杂数据（`complex`）按需拉，**没按就永远不出网**，顺带就是隐私闸门。
+- JSON 是服务端摊平成一行行字的（`src/cards.py: flatten`），眼镜端不解析 JSON。
+- 一屏 6 行、超出自动滚动；详情页复用同一套滚动组件，只是页脚变成 `确认 收起 · 返回 清屏 · 1/2`。
+- 联调捷径：`MEMORYLENS_AUTO_DETAIL=1` 时认出已知的人会自动翻到详情页，方便截图。
+
+### 排版坑（都是实跑踩出来的）
+
+1. **单个 Text 只画 ~110px**：超过就硬切，跟控件宽度、字号、`setWidth/setMaxWidth`、
+   `LONG_DOT_END/LONG_WRAP` 都无关（设了反而更糟）。所以 HUD 用窄列 + 手动按字宽断句。
+2. **子控件必须 `setIgnoreLayout(true)`**，否则 `Board` 的布局会覆盖 `setPosition`。
+3. **`versionCode` 不递增，客户端会继续跑旧包**（画面完全不变、sha 一样），每次改代码都要 bump。
+4. 模拟器要抓 `0x200002` 这个子窗口；没有窗口管理器时 `windowraise` 无效，
+   而装了 twm 反而会让 GTK 客户端卡在启动阶段 —— 所以最终用 `NO_TWM=1` 直接抓子窗口。
+5. Windows 挂载进容器的文件是 0777，运行时要 0644 —— `deploy/sim-shot.sh` 会先拷到 `/opt/kit` 再改权限。
+
 
 ### 已验证（不是"应该能跑"）
 
-`node test/glasses_sim.js` 把 `@irisview/osx/*` 换成记录文字的最小替身，
-用真实后端跑一遍，断言 HUD 最终写出的文字：
+`node test/glasses_sim.js` 把 `@irisview/osx/*` 换成记录文字的最小替身，**再塞一个假麦克风**
+（把 `test/voice/*.wav` 拆成 640 字节一帧喂进去），用真实后端跑一遍：
 
 ```
 ok  后端在线
-ok  HUD 建好（品牌 + 状态 + 名字 + 身份 + 相似度 + 3 行 + 页脚）  控件数=9
-ok  扫码成功  15ms
-ok  HUD 出现名字「里奥」
+ok  注册王姐声纹
+ok  HUD 建好                    控件数=12
+ok  录音中状态
+ok  HUD 出现「王姐」            （huihui_b，SIM 0.94）
 ok  HUD 出现身份
-ok  HUD 出现三条信息
-ok  HUD 有相似度
-ok  陌生人显示「陌生人」
-ok  陌生人提示去录入
+ok  HUD 出现两条信息
+ok  状态是「听到」
+ok  按一下展开详情
+ok  详情页有内容
+ok  再按一下回到简单卡片
+ok  返回键清屏
+ok  陌生声音显示「陌生人」       （zira，SIM 0.30）
+ok  陌生声音提示录入
+ok  人脸结果也能上屏（里奥）
+ok  状态是「看到」
 全部通过
 ```
+
+> 注意：开发包现在放在 `E:\ar-memory\IrisView-Developer-Kit-v1.0.0-LLVISION-v2\...`
+> （三个 `IrisView-Developer-Kit-v1.0.0` 嵌套那层），`tools/kit-docker.ps1` 会自动找到它，
+> 也可以用 `-Kit` 或环境变量 `IRIS_KIT` 指定。
 
 `irisview test` / `build` / `package` 也都是真跑过的（见上）。
 
@@ -182,11 +245,14 @@ ok  陌生人提示去录入
 
 ## 演示脚本（眼镜那一段）
 
-1. 电脑上 `start.bat` 起服务（8765），手机/另一个浏览器打开 `http://<电脑IP>:8765`。
-2. 眼镜端（模拟器或真机）启动 MemoryLens，镜片上先显示"等待手机抓拍…"。
-3. 手机对着人抓拍 → 眼镜 **半秒内**浮出：姓名 / 身份 / 三条信息。
-4. 换一个陌生人 → 眼镜显示"陌生人 · 不在人脉库"，手机端点「记住他」。
-5. 再抓一次 → 同一副眼镜，同一个人，卡片变青色。
+1. 电脑上 `start.bat` 起服务（8765）。
+2. 控制台里给队友「录声纹」：编辑 → ◉ 录声纹（3 秒）→ 说"我是 XXX" → 保存。
+3. 眼镜端（模拟器或真机）启动 MemoryLens，镜片显示"按一下就说 · 说完自动认人"。
+4. 队友走过来打个招呼，你按一下 → **半秒内**镜片浮出：姓名 / 身份 / 三条信息。
+5. 换个没录过的人说话 → 镜片显示"陌生的声音 / 对着控制台说一句就能记住"。
+6. 现场给他录一句 → 再按一下 → 同一个人，卡片变青色。
 
-评委问"眼镜自己怎么拍照"——就答：**这一代眼镜没有摄像头，所以拍照在手机上，
-眼镜负责在你不方便看手机的时候把答案递到你眼前。** 这是取巧，也是真实的产品约束。
+评委问"眼镜怎么拍脸"——就答：**这一代眼镜没有摄像头，但有麦克风；我们让"认出熟人"
+不依赖摄像头，靠声音就够了。真要拍照时，手机补一刀，结果还是回到同一块镜片。**
+
+---

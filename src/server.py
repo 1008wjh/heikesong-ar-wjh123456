@@ -18,6 +18,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cards  # noqa: E402
+import voice  # noqa: E402
 from face import FaceEngine  # noqa: E402
 from store import MATCH_THRESHOLD, Store  # noqa: E402
 
@@ -31,7 +32,7 @@ engine = FaceEngine()
 
 # 最近一次识别结果。手机抓拍 → 这里 → 眼镜轮询取走。
 # 眼镜端（IrisView 应用）没有摄像头，只能"看"这里的最新一帧结果。
-_LAST = {"rev": 0, "faces": [], "at": 0, "ms": 0}
+_LAST = {"rev": 0, "faces": [], "at": 0, "ms": 0, "kind": ""}
 _LAST_LOCK = threading.Lock()
 
 MIME = {
@@ -61,6 +62,18 @@ def decode_image(payload):
     if img is None:
         raise ValueError("图片解码失败")
     return img
+
+
+def decode_audio(payload):
+    """接受 dataURL / 纯 base64 / 本地路径，统一变成 wav 字节。"""
+    if not payload:
+        raise ValueError("没有音频")
+    if os.path.exists(payload):
+        with open(payload, "rb") as f:
+            return f.read()
+    if payload.startswith("data:"):
+        payload = payload.split(",", 1)[1]
+    return base64.b64decode(payload)
 
 
 def shrink(img):
@@ -100,6 +113,28 @@ def save_photo(store_, pid, crop):
     return os.path.join("photos", name).replace("\\", "/")
 
 
+def _as_dict(value):
+    """接受 dict 或 JSON 字符串（控制台里是文本框）；空值返回 None。"""
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, list):
+        return {"列表": value}
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"JSON 格式不对：{e.msg}（第 {e.lineno} 行）")
+    if isinstance(parsed, dict):
+        return parsed
+    if isinstance(parsed, list):
+        return {"列表": parsed}
+    return {"值": parsed}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "MemoryLens/0.1"
 
@@ -124,6 +159,9 @@ class Handler(BaseHTTPRequestHandler):
             with _LAST_LOCK:
                 snapshot = dict(_LAST)
             return self._json({"ok": True, **snapshot})
+        if path.startswith("/api/card/") and path.endswith("/full"):
+            pid = path[len("/api/card/"):-len("/full")].strip("/")
+            return self._card_full(pid)
         return self._static(path)
 
     def do_POST(self):
@@ -132,6 +170,10 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_json()
             if path == "/api/scan":
                 return self._scan(body)
+            if path == "/api/voice/scan":
+                return self._voice_scan(body)
+            if path == "/api/voice/enroll":
+                return self._voice_enroll(body)
             if path == "/api/people/save":
                 return self._save_person(body)
             if path == "/api/people/delete":
@@ -164,6 +206,7 @@ class Handler(BaseHTTPRequestHandler):
             x, y, w, h = f["box"]
             card["box"] = [round(x / scale), round(y / scale),
                            round(w / scale), round(h / scale)]
+            card["kind"] = "face"
             out.append(card)
         payload = {
             "ok": True,
@@ -179,6 +222,76 @@ class Handler(BaseHTTPRequestHandler):
             payload["rev"] = _LAST["rev"]
         return self._json(payload)
 
+    # ---------- 声纹 ----------
+
+    def _voice_scan(self, body):
+        """眼镜端送来一段语音（16k 单声道 wav），判断"这是谁在说话"。"""
+        t0 = time.time()
+        samples = voice.read_wav(decode_audio(body.get("audio")))
+        if voice.seconds(samples) < voice.MIN_SECONDS:
+            card = {
+                "kind": "voice", "status": "short", "name": "没听清",
+                "role": "", "similarity": -1,
+                "lines": ["说话时间太短", "再说两三秒就行"],
+            }
+            return self._push_voice([card], int((time.time() - t0) * 1000))
+
+        emb = voice.embed(samples)
+        person, sim, margin = voice.match(emb, store.voice_index())
+        print(f"[voice] {voice.seconds(samples):.1f}s sim={sim:+.3f} margin={margin:+.3f} "
+              f"-> {person['name'] if person else 'unknown'}")
+
+        if person:
+            full = store.get(person["id"]) or person
+            card = cards.build_card(full, sim, voice.THRESHOLD)
+            card["status"] = "known"
+            card["person_id"] = person["id"]
+        else:
+            card = {
+                "status": "unknown", "name": "陌生人", "role": "", "similarity": sim,
+                "lines": ["没听过这个声音", "对着控制台说一句就能记住"],
+            }
+        card["kind"] = "voice"
+        card["seconds"] = round(voice.seconds(samples), 1)
+        return self._push_voice([card], int((time.time() - t0) * 1000))
+
+    def _voice_enroll(self, body):
+        """把一段语音绑到某个人身上（控制台/眼镜端都能调）。"""
+        pid = (body.get("id") or "").strip()
+        name = (body.get("name") or "").strip()
+        if not pid and name:
+            found = [p for p in store.people() if p["name"] == name]
+            pid = found[0]["id"] if found else ""
+        if not pid:
+            raise ValueError("要指定 id 或 name")
+        samples = voice.read_wav(decode_audio(body.get("audio")))
+        if voice.seconds(samples) < voice.MIN_SECONDS:
+            raise ValueError("声音太短，至少说 1 秒")
+        person = store.add_voice(pid, voice.embed(samples))
+        if person is None:
+            raise ValueError("没有这个人")
+        return self._json({"ok": True, "person": person,
+                           "seconds": round(voice.seconds(samples), 1)})
+
+    def _push_voice(self, cards_out, ms):
+        payload = {"ok": True, "ms": ms, "faces": cards_out, "kind": "voice"}
+        with _LAST_LOCK:
+            _LAST["rev"] += 1
+            _LAST["faces"] = cards_out
+            _LAST["at"] = time.time()
+            _LAST["ms"] = ms
+            _LAST["kind"] = "voice"
+            payload["rev"] = _LAST["rev"]
+        return self._json(payload)
+
+    def _card_full(self, pid):
+        """眼镜上按「确认」时拉这个：复杂数据摊平成一行行。"""
+        person = store.get(pid)
+        if not person:
+            return self._json({"ok": False, "error": "没有这个人"}, 404)
+        full = cards.build_full(person)
+        return self._json({"ok": True, **full})
+
     def _save_person(self, body):
         """控制台的"新增/编辑"：有图就检测取特征（换图=换特征），没图只改文字。"""
         pid = (body.get("id") or "").strip() or None
@@ -189,6 +302,15 @@ class Handler(BaseHTTPRequestHandler):
         info = body.get("info") or []
         if isinstance(info, str):
             info = info.split("\n")
+
+        # 新的两档数据：simple 直接上镜片，complex 按需拉。两种入参都收：
+        #   {"simple": {...}, "complex": {...}} 或 {"simple_json": "{...}"}（控制台里是文本框）
+        simple = _as_dict(body.get("simple", body.get("simple_json")))
+        complex_ = _as_dict(body.get("complex", body.get("complex_json")))
+        if simple is None and not pid:
+            simple = {}
+        if complex_ is None and not pid:
+            complex_ = {}
 
         embedding, crop = None, None
         image = body.get("image") or ""
@@ -204,7 +326,8 @@ class Handler(BaseHTTPRequestHandler):
 
         person = store.save(pid=pid, name=name, role=role, info=info,
                             embedding=embedding,
-                            replace_embeddings=bool(pid) and embedding is not None)
+                            replace_embeddings=bool(pid) and embedding is not None,
+                            simple=simple, complex_=complex_)
         rel = save_photo(store, person["id"], crop)
         if rel:
             person = store.set_photo(person["id"], rel)

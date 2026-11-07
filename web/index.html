@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>MemoryLens · 记忆眼镜</title>
-<link rel="stylesheet" href="style.css?v=10" />
+<link rel="stylesheet" href="style.css?v=12" />
 </head>
 <body>
 <div class="wrap">
@@ -83,6 +83,8 @@
         <img id="edPhoto" class="ed-photo" alt="" />
         <label for="edFile" class="ghost file">上传照片</label>
         <input id="edFile" type="file" accept="image/*" hidden />
+        <button id="edVoice" class="ghost" type="button">◉ 录声纹（3 秒）</button>
+        <div class="muted tiny" id="edVoiceHint">说一句「我是 XXX」，眼镜就能听声认人</div>
         <div class="muted tiny" id="edPhotoHint">正脸、光线均匀、别戴帽子</div>
       </div>
 
@@ -92,6 +94,10 @@
         <label class="fld"><span>信息 1</span><input id="ed1" placeholder="答应下周给报价单" /></label>
         <label class="fld"><span>信息 2</span><input id="ed2" placeholder="养了一只叫豆豆的猫" /></label>
         <label class="fld"><span>信息 3</span><input id="ed3" placeholder="（可选）" /></label>
+        <label class="fld"><span>简单数据（JSON · 镜片上直接显示）</span>
+          <textarea id="edSimple" rows="3" placeholder='{"身份":"队友","上次见面":"上周三"}'></textarea></label>
+        <label class="fld"><span>复杂数据（JSON · 按「确认」才展开）</span>
+          <textarea id="edComplex" rows="4" placeholder='{"家庭":{"宠物":"一只猫"},"历史":["2025 展会认识"]}'></textarea></label>
       </div>
     </div>
 
@@ -104,6 +110,6 @@
   </div>
 </div>
 
-<script src="app.js?v=10"></script>
+<script src="app.js?v=12"></script>
 </body>
 </html>

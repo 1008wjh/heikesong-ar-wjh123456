@@ -1,0 +1,27 @@
+导航、文字与音频输入 · IrisView Developer Alpha
+中文English打印目录开发者首页开始
+认识 DevKit构建第一个应用整体介绍
+技术架构核心概念开发指南
+界面与交互构建界面处理输入动画与呈现应用基础应用生命周期应用身份与能力保存数据运行与交付使用模拟器调试与诊断构建与发布示例
+呼吸 DemoAPI 参考
+浏览接口导航、文字与音频输入
+在 manifest 中声明所需的输入能力，并使用对应的 API 读取导航动作、文字或音频。
+导航 | @irisview/osx/os/input · input.navigation · Host 2 | takeNavigationAction() 按进入队列的顺序读取动作；FocusGroup 管理已挂载控件的导航与激活。 | 
+通用文字 | @irisview/osx/os/input · input.text · Host 2 | takeTextInput() 每次取出一条完整文字提交，最多 4096 UTF-8 字节；无待处理文字时返回 null。 | 
+预设文字 | @irisview/osx/os · input.user-text | takeUserTextInput() 使用独立的 192 UTF-8 字节通道；showcase 要求 Host 2。 | 
+音频 | @irisview/osx/os/input · input.audio · Host 2 | requestVoiceInput({mode:"audio"}) 在确认和权限许可后接收规范化 PCM。 | 
+
+读取输入队列
+在应用更新时读取队列，并限制每轮处理量。读取接口会取出一项输入；返回 null 表示当前无待处理项。input.text 与 input.user-text 不能同时声明。
+导航与焦点
+将当前窗口中已挂载的 Widget 注册到 FocusGroup。导航时会跳过隐藏、禁用、移除或销毁的对象；激活时调用应用注册的函数。结束使用后调用 dispose() 释放注册。
+音频会话
+请求前查询 getVoiceInputAvailability("audio")，检查 canRequest 和返回原因。权限确认期间状态为 pending，开始交付音频后为 recording。ready 为 false 时仍可能允许发起权限请求。
+音频格式为 16 kHz、单声道、signed16 little endian；完整帧 20 ms，即 320 样本 / 640 字节。缓冲为 64 帧，采集最多 60 秒。应用需要语音识别时，自行对接识别服务
+结束会话
+调用 finish() 结束音频会话，或调用 cancel() 取消。继续读取事件，收到 end 后再发起请求。提前请求可能返回 busy。
+相关 API
+FocusGroup → · takeTextInput → · takeUserTextInput → · requestVoiceInput → · getVoiceInputAvailability →测试输入
+先验证一条输入能触发预期动作，再检查没有输入、连续输入以及应用进入后台时的行为。文字示例可按模拟器中的发送文字步骤操作；结束音频会话时，确认收到 end 后再发起下一次请求。
+
+关闭原始尺寸

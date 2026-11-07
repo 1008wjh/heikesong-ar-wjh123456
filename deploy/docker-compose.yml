@@ -1,0 +1,27 @@
+name: memorylens
+
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.backend
+    image: memorylens:latest
+    container_name: memorylens
+    ports:
+      - "8765:8765"
+    volumes:
+      - ml-data:/data
+      # 演示时也可以把本机的人脉库直接挂进去（Windows 路径要写绝对路径）
+      # - E:/ar-memory/data:/data
+    environment:
+      AR_PORT: "8765"
+      AR_MATCH_THRESHOLD: "0.40"
+      AR_VOICE_THRESHOLD: "0.72"
+      AR_VOICE_MARGIN: "0.08"
+      # 可选的 MiMo 开场白：默认关，打开就把 key 填上
+      AR_USE_LLM: "0"
+      # MIMO_API_KEY: "sk-..."
+    restart: unless-stopped
+
+volumes:
+  ml-data:

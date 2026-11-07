@@ -1,0 +1,46 @@
+构建第一个应用 · IrisView Developer Alpha
+中文English打印目录开发者首页开始
+认识 DevKit构建第一个应用整体介绍
+技术架构核心概念开发指南
+界面与交互构建界面处理输入动画与呈现应用基础应用生命周期应用身份与能力保存数据运行与交付使用模拟器调试与诊断构建与发布示例
+呼吸 DemoAPI 参考
+浏览接口构建第一个应用
+在模拟器中运行一个文字应用，然后修改文字并重新打包。
+首次运行时，模拟器显示应用名称。重新打包并运行后，它会显示修改后的文字。
+在同一个 Ubuntu 终端执行以下命令。KIT 指向工具包根目录，PROJECT 指向应用项目。打开新终端后需重新设置变量。
+开始之前
+使用 Ubuntu 22.04 / 26.04 x86_64 图形桌面；Windows 使用 WSL2 和 WSLg。命令在 Ubuntu Bash 执行。Kit 与项目放到 Linux 文件系统，项目位于 Kit 之外。
+编写和构建应用需要 Node.js 24.13.0、npm 11.6.2 与 Git：Node.js 执行开发工具，npm 安装项目依赖，Git 记录源码版本。首次使用还需按主机环境说明安装 Kit 的系统依赖。
+配置主机环境 →01 检查 Kit 和工具链
+首次使用请先解压 LLVISION 工具包。将 KIT 设为含有 bin/、sdk/ 和 templates/ 的解压目录。
+复制KIT="$HOME/IrisView/LLVISION/IrisView-Developer-Kit-v1.0.0"
+"$KIT/bin/check-host"
+node --version
+npm --version
+"$KIT/bin/irisview" doctor
+检查版本输出：Node.js v24.13.0、npm 11.6.2。02 创建独立项目
+复制PROJECT="$HOME/IrisView-Developer-Kit-Data/my-first-app"
+"$KIT/bin/irisview" new "$PROJECT" --id example.myfirstapp --name "My First App" --name-zh "我的第一个应用"
+npm --prefix "$PROJECT" ci --offline --ignore-scripts --no-audit --no-fund
+目标目录必须尚不存在。example.myfirstapp 是示例 ID，正式项目应使用自己的唯一 ID。
+03 测试、构建、打包
+复制"$KIT/bin/irisview" test "$PROJECT"
+"$KIT/bin/irisview" build "$PROJECT"
+"$KIT/bin/irisview" package "$PROJECT" --debug-unsigned --output "$HOME/IrisView-Developer-Kit-Data/my-first-app.fuiapp"
+"$KIT/bin/irisview" verify "$HOME/IrisView-Developer-Kit-Data/my-first-app.fuiapp" --allow-debug-unsigned
+04 运行并观察
+复制"$KIT/bin/irisview" run "$HOME/IrisView-Developer-Kit-Data/my-first-app.fuiapp" --allow-debug-unsigned --display-mode mono
+启动后会出现 Client 和独立的 Simulator 窗口，应用名称应显示在 Simulator 中。检查完成后关闭 Client，或在运行终端按 Ctrl+C；等终端返回命令提示符后再继续。
+05 做第一处修改
+用编辑器打开 PROJECT 指向的目录，在 src/index.js 中修改 text.setText(...) 的文字，并将 FusionUIApp.json 的 versionCode 从 1 增加到 2。保存文件后，在 Ubuntu 终端执行：
+复制cd "$PROJECT"
+read -r -p "Git 提交者姓名：" AUTHOR_NAME
+read -r -p "Git 提交者邮箱：" AUTHOR_EMAIL
+git config --local user.name "$AUTHOR_NAME"
+git config --local user.email "$AUTHOR_EMAIL"
+git add src/index.js FusionUIApp.json
+git commit -m "Update first app text"
+然后重复第 3、4 步，运行新生成的包。模拟器应显示修改后的文字；若仍显示旧内容，检查运行命令中的包路径。
+接下来：使用模拟器 →
+
+关闭原始尺寸

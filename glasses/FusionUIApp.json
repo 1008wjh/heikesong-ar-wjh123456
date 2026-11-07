@@ -1,6 +1,8 @@
 {
   "capabilities": [
-    "display.keep-awake"
+    "display.keep-awake",
+    "input.audio",
+    "input.navigation"
   ],
   "controlProfile": "generic",
   "displayName": {
@@ -8,9 +10,9 @@
     "zh-CN": "记忆眼镜"
   },
   "id": "demo.memorylens",
-  "minimumHostVersion": 1,
+  "minimumHostVersion": 2,
   "role": "ordinary",
   "schemaVersion": 1,
-  "version": "1.0.0",
-  "versionCode": 1
+  "version": "1.6.2",
+  "versionCode": 18
 }

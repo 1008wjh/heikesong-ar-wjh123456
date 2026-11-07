@@ -1,0 +1,77 @@
+IrisView Developer Kit · IrisView Developer Alpha
+中文English打印目录开发者首页开始
+认识 DevKit构建第一个应用整体介绍
+技术架构核心概念开发指南
+界面与交互构建界面处理输入动画与呈现应用基础应用生命周期应用身份与能力保存数据运行与交付使用模拟器调试与诊断构建与发布示例
+呼吸 DemoAPI 参考
+浏览接口IrisView Developer Kit
+本指南对应 IrisView-Developer-Kit-v1.0.0-LLVISION-v1.tar.gz（Alpha）。命令中的 Kit 路径指向该归档解压后的根目录。
+
+在电脑上创建、打包并运行显示眼镜应用。
+
+解压 LLVISION 工具包
+
+在 Ubuntu 终端中粘贴下载文件的完整路径。使用 WSL 时，Windows 下载目录位于 /mnt/c/Users/你的用户名/Downloads/。首次安装使用下列命令创建独立目录。
+
+复制read -r -p "LLVISION 工具包的完整 Linux 路径：" ARCHIVE
+mkdir -p "$HOME/IrisView"
+mkdir "$HOME/IrisView/LLVISION" && tar -xzf "$ARCHIVE" -C "$HOME/IrisView/LLVISION"
+
+解压后的目录名为 IrisView-Developer-Kit-v1.0.0。若已解压，可将下列 KIT 改为实际路径。设置 KIT 后直接运行宿主检查，根据输出补齐系统依赖。
+
+复制KIT="$HOME/IrisView/LLVISION/IrisView-Developer-Kit-v1.0.0"
+"$KIT/bin/check-host"
+
+开发者文档和呼吸示例随 IrisView-Platform-Alpha-中英双语版-v3.zip 单独提供。解压 ZIP 后双击顶层 index.html，即可离线查阅。
+
+开发环境
+
+使用 FusionUI 编写 JavaScript 应用。Developer Kit 包含项目模板、构建工具、Client 和模拟器。
+
+入门指南
+
+查看系统架构。查看技术架构。
+
+运行示例。准备配套安装包，按使用模拟器启动呼吸 Demo 或提词卡。
+
+开发自己的应用。从构建第一个应用开始，完成一次文字修改与重新运行，再通过呼吸 Demo学习状态、动画和生命周期如何配合。
+
+应用示例
+
+体验 | 示例行为 | 对应示例 | 
+
+展示信息 | 创建窗口，组织文字与基础界面，修改内容后重新运行。 | 最小应用模板 | 
+
+响应输入 | 发送短稿、翻页和暂停，观察输入如何改变显示内容。 | 随身提词卡 | 
+
+随时间更新 | 配合阶段提示、进度和动画，观察前台运行与后台暂停。 | 呼吸 Demo | 
+
+工具包组成
+
+用 SDK 编写应用，通过命令行工具测试和打包，由 Client 启动应用，在 Simulator 中查看显示结果。Runtime 为应用提供运行环境。
+
+工具包内容 | 用途 | 
+
+应用 SDK | 创建界面，处理生命周期、输入、动画和数据。 | 
+
+命令行工具 | 检查环境、创建项目、测试、构建、打包与运行。 | 
+
+Runtime 与 Client | 运行应用，并管理启动、休眠和结束等状态。 | 
+
+Simulator | 在电脑上检查显示结果，按需使用诊断配置。 | 
+
+最小应用模板 | 创建带有窗口、画布和文字的项目。 | 
+
+最小模板位于 Kit 的 templates/minimal/。呼吸示例源码和安装包位于本交付包的 Breathe/ 目录。文字输入练习使用单独提供的提词卡。
+
+显示架构
+
+IrisView 采用分离渲染：宿主运行应用并计算布局，显示端负责绘制与呈现。技术架构介绍各部分如何协作，以及一次界面更新如何到达显示端。
+
+系统要求
+
+在 x86_64 Ubuntu 中开发和运行模拟器。Windows 使用 WSL2 与 WSLg。
+
+部署到眼镜前，在目标设备上检查签名、Host 版本、显示和输入。
+
+关闭原始尺寸

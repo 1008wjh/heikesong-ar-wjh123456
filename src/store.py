@@ -74,6 +74,22 @@ class Store:
             if "photo" not in p:
                 p["photo"] = ""
                 changed = True
+            if "voice_embeddings" not in p:
+                p["voice_embeddings"] = []
+                changed = True
+            if "simple" not in p:
+                # 新字段：简单数据（会直接上镜片）。老记录的 role/info 先搬进来。
+                simple = {}
+                if (p.get("role") or "").strip():
+                    simple["身份"] = p["role"].strip()
+                for i, line in enumerate(p.get("info") or [], start=1):
+                    if str(line).strip():
+                        simple[f"信息{i}"] = str(line).strip()
+                p["simple"] = simple
+                changed = True
+            if "complex" not in p:
+                p["complex"] = {}
+                changed = True
             p["info"] = list(p.get("info") or [])[:MAX_INFO]
 
         # 顺手清理历史脏字符（早期一次编码事故留下的孤立代理项），否则 JSON 编码会炸
@@ -116,14 +132,43 @@ class Store:
             return None, best_s
         return best, best_s
 
+    def voice_index(self):
+        """给声纹匹配用的轻量视图（只带声纹向量，不带 512 维人脸底片）。"""
+        with self._lock:
+            return [
+                {
+                    "id": p["id"],
+                    "name": p.get("name", ""),
+                    "role": p.get("role", ""),
+                    "voice_embeddings": list(p.get("voice_embeddings") or []),
+                }
+                for p in self._data["people"]
+                if p.get("voice_embeddings")
+            ]
+
+    def add_voice(self, pid, embedding, replace=True):
+        """给某人挂一条声纹。默认替换（声纹不像人脸，混多条容易互相拉扯）。"""
+        with self._lock:
+            p = self._raw(pid)
+            if not p:
+                return None
+            vec = [float(x) for x in embedding]
+            if replace:
+                p["voice_embeddings"] = [vec]
+            else:
+                p.setdefault("voice_embeddings", []).append(vec)
+            self._save()
+            return self._public(p)
+
     # ---------- 写入（控制台用） ----------
 
     def save(self, pid=None, name="", role="", info=None, embedding=None,
-             photo=None, replace_embeddings=False):
+             photo=None, replace_embeddings=False, simple=None, complex_=None):
         """新建或更新一个人。pid 为空 → 按名字找，找不到才新建。
 
         embedding 传了才会动底片：新建时追加；编辑且 replace_embeddings=True 时整体替换
         （换照片就该换特征，否则会把两个特征混在一条记录里）。
+        simple / complex_ 是眼镜用的两档数据：simple 直接上镜片，complex 按需拉取。
         """
         name = (name or "").strip()
         if not name:
@@ -147,6 +192,7 @@ class Store:
                     "last_met": today,
                     "meet_count": 1,
                     "embeddings": [],
+                    "voice_embeddings": [],
                     "tags": [],
                     "notes": [],
                     "talking_points": [],
@@ -156,6 +202,10 @@ class Store:
             person["name"] = name
             person["role"] = role
             person["info"] = info
+            if isinstance(simple, dict):
+                person["simple"] = simple
+            if isinstance(complex_, dict):
+                person["complex"] = complex_
             if photo is not None:
                 person["photo"] = photo
             if embedding is not None:
@@ -255,7 +305,9 @@ class Store:
     def _public(p):
         q = dict(p)
         q["embedding_count"] = len(p.get("embeddings", []))
-        q.pop("embeddings", None)  # 别把 512 维向量发给前端
+        q["voice_count"] = len(p.get("voice_embeddings") or [])
+        q.pop("embeddings", None)        # 别把 512 维向量发给前端
+        q.pop("voice_embeddings", None)  # 192 维也一样
         return q
 
 

@@ -99,7 +99,15 @@ lio = [p for p in people if p["name"] == "里奥"][0]
 r7 = scan(load("messi5.jpg"))
 card = r7["faces"][0]
 expect = [x for x in (lio.get("info") or []) if str(x).strip()][:3]
-check("卡片行 = 信息 1/2/3", card["lines"] == expect, str(card["lines"]))
+# 现在卡片优先走 simple（眼镜直接显示的那档），没有再退回 role + info
+simple = lio.get("simple") or {}
+if simple:
+    flat = " | ".join(card["lines"])
+    check("卡片行来自简单数据",
+          all(str(v)[:4] in flat for v in simple.values() if str(v).strip()),
+          str(card["lines"]))
+else:
+    check("卡片行 = 信息 1/2/3", card["lines"] == expect, str(card["lines"]))
 check("卡片带身份", card.get("role") == lio.get("role"), str(card.get("role")))
 
 print("\n== 人脉库")

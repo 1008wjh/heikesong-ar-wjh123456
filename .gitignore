@@ -20,3 +20,13 @@ desktop.ini
 
 # Node
 node_modules/
+
+# ---- 项目专属 ----
+# 亮亮视野开发者工具包：400+ MB 的外部 SDK，按 docs/07 自行下载到本目录
+IrisView-Developer-Kit-*/
+# 容器构建时缓存的大文件（node 24.13.0 tar.xz 约 30MB），需要时按 deploy/README 重新下
+deploy/cache/
+# 排障用的探针应用，不属于产品代码
+probe/
+# 眼镜端构建产物（包在 dist/ 里，dist 保留）
+glasses/dist/

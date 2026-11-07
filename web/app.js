@@ -6,7 +6,7 @@
 const $ = (s) => document.querySelector(s);
 
 // 改代码就 +1，页脚会显示。看到 build 不是最新的，说明浏览器还在跑旧脚本。
-const BUILD = 10;
+const BUILD = 12;
 const buildEl = $('#build');
 if (buildEl) buildEl.textContent = 'build ' + BUILD;
 
@@ -410,6 +410,13 @@ function renderPeople() {
     const rl = document.createElement('span');
     rl.className = 'role';
     rl.textContent = p.role || '未填身份';
+    if (p.voice_count > 0) {
+      const vt = document.createElement('i');
+      vt.className = 'voicetag';
+      vt.textContent = '声';
+      vt.title = '已录声纹，眼镜能听声认人';
+      rl.append(' ', vt);
+    }
     who.append(nm, rl);
 
     const acts = document.createElement('div');
@@ -430,25 +437,54 @@ function renderPeople() {
 
 let editing = null;      // null = 新增
 let pendingImage = null; // 这次新选的照片（dataURL）
+let pendingVoice = null; // 这次新录的声纹（dataURL wav），保存时一起提交
+let voiceRecording = false;
 
 function openEditor(id) {
   editing = (id && state.people.find((p) => p.id === id)) || null;
   pendingImage = null;
+  pendingVoice = null;
+  voiceRecording = false;
   $('#edTitle').textContent = editing ? '编辑 · ' + editing.name : '新增人物';
   $('#edName').value = editing ? editing.name : '';
   $('#edRole').value = editing ? editing.role || '' : '';
   const info = (editing && editing.info) || [];
   ['#ed1', '#ed2', '#ed3'].forEach((s, i) => { $(s).value = info[i] || ''; });
+  $('#edSimple').value = jsonText(editing && editing.simple);
+  $('#edComplex').value = jsonText(editing && editing.complex);
   setEdPhoto(editing && editing.photo
     ? '/api/photo?id=' + encodeURIComponent(editing.id) + '&t=' + Date.now()
     : '');
   $('#edPhotoHint').textContent = '正脸、光线均匀、别戴帽子';
+  const vc = (editing && editing.voice_count) || 0;
+  $('#edVoiceHint').textContent = vc > 0
+    ? '已有 ' + vc + ' 条声纹，重录会覆盖'
+    : '说一句「我是 XXX」，眼镜就能听声认人';
+  $('#edVoice').textContent = '◉ 录声纹（3 秒）';
   $('#edDelete').hidden = !editing;
   $('#editor').hidden = false;
   setTimeout(() => $('#edName').focus(), 30);
 }
 
 const BLANK_IMG = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+
+// 两档数据在弹窗里是 JSON 文本框：给人看要好读，空的就别显示
+function jsonText(obj) {
+  if (!obj || typeof obj !== 'object' || !Object.keys(obj).length) return '';
+  return JSON.stringify(obj, null, 2);
+}
+
+function parseJsonField(sel) {
+  const text = $(sel).value.trim();
+  if (!text) return null;
+  try {
+    const val = JSON.parse(text);
+    if (val && typeof val === 'object' && !Array.isArray(val)) return val;
+    throw new Error('要是一个 JSON 对象，比如 {"身份":"队友"}');
+  } catch (e) {
+    throw new Error(($(sel).previousElementSibling || {}).textContent + ' 有问题：' + e.message);
+  }
+}
 
 function setEdPhoto(src) {
   const img = $('#edPhoto');
@@ -462,9 +498,109 @@ function setEdPhoto(src) {
 }
 
 function closeEditor() {
+  stopVoiceIfRecording();
   $('#editor').hidden = true;
   editing = null;
   pendingImage = null;
+  pendingVoice = null;
+}
+
+/* ---------------- 录声纹（浏览器麦克风 → 16k 单声道 wav） ---------------- */
+
+const VOICE_SECONDS = 3;
+
+function floatToWav(chunks, sampleRate) {
+  let total = 0;
+  chunks.forEach((c) => { total += c.length; });
+  const buf = new ArrayBuffer(44 + total * 2);
+  const view = new DataView(buf);
+  const str = (off, s) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)); };
+  str(0, 'RIFF');
+  view.setUint32(4, 36 + total * 2, true);
+  str(8, 'WAVE');
+  str(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);            // PCM
+  view.setUint16(22, 1, true);            // 单声道
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  str(36, 'data');
+  view.setUint32(40, total * 2, true);
+  let off = 44;
+  chunks.forEach((c) => {
+    for (let i = 0; i < c.length; i++) {
+      const s = Math.max(-1, Math.min(1, c[i]));
+      view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+      off += 2;
+    }
+  });
+  return buf;
+}
+
+function blobToDataURL(blob) {
+  return new Promise((res) => {
+    const fr = new FileReader();
+    fr.onload = () => res(fr.result);
+    fr.readAsDataURL(blob);
+  });
+}
+
+let voiceRec = null;   // { ctx, stream, proc, chunks, timer }
+
+function stopVoiceIfRecording() {
+  if (!voiceRec) return;
+  const r = voiceRec;
+  voiceRec = null;
+  voiceRecording = false;
+  clearTimeout(r.timer);
+  try { r.proc.disconnect(); } catch (e) { /* 已断开 */ }
+  try { r.ctx.close(); } catch (e) { /* 已关闭 */ }
+  try { r.stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* 已停止 */ }
+  return r;
+}
+
+async function recordVoice() {
+  if (voiceRecording) {                       // 再点一次 = 提前结束
+    const r = stopVoiceIfRecording();
+    if (r) await finishVoice(r);
+    return;
+  }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    return alert('这个浏览器不给用麦克风，换 Chrome/Edge 打开');
+  }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } });
+  } catch (e) {
+    return alert('拿不到麦克风：' + e.message);
+  }
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  const ctx = new AudioCtx({ sampleRate: 16000 });
+  const source = ctx.createMediaStreamSource(stream);
+  const proc = ctx.createScriptProcessor(4096, 1, 1);
+  const chunks = [];
+  proc.onaudioprocess = (ev) => { chunks.push(new Float32Array(ev.inputBuffer.getChannelData(0))); };
+  source.connect(proc);
+  proc.connect(ctx.destination);
+
+  voiceRec = { ctx, stream, proc, chunks, timer: setTimeout(async () => {
+    const r = stopVoiceIfRecording();
+    if (r) await finishVoice(r);
+  }, VOICE_SECONDS * 1000) };
+  voiceRecording = true;
+  $('#edVoice').textContent = '◉ 正在录…（再点结束）';
+  $('#edVoiceHint').textContent = '说话中，约 ' + VOICE_SECONDS + ' 秒';
+}
+
+async function finishVoice(r) {
+  const sampleRate = r.ctx.sampleRate || 16000;
+  const wav = floatToWav(r.chunks, sampleRate);
+  const blob = new Blob([wav], { type: 'audio/wav' });
+  pendingVoice = await blobToDataURL(blob);
+  $('#edVoice').textContent = '◉ 重录声纹（3 秒）';
+  $('#edVoiceHint').textContent = '已录 ' + (blob.size / 32000).toFixed(1) + ' 秒，保存时一起写入';
 }
 
 async function savePerson() {
@@ -477,6 +613,14 @@ async function savePerson() {
     role: $('#edRole').value.trim(),
     info: ['#ed1', '#ed2', '#ed3'].map((s) => $(s).value.trim()),
   };
+  try {
+    const simple = parseJsonField('#edSimple');
+    const complex_ = parseJsonField('#edComplex');
+    if (simple) body.simple = simple;
+    if (complex_) body.complex = complex_;
+  } catch (e) {
+    return alert(e.message);
+  }
   if (pendingImage) body.image = pendingImage;
 
   const btn = $('#edSave');
@@ -485,13 +629,19 @@ async function savePerson() {
   try {
     const r = await post('/api/people/save', body);
     if (!r.ok) throw new Error(r.error || '保存失败');
+    let voiceNote = '';
+    if (pendingVoice) {
+      const vr = await post('/api/voice/enroll', { id: r.person.id, audio: pendingVoice });
+      if (!vr.ok) throw new Error(vr.error || '声纹保存失败');
+      voiceNote = ' · 声纹 ' + vr.seconds + 's';
+    }
     // 先解锁按钮再关弹窗：否则连点两次会点到一个 disabled 的按钮
     btn.disabled = false;
     btn.textContent = '保存';
     closeEditor();
     await loadPeople();
     if (state.frozen) await rescan();          // 画面还冻着的话，卡片立刻更新
-    $('#lensMsg').textContent = '已保存：' + name +
+    $('#lensMsg').textContent = '已保存：' + name + voiceNote +
       (r.faces > 1 ? `（图里 ${r.faces} 张脸，取了最大那张）` : '');
   } catch (e) {
     alert('保存失败：' + e.message);
@@ -560,6 +710,7 @@ $('#search').oninput = renderPeople;
 $('#edClose').onclick = closeEditor;
 $('#edCancel').onclick = closeEditor;
 $('#edSave').onclick = savePerson;
+$('#edVoice').onclick = recordVoice;
 $('#edDelete').onclick = () => deletePerson(editing);
 $('#edFile').onchange = async () => {
   const f = $('#edFile').files[0];

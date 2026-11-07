@@ -1,0 +1,49 @@
+# IrisView 工具链容器：真 Ubuntu 22.04 + Node 24.13.0 + 一台虚拟 X 屏
+# 用法见 deploy/README.md；构建：docker build -f deploy/Dockerfile.irisview -t memorylens-irisview .
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+# 换阿里云源（archive.ubuntu.com 在国内经常超时）
+RUN sed -i 's@http://archive.ubuntu.com/ubuntu@http://mirrors.aliyun.com/ubuntu@g; \
+            s@http://security.ubuntu.com/ubuntu@http://mirrors.aliyun.com/ubuntu@g' \
+        /etc/apt/sources.list
+
+# 中文字体单独装：fonts-noto-cjk 有 ~100MB，阿里云镜像偶尔解析失败，
+# 换小一号的文泉驿（模拟器只要求 fontconfig 能找到一款中文字体）
+RUN apt-get update && for i in 1 2 3; do \
+        apt-get install -y --no-install-recommends --fix-missing \
+            ca-certificates curl xz-utils git python3 openssl binutils \
+            libegl1 libgles2 libgl1-mesa-dri libglx-mesa0 mesa-utils \
+            libgtk-3-0 libmpg123-0 libatomic1 libbrotli1 libbz2-1.0 libcairo2 \
+            libfontconfig1 libgdk-pixbuf-2.0-0 libharfbuzz0b libpango-1.0-0 \
+            libpng16-16 zlib1g libstdc++6 libx11-6 libxext6 libxkbcommon0 \
+            xvfb x11-utils xauth xdotool imagemagick twm fonts-dejavu-core fonts-wqy-zenhei \
+            pulseaudio-utils && break; \
+        echo "第 $i 次安装失败，重试"; apt-get update; sleep 3; \
+    done \
+    && rm -rf /var/lib/apt/lists/*
+
+# Node 必须正好 24.13.0（SDK 硬校验），且要 POSIX 布局（自带 lib/node_modules/npm）
+# 优先用本地缓存的 tar 包（docker 构建时 DNS 偶尔抽风，见 deploy/README.md）
+ENV NODE_HOME=/opt/node
+COPY deploy/cache/ /cache/
+RUN set -eux; \
+    if [ ! -f /cache/node-v24.13.0-linux-x64.tar.xz ]; then \
+        curl -fsSL --retry 5 --retry-all-errors \
+             https://cdn.npmmirror.com/binaries/node/v24.13.0/node-v24.13.0-linux-x64.tar.xz \
+             -o /cache/node-v24.13.0-linux-x64.tar.xz; \
+    fi; \
+    mkdir -p "$NODE_HOME"; \
+    tar -xJf /cache/node-v24.13.0-linux-x64.tar.xz -C "$NODE_HOME" --strip-components=1; \
+    ln -sf "$NODE_HOME/bin/node" /usr/local/bin/node; \
+    ln -sf "$NODE_HOME/bin/npm"  /usr/local/bin/npm; \
+    node -v; npm -v
+
+ENV PATH=/opt/node/bin:$PATH
+ENV FUSIONUI_DEVELOPER_KIT_ROOT=/kit
+# 软件光栅化：容器里没有真 GPU，让 mesa 用 llvmpipe
+ENV LIBGL_ALWAYS_SOFTWARE=1
+ENV GALLIUM_DRIVER=llvmpipe
+WORKDIR /work
+
+CMD ["/bin/bash"]

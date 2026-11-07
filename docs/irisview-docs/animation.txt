@@ -1,0 +1,28 @@
+动画与呈现确认 · IrisView Developer Alpha
+中文English打印目录开发者首页开始
+认识 DevKit构建第一个应用整体介绍
+技术架构核心概念开发指南
+界面与交互构建界面处理输入动画与呈现应用基础应用生命周期应用身份与能力保存数据运行与交付使用模拟器调试与诊断构建与发布示例
+呼吸 DemoAPI 参考
+浏览接口动画与呈现确认
+使用动画播放对象控制进度。需要等一组界面修改显示后再执行下一步时，向对应的 FusionRoot 请求呈现凭据。
+等待画面呈现
+修改同一 FusionRoot 下的控件后，调用 root.requestPresentation() 获取呈现凭据（fence）。在后续更新回调中读取 fence.getState()，判断这组修改是否已呈现；不要阻塞事件循环等待结果。
+Pending | 尚未完成，在后续更新中再次检查。 | 
+Presented | 捕获的更新完成呈现，可以推进依赖可见画面的阶段。 | 
+Failed | 请求失败终止，进入错误处理；后续 fence 成功不会改变这个结果。 | 
+
+fence.isAccepted() 表示输出已持有更新，可以准备下一次更新；它不是画面已呈现的证明。同步启动多个动画
+建立起始场景，等待呈现 fence 成为 Presented。
+保留 AnimationClip 每个 with... 返回值；用 withPausedStart(true) 创建暂停起步的效果。
+将目标挂载到同一 root，保留各 playback 引用。在后续更新中检查每项 isSynchronized()，直到均返回 true。
+调用 AnimationPlayback.tryControlTogether(playbacks, AnimationPlaybackAction.Play)。若返回 false，说明暂忙或尚未就绪；可在后续更新中重试，并设置超时或次数上限。
+等待控制同步，并独立处理场景呈现、断连与失败。
+一组包含 1–64 个不同的 playback，且必须属于同一 root 和显示后端。目标无效、对象重复或后端不支持时，应修正配置后再请求。已经完成或取消的 playback 无法重启，重播需重新创建。
+时间与后端限制
+播放速率范围为 0.0625–16，布局过渡时长为 0–1000 时间线毫秒。创建 MediaTimeline 需要已呈现的根节点和已协商的媒体视觉能力。创建失败时返回 null。
+相关 API
+FusionRoot → · PresentationFence → · AnimationClip → · AnimationPlayback → · MediaTimeline →检查同步与失败
+等待呈现时继续处理输入和生命周期事件。断连或超时后，重新请求本次更新的呈现状态。
+
+关闭原始尺寸
