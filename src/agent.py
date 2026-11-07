@@ -67,7 +67,9 @@ def tool_voice_match(state: AgentState) -> dict:
     if person:
         return {"person_id": person["id"], "person_name": person["name"],
                 "similarity": round(float(sim), 3), "matched_by": "voice", "_emb": emb}
-    if state.get("auto_add"):
+    # 只有真听到人说话才建号：静音/噪声不该凭空造出「陌生人A」
+    heard = (state.get("text") or "").strip()
+    if state.get("auto_add") and len(heard) >= 2:
         name = next_stranger_name(store_ref)
         created = store_ref.save(name=name, role="陌生人 · 眼镜端自动建的",
                                  info=["语音自动入库，回头改个名字", "", ""])

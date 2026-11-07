@@ -509,7 +509,12 @@ function pump() {
     }
   }
   const target = (c.sent || 0) === 0 ? FIRST_SLICE_MS : NEXT_SLICE_MS;
-  if (c.samples >= 16000 * (target / 1000)) cutSlice(c);
+  // 光看字节数不够：平台可能一口气把缓冲全塞过来，那样 0.2 秒就"攒够 15 秒"，
+  // 于是刚进单人模式就立刻切一片去认人（实测会凭空冒出「陌生人A」）。
+  // 所以再要求这一片至少经过 Math.min(target, 3s) 的真实时间。
+  const sliceStart = c.sliceStart || c.startedAt;
+  const elapsed = Date.now() - sliceStart;
+  if (c.samples >= 16000 * (target / 1000) && elapsed >= Math.min(target, 3000)) cutSlice(c);
   if (Date.now() - c.sessionStartedAt >= MAX_SESSION_MS) {
     try { c.session.finish(); } catch (e) { /* 已经结束 */ }
     if (!c.stopped) { openSession(); return; }
@@ -526,6 +531,7 @@ function cutSlice(c) {
   const chunks = c.chunks;
   c.chunks = [];
   c.samples = 0;
+  c.sliceStart = Date.now();          // 下一片重新计时
   if (bytes < 16000 * 2 * (SLICE_MIN_MS / 1000)) return;
   c.queue.push(toWav(chunks, bytes));
   drain(c);
@@ -910,6 +916,8 @@ async function poll() {
     }
     if (capture) {
       // 正在听：只更新数据，渲染交给 paintListening()（否则会在两屏之间来回跳）
+      // 只收这一段开始之后产生的卡片；上一段留下的（比如「陌生人A」）不能一进来就顶上来
+      if ((data.at || 0) < capture.startedAt) return;
       capture.lastCard = c0;
       capture.lastRev = data.rev;
       capture.lastMs = data.ms;
