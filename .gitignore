@@ -31,6 +31,9 @@ probe/
 # 眼镜端构建产物（包在 dist/ 里，dist 保留）
 glasses/dist/
 models/asr/
+# 会议归档 / 模拟器启动日志：运行时数据，不进仓库
+data/meetings/
+data/sim/
 env.local.bat
 
 simstate/

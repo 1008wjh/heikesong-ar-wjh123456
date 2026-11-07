@@ -216,6 +216,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._voice_scan(body)
             if path == "/api/agent/feed":
                 return self._agent_feed(body)
+            if path == "/api/agent/archive":
+                return self._agent_archive(body)
             if path == "/api/voice/enroll":
                 return self._voice_enroll(body)
             if path == "/api/people/save":
@@ -362,19 +364,22 @@ class Handler(BaseHTTPRequestHandler):
         audio = body.get("audio") or ""
         auto_add = body.get("auto_add", True)
         manual = bool(body.get("manual"))
+        mode = str(body.get("mode") or "")
         view = agent.run_feed(
-            session, text=text, audio=audio, auto_add=bool(auto_add), manual=manual
+            session, text=text, audio=audio, auto_add=bool(auto_add),
+            mode=mode, manual=manual,
         )
-        person = store.get(view.get("person_id") or "")
-        try:
-            view["role"] = (person or {}).get("role") or ""
-        except Exception:
-            pass
+        person = None if view.get("mode") == "meeting" else store.get(view.get("person_id") or "")
+        if person:
+            try:
+                view["role"] = person.get("role") or view.get("role") or ""
+            except Exception:
+                pass
         card = {
             "kind": "agent",
             "status": "known" if view.get("person") else "unknown",
             "name": view.get("person") or "对话",
-            "role": (person or {}).get("role") or "",
+            "role": view.get("role") or "",
             "similarity": float(view.get("similarity") or 0.0),
             "lines": (view.get("rows") or [])[:6],
             "person_id": view.get("person_id") or "",
@@ -393,6 +398,13 @@ class Handler(BaseHTTPRequestHandler):
             _LAST["kind"] = "agent"
             payload["rev"] = _LAST["rev"]
         return self._json(payload)
+
+    def _agent_archive(self, body):
+        """结束多人会议：把会议 checkpoint 落成 data/meetings/agent_<session>/meta.json。"""
+        session = str(body.get("session") or "")
+        if not session:
+            raise ValueError("缺少 session")
+        return self._json(agent.archive_meeting(session))
 
     def _push_voice(self, cards_out, ms):
         payload = {"ok": True, "ms": ms, "faces": cards_out, "kind": "voice"}

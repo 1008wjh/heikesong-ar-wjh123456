@@ -684,16 +684,17 @@ function pump() {
       return;
     }
   }
-  const target = FIRST_SLICE_MS;
   // 光看字节数不够：平台可能一口气把缓冲全塞过来，0.2 秒就"攒够 55 秒"，
   // 于是刚进单人模式就立刻切一片去认人（实测会凭空冒出「陌生人A」）。
   // 所以再要求这一片至少经过 Math.min(target, 3s) 的真实时间。
   const sliceStart = c.sliceStart || c.startedAt;
   const elapsed = Date.now() - sliceStart;
-  // 只有第一片自动切（用来认人）；之后靠用户按确认手动触发，避免"到点就弹卡"
-  if ((c.sent || 0) === 0 && c.samples >= 16000 * (target / 1000) && elapsed >= Math.min(target, 5000)) {
-    cutSlice(c);
-  }
+  // 单人：只有第一片自动切（认人），之后按确认手动触发；
+  // 多人：第一片 15 秒认人，之后每 55 秒自动切一片（会议是免手操作场景）。
+  const shouldCut = c.sent === 0
+    ? (c.samples >= 16000 * (FIRST_SLICE_MS / 1000) && elapsed >= 5000)
+    : (c.mode === "meeting" && c.samples >= 16000 * (SLICE_MS / 1000) && elapsed >= 5000);
+  if (shouldCut) cutSlice(c);
   if (Date.now() - c.sessionStartedAt >= MAX_SESSION_MS) {
     if (!c.stopped) { restartSession(c); return; }
   }
@@ -910,6 +911,21 @@ async function stopAndArchive(msg) {
   endedAt = Date.now();
   putText(retained.foot, "收尾 · 传剩余录音…");
   await drain(c);
+  if (c.mode === "meeting") {
+    paintIdle("正在保存会议…");
+    try {
+      const r = await postJson("/api/agent/archive", { session: c.agentSession }, 30000);
+      if (r && r.ok) {
+        paintIdle("会议已保存 · " + (r.speaker_count || 0) + " 人 / "
+          + ((r.action_items || []).length) + " 条待办");
+      } else {
+        paintIdle("会议保存失败 · " + ((r && r.error) || "未知错误"));
+      }
+    } catch (e) {
+      paintIdle("会议保存失败 · " + (e && e.message));
+    }
+    return;
+  }
   if (!c.personId) {
     if (shownRev === revAtStop) paintIdle(msg || "没认出人 · 这段没入库");
     return;
@@ -1057,7 +1073,7 @@ let modeSelect = null;   // {index:0|1}
 
 const MODE_ITEMS = [
   { key: "single", label: "单人", hint: "一个人聊 · 55 秒出片" },
-  { key: "meeting", label: "多人", hint: "三个人以上 · 只转写不入库" },
+  { key: "meeting", label: "多人", hint: "三人以上 · 分人 / 待办 / 归档" },
 ];
 
 function openMode() {

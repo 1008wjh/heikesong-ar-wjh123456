@@ -379,7 +379,15 @@ def run_feed(session: str, text: str = "", audio: str = "", auto_add: bool = Tru
     """跑一片。session 相同的片会落在同一个 thread 里（上下文自动保留）。
 
     manual=True：这片是用户按「确认」主动触发的，第几片都要跑"档案+转写→建议"。
+    mode=meeting：直接交给独立的会议图，不进入单人状态机。
     """
+    if (mode or "").strip().lower() == "meeting":
+        import meeting_agent
+        people = store_ref.voice_index() if store_ref is not None else None
+        return meeting_agent.run_feed(
+            session, text=text, audio=audio, auto_add=bool(auto_add),
+            manual=manual, people=people,
+        )
     t0 = time.time()
     state: AgentState = {"session": session, "text": text, "audio": audio,
                          "auto_add": auto_add, "degraded": False, "notes": [],
@@ -436,3 +444,9 @@ def bind_store(st):
     global store_ref
     store_ref = st
     return st
+
+
+def archive_meeting(session: str) -> dict:
+    """会议结束归档；单人流程不走这里。"""
+    import meeting_agent
+    return meeting_agent.archive(session)
