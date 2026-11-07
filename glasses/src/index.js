@@ -413,15 +413,13 @@ function stopScroll() {
 //
 // 平台的语音会话是"一次最多 60 秒、64 帧缓冲"，所以"一直听"不能靠一条长会话：
 // ① 每 40ms 把帧泵出来（不泵就丢音）
-// ② 每 15 秒切一片：第一片拿去认人，之后的每一片直接进这段对话
+// ② 每 55 秒切一片：第一片拿去认人，之后的每一片接进这段对话
 // ③ 会话到 55 秒主动轮换一条新的（中间有毫秒级空档，对识别无影响）
 // ④ 边切边传，不在内存里堆整段（要支持 30 分钟）
 
-const SLICE_MS = 15000;         // 一片 15 秒：够听清一句话，也让"认人"不用等太久
-const FIRST_SLICE_MS = 15000;   // 第一片：15 秒就要出结果（认人 + 第一版要点）
-const NEXT_SLICE_MS = 55000;    // 之后每 55 秒一片，正好在平台 60 秒会话上限之前
-const SLICE_MIN_MS = 3000;      // 停止时最后一片不足这个数就丢掉
-const MAX_SESSION_MS = 55000;   // 平台上限 60 秒，提前换会话
+const SLICE_MS = 55000;         // 一片 55 秒：正好卡在平台 60 秒会话上限之前
+const MAX_SESSION_MS = 59000;   // 会话再长就换一个，避免撞平台上限
+const SLICE_MIN_MS = 5000;      // 停止时最后一片不足这个数就丢掉
 const MAX_LISTEN_MS = 30 * 60 * 1000;   // 兜底：连续听 30 分钟自动停
 const AUTO_ARCHIVE = process.env.MEMORYLENS_ARCHIVE !== "0";   // 停止后把整段对话整理进档案
 
@@ -471,7 +469,7 @@ function paintListening() {
     putText(retained.role, silent ? "点「确认采集」" : "直接说话就行，不用按键");
     putText(retained.sim, " ");
     const hint = [
-      "前 15 秒用来认人",
+      "55 秒出一片 · 先认人",
       "认出来就一直记这段对话",
       "按「返回」结束并入库",
     ];
@@ -509,13 +507,13 @@ function pump() {
       return;
     }
   }
-  const target = (c.sent || 0) === 0 ? FIRST_SLICE_MS : NEXT_SLICE_MS;
-  // 光看字节数不够：平台可能一口气把缓冲全塞过来，那样 0.2 秒就"攒够 15 秒"，
+  const target = SLICE_MS;
+  // 光看字节数不够：平台可能一口气把缓冲全塞过来，0.2 秒就"攒够 55 秒"，
   // 于是刚进单人模式就立刻切一片去认人（实测会凭空冒出「陌生人A」）。
   // 所以再要求这一片至少经过 Math.min(target, 3s) 的真实时间。
   const sliceStart = c.sliceStart || c.startedAt;
   const elapsed = Date.now() - sliceStart;
-  if (c.samples >= 16000 * (target / 1000) && elapsed >= Math.min(target, 3000)) cutSlice(c);
+  if (c.samples >= 16000 * (target / 1000) && elapsed >= Math.min(target, 5000)) cutSlice(c);
   if (Date.now() - c.sessionStartedAt >= MAX_SESSION_MS) {
     try { c.session.finish(); } catch (e) { /* 已经结束 */ }
     if (!c.stopped) { openSession(); return; }
@@ -829,7 +827,7 @@ function navText(act) {
 let modeSelect = null;   // {index:0|1}
 
 const MODE_ITEMS = [
-  { key: "single", label: "单人", hint: "一个人聊 · 15 秒认人" },
+  { key: "single", label: "单人", hint: "一个人聊 · 55 秒出片" },
   { key: "meeting", label: "多人", hint: "三个人以上 · 只转写不入库" },
 ];
 

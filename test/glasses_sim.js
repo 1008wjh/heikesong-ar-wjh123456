@@ -144,6 +144,8 @@ const os = {
   WindowProperty: { create: () => ({ setTitle() {}, setSize() {} }) },
   Window: { create: () => ({}) },
   setDisplayKeepAwake: () => true,
+  // 没这个，tick() 只跑一次 —— 计时停在 00:00、切片永远不触发
+  requestAnimationFrame: (fn) => setTimeout(fn, 16),
 };
 
 const originalLoad = Module._load;
@@ -240,14 +242,14 @@ function wavFramesLoop(name, seconds) {
   await sleep(700);
 
   // 1) 按一下 → 开始听：前 15 秒切片认人，认出后卡片浮出
-  feed = { frames: wavFramesLoop("huihui_b", 40), perTick: 40 };
+  feed = { frames: wavFramesLoop("huihui_b", 240), perTick: 120 };
   navQueue.push("activate");
   await sleep(400);
   check("先出单人/多人选择", hud().some((v) => v.includes("单人")), JSON.stringify(hud()));
   navQueue.push("activate");
   await sleep(600);
   check("进入持续听（状态行有计时）", hud().some((v) => v.includes("在听")), JSON.stringify(hud()));
-  await sleep(6000);
+  await waitUntil(() => hud().includes("王姐"), 30000);
   let lines = hud();
   check("切片后认出王姐", lines.includes("王姐"), JSON.stringify(lines));
   check("卡片带相似度", lines.some((v) => v.includes("SIM")), JSON.stringify(lines));
@@ -268,23 +270,23 @@ function wavFramesLoop(name, seconds) {
 
   // 1c) 按「返回」→ 结束这段录音（测试里关掉自动入库，所以停在卡片上）
   navQueue.push("back");
-  await sleep(4000);
+  await waitUntil(() => hud().some((v) => v.includes("按一下")), 25000);
   lines = hud();
   check("返回键结束录音", !hud().some((v) => v.includes("在听 00:")), JSON.stringify(lines));
   check("结束后回到待机", lines.some((v) => v.includes("按一下")), JSON.stringify(lines));
 
   // 4) 陌生声音 → 提示没听过（持续听模式下也要能出"陌生人"）
-  feed = { frames: wavFramesLoop("zira_a", 40), perTick: 40 };
+  feed = { frames: wavFramesLoop("zira_a", 240), perTick: 120 };
   navQueue.push("activate");
   await sleep(500);
   check("先出单人/多人选择", hud().some((v) => v.includes("单人")), JSON.stringify(hud()));
   navQueue.push("activate");
-  await sleep(6000);
+  await waitUntil(() => hud().some((v) => v.includes("陌生人")), 30000);
   lines = hud();
   check("陌生声音自动建号（陌生人A）", lines.some((v) => v.includes("陌生人")), JSON.stringify(lines));
   check("自动建号带说明", lines.some((v) => v.includes("自动建") || v.includes("自动入库")), JSON.stringify(lines));
   navQueue.push("back");            // 结束这段（陌生人）录音
-  await sleep(6000);                  // 收尾要跑 analyze + save，慢
+  await waitUntil(() => hud().some((v) => v.includes("按一下")), 25000);
 
   // 5) 文本通道：上键打开键盘（短语键），确认键输入，返回键关掉
   await fetch(BACKEND + "/api/latest/reset");
