@@ -47,10 +47,15 @@ class AgentState(TypedDict, total=False):
     # 下面几个只用于日志/排查：哪一步慢、有没有走兜底
     asr_ms: int
     asr_src: str         # local | http | text | failed | none
+    audio_sec: float     # 这一片音频多长（秒）
+    audio_peak: int      # 16bit 峰值，接近 0 说明麦克风没收到声音
+    rec_ms: int          # 让模型给"下一步建议"花了多久
+    cls_ms: int          # 判断单人/多人花了多久（只有没选模式时才会调模型）
     llm_ms: int
     rule_fallback: bool
     slice_no: int
     window: str
+    skipped_short: bool
 
 
 # ---------- 工具：匹配、抽取 ----------
@@ -113,6 +118,11 @@ def tool_extract(state: AgentState) -> dict:
     text = state.get("text") or ""
     person = {"name": state.get("person_name") or "这个人", "role": ""}
     t0 = time.time()
+    if len(text.strip()) < 8:
+        # 主动跳过：五六个字的片段让模型抽要点只会瞎编，用规则过一遍更实在
+        return {"items": rule_extract(text), "summary": "", "skipped_short": True,
+                "llm_ms": int((time.time() - t0) * 1000), "rule_fallback": False,
+                "notes": ["这段只有 %d 字，跳过模型" % len(text.strip())]}
     try:
         got = llm.analyze(text, person)
         return {"items": got.get("items") or [], "summary": got.get("summary") or "",
@@ -150,6 +160,18 @@ def node_ingest(state: AgentState) -> dict:
     audio = state.get("audio") or ""
     asr_ms = None
     asr_src = "none"
+    sec = 0.0
+    peak = 0
+    if audio:
+        raw = decode_audio_ref(audio)
+        sec = round(len(raw) / 32000.0, 2)          # 16k 单声道 16bit
+        try:
+            import numpy as _np
+            arr = _np.frombuffer(raw[44:] if raw[:4] == b"RIFF" else raw, dtype="<i2")
+            if arr.size:
+                peak = int(_np.abs(arr).max())
+        except Exception:
+            peak = -1
     if not text and audio:
         t0 = time.time()
         try:
@@ -164,6 +186,7 @@ def node_ingest(state: AgentState) -> dict:
     window = ((state.get("window") or "") + " " + text).strip()[-2000:]
     return {"text": text[:MAX_TRANSCRIPT], "window": window,
             "asr_ms": asr_ms, "asr_src": asr_src,
+            "audio_sec": sec, "audio_peak": peak,
             "slice_no": int(state.get("slice_no") or 0) + 1}
 
 
@@ -179,11 +202,14 @@ def node_route(state: AgentState) -> dict:
         return {"mode": "meeting"}
     if not llm.available():
         return {"mode": "single"}
+    t0 = time.time()
     try:
         mode = llm.classify_mode(text)
-        return {"mode": "meeting" if mode == "meeting" else "single"}
+        return {"mode": "meeting" if mode == "meeting" else "single",
+                "cls_ms": int((time.time() - t0) * 1000)}
     except llm.LLMUnavailable:
-        return {"mode": "single", "degraded": True}
+        return {"mode": "single", "degraded": True,
+                "cls_ms": int((time.time() - t0) * 1000)}
 
 
 def node_identify(state: AgentState) -> dict:
@@ -257,13 +283,15 @@ def node_recommend(state: AgentState) -> dict:
         facts = (person.get("complex") or {}).get("对话要点") or {}
         extra = ["%s: %s" % (k, v) for k, v in list(facts.items())[:6]]
         profile = " / ".join([x for x in lines + extra if x])[:600]
+    t0 = time.time()
     try:
         got = llm.recommend(state.get("window") or state.get("text") or "",
                             state.get("person_name") or "", profile, state.get("items") or [])
         nxt = got.get("next") or []
-        return {"next_actions": nxt, "summary": state.get("summary") or got.get("summary") or ""}
+        return {"next_actions": nxt, "rec_ms": int((time.time() - t0) * 1000),
+                "summary": state.get("summary") or got.get("summary") or ""}
     except llm.LLMUnavailable:
-        return {"degraded": True,
+        return {"degraded": True, "rec_ms": int((time.time() - t0) * 1000),
                 "notes": (state.get("notes") or []) + ["给建议时模型不可用，用固定三条"]}
 
 
@@ -345,7 +373,9 @@ def run_feed(session: str, text: str = "", audio: str = "", auto_add: bool = Tru
         matched_by=out.get("matched_by") or "none",
         similarity=view.get("similarity"), items=len(out.get("items") or []),
         degraded=bool(out.get("degraded")), rule_fallback=bool(out.get("rule_fallback")),
+        skipped_short=bool(out.get("skipped_short")),
         asr_src=out.get("asr_src"), asr_ms=out.get("asr_ms"), llm_ms=out.get("llm_ms"),
+        rec_ms=out.get("rec_ms"), cls_ms=out.get("cls_ms"), audio_sec=out.get("audio_sec"), audio_peak=out.get("audio_peak"),
         total_ms=view["ms"], chars=len(out.get("text") or ""),
         notes=(out.get("notes") or [])[:3],
     )
