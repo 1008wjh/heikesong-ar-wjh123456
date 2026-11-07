@@ -31,3 +31,4 @@ probe/
 # 眼镜端构建产物（包在 dist/ 里，dist 保留）
 glasses/dist/
 models/asr/
+env.local.bat

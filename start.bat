@@ -39,6 +39,9 @@ if errorlevel 1 (
   "%PY%" -m pip install -i https://mirrors.aliyun.com/pypi/simple/ opencv-python-headless onnxruntime numpy
 )
 
+REM Optional local secrets/config, never committed: copy env.local.bat.example to env.local.bat
+if exist "env.local.bat" call "env.local.bat"
+
 echo.
 echo   Service : http://127.0.0.1:8765
 echo   Demo    : http://127.0.0.1:8765/?demo=1

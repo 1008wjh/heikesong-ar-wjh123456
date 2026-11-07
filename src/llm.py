@@ -309,12 +309,18 @@ def analyze(transcript, person):
         raise LLMUnavailable("模型没按 JSON 回，换个说法再试一次")
 
     items = []
-    for it in (obj.get("items") or [])[:6]:
+    seen = []
+    for it in (obj.get("items") or [])[:8]:
         if not isinstance(it, dict):
             continue
         value = str(it.get("value") or "").strip()
         if not value:
             continue
+        # 同一件事常被模型同时归到「答应的事」和「日期」，按内容去一次重
+        norm = "".join(ch for ch in value if ch not in " ，。、,.:：!！?？")
+        if any(norm in s or s in norm for s in seen):
+            continue
+        seen.append(norm)
         items.append(
             {
                 "key": str(it.get("key") or "其他").strip()[:8],
@@ -322,6 +328,8 @@ def analyze(transcript, person):
                 "quote": str(it.get("quote") or "").strip()[:60],
             }
         )
+        if len(items) >= 6:
+            break
     return {"summary": str(obj.get("summary") or "").strip()[:80], "items": items}
 
 
