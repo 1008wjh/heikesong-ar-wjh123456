@@ -256,7 +256,15 @@ def node_render(state: AgentState) -> dict:
     items = state.get("items") or []
     heard = (state.get("window") or state.get("text") or "").strip()
     hints = [str(x).strip() for x in (state.get("next_actions") or []) if str(x).strip()][:3]
-    if hints:
+    first_slice = int(state.get("slice_no") or 1) <= 1 and not state.get("manual")
+    person = store_ref.get(state.get("person_id") or "") if state.get("person_id") else None
+    if first_slice and person:
+        # 第一片只负责“认人 + 回档案”，不要用 AI 总结盖掉数据库里已有的内容
+        db_rows = cards.simple_lines(person, 6)
+        rows = db_rows
+        state_name = "完成"
+        hints = []
+    elif hints:
         # 镜片上要做的是"提词"：接下来能直接说出口的话，不是刚才的汇总。
         rows = hints
         state_name = "完成" if name else "待确认"

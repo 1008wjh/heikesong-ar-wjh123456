@@ -492,18 +492,22 @@ function statusWithBar(line) {
   return line + " " + (quiet ? "····" : levelBar(6));
 }
 
-function paintListening() {
+function paintListening(msg) {
   hideModeSel();
   if (!capture) return;
+  if (msg) { capture.msg = msg; capture.msgUntil = Date.now() + 4000; }
+  const thinking = capture.thinkingUntil && Date.now() < capture.thinkingUntil ? "在想…" : "";
+  const flash = !thinking && capture.msg && Date.now() < capture.msgUntil ? capture.msg : "";
   const held = capture.lastCard && capture.showUntil && Date.now() < capture.showUntil;
   const c0 = held ? capture.lastCard : null;
   // 整屏指纹：文字没变就整帧跳过（否则每 400ms 重设一遍，镜片上会闪）
-  const sig = listenLine() + "|" + (c0 ? "" : levelBar()) + "|" + (c0
+  const head = thinking || flash || statusWithBar(listenLine());
+  const sig = head + "|" + (c0 ? "" : levelBar()) + "|" + (c0
     ? [c0.name, c0.role, c0.status, c0.similarity, (c0.lines || []).join("~")].join("|")
     : "none");
   if (sig === listenSig) return;
   listenSig = sig;
-  putText(retained.status, statusWithBar(listenLine()));
+  putText(retained.status, head);
   if (c0 && !complexRows) {
     // 认出来之后：名字/身份/信息行保持卡片内容，别被"在听"的提示冲掉
     const card = c0;
@@ -700,7 +704,7 @@ function pump() {
   c.pumpTimer = setTimeout(pump, 40);
 }
 
-function cutSlice(c) {
+function cutSlice(c, minMs) {
   const bytes = c.samples * 2;
   const chunks = c.chunks;
   c.chunks = [];
@@ -719,7 +723,8 @@ function cutSlice(c) {
     c.silentSlices = (c.silentSlices || 0) + 1;
     return;
   }
-  if (bytes < 16000 * 2 * (SLICE_MIN_MS / 1000)) return;
+  const need = minMs || SLICE_MIN_MS;
+  if (bytes < 16000 * 2 * (need / 1000)) return;
   c.queue.push({ wav: toWav(chunks, bytes), manual: !!c.manualNext });
   c.manualNext = false;
   drain(c);
@@ -1158,13 +1163,13 @@ function manualAsk() {
     return;
   }
   const bytes = (c.samples || 0) * 2;
-  if (bytes < 16000 * 2 * 2) {
+  if (bytes < 16000 * 2 * 1.5) {          // 1.5 秒就够一句短指令
     paintListening("再说两句再按确认");
     return;
   }
   c.manualNext = true;
-  cutSlice(c);
-  retained.status.setText("在想…");
+  c.thinkingUntil = Date.now() + 20000;   // 结果回来之前状态行一直是“在想…”
+  cutSlice(c, 1500);
 }
 
 function clearView() {
