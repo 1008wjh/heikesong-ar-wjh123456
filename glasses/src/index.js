@@ -24,7 +24,6 @@ const BACKEND = process.env.MEMORYLENS_BACKEND || "http://127.0.0.1:8765";
 const POLL_MS = 700;        // 拉结果
 const NAV_MS = 120;         // 读按键/手势
 const HTTP_TIMEOUT_MS = 1500;
-const RECORD_MS = 4000;     // 一次最多听 4 秒，够说一句"我是王姐"
 const MAX_SAMPLES = 16000 * 30;
 const OUTBOX_RETRY_MS = 8000;   // 离线录音的重发间隔
 
@@ -56,7 +55,6 @@ let navTimer = null;
 let outboxTimer = null;
 let inFlight = false;
 let shownRev = -1;
-let recording = null;   // { session, chunks: Uint8Array[], samples, startedAt, timer }
 let background = false;
 
 // 实测结论（simulator）：单个 Text 只画得出一百多像素宽，再长就被硬切。
@@ -362,6 +360,7 @@ let viewMode = "idle";    // idle | simple | complex
 let complexRows = null;   // 非空表示现在在「详情」页
 let complexKey = "";
 let autoDetailDone = false;      // 详情页内容指纹（tick 重画时判断要不要回到第一行）
+let stopNote = 0;                // 停止持续听后，底栏先显示一阵"已停止"
 
 function paintRows() {
   const total = cardRows.length;
@@ -387,6 +386,7 @@ function syncScroll() {
 }
 
 function paintFootHint() {
+  if (stopNote && Date.now() < stopNote) { putText(retained.foot, "已停止 · 按一下再说"); return; }
   const pages = Math.max(1, Math.ceil(cardRows.length / VISIBLE_ROWS));
   const page = pages > 1 ? " · " + (Math.floor(rowOffset / VISIBLE_ROWS) + 1) + "/" + pages : "";
   if (viewMode === "complex") { putText(retained.foot, "确认收起 返回清屏" + page); return; }
@@ -399,59 +399,126 @@ function stopScroll() {
   cardRows = [];
   rowOffset = 0;
 }
-// ---------- 录音 ----------
+// ---------- 录音：持续听，按 3.5 秒切片送识别 ----------
+//
+// 平台的语音会话是"一次最多 60 秒、64 帧缓冲"，所以"一直听"不能靠一条长会话，
+// 只能：① 每 40ms 把帧泵出来（不泵就丢音）② 每 3.5 秒切一片送 /api/voice/scan
+// ③ 会话到 55 秒主动轮换一条新的（中间有毫秒级空档，对识别无影响）。
 
-function stopRecording(cancelled) {
-  if (!recording) return;
-  const r = recording;
-  recording = null;
-  if (r.timer) clearTimeout(r.timer);
-  try { cancelled ? r.session.cancel() : r.session.finish(); } catch (e) { /* 会话可能已结束 */ }
-  if (!cancelled) paintIdle("听完了 · 正在认人…");
+const SLICE_MS = 3500;          // 每片多长：太短认不准，太长反馈慢
+const SLICE_MIN_MS = 1000;      // 停止时最后一片不足这个数就丢掉
+const MAX_SESSION_MS = 55000;   // 平台上限 60 秒，提前换会话
+const MAX_LISTEN_MS = 5 * 60 * 1000;   // 兜底：连续听 5 分钟自动停
+
+let capture = null;   // {session,chunks,samples,startedAt,sessionStartedAt,slices,queue,busy,lastCard,stopped,dropped}
+
+function clockOf(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
 }
 
-async function finishRecording() {
-  const r = recording;
-  if (!r) return;
-  const chunks = r.chunks;
-  const bytes = r.samples * 2;
-  stopRecording(false);
-  if (bytes < 16000 * 2 * 0.6) {      // 不到 0.6 秒，后台也认不了
-    paintIdle("太短了 · 按住多说两句");
+// 只刷"状态行 + 底栏"；卡片内容由切片结果负责画，避免每 400ms 把卡片冲掉
+function paintListening() {
+  if (!capture) return;
+  const secs = clockOf(Date.now() - capture.startedAt);
+  const tail = capture.slices ? " · 已认 " + capture.slices + " 次" : "";
+  retained.status.setText("在听 " + secs + tail);
+  if (!capture.lastCard) {
+    putText(retained.name, "在听…");
+    putText(retained.role, "直接说话就行，不用按键");
+    putText(retained.sim, "");
+    const hint = [
+      "说一句「我是 XXX」我就认人",
+      "没人说话我会一直听着",
+      "再按「确认」停止",
+    ];
+    retained.info.forEach((t, i) => putText(t, hint[i] || ""));
+    putText(retained.foot, "确认 停止 · 返回 也停止");
+  } else {
+    putText(retained.foot, "确认 停止 · 返回 也停止");
+  }
+}
+
+function openSession() {
+  if (!capture) return;
+  let session;
+  try {
+    session = input.requestVoiceInput({ mode: "audio" });
+  } catch (e) {
+    stopListening("开不了麦克风 · " + (e && e.message));
     return;
   }
-  retained.status.setText("正在认人…");
-  const wav = toWav(chunks, bytes);
-  try {
-    const res = await postJson("/api/voice/scan", { audio: wav });
-    if (res && res.faces && res.faces.length) paintCard(res.faces[0], res.rev, res.ms);
-    else paintIdle("后台没给结果，再试一次");
-  } catch (e) {
-    // 连不上就别把这段录音丢了：先落盘，联网后自动补传
-    if (outbox.push(wav)) paintIdle("后台没连上 · 已存本地，联网后自动补传");
-    else paintOffline(e && e.message);
-  }
+  capture.session = session;
+  capture.sessionStartedAt = Date.now();
+  pump();
 }
 
-function pumpRecording() {
-  const r = recording;
-  if (!r) return;
+function pump() {
+  if (!capture || capture.stopped) return;
+  const c = capture;
   let ev;
-  while ((ev = r.session.takeEvent())) {
+  while ((ev = c.session.takeEvent())) {
     if (ev.type === "audio") {
-      r.chunks.push(Buffer.from(ev.data));
-      r.samples += ev.sampleCount;
+      c.chunks.push(Buffer.from(ev.data));
+      c.samples += ev.sampleCount;
     } else if (ev.type === "end") {
-      finishRecording();
+      // 平台把这条会话关了：换一条接着听（保留已累积的缓冲）
+      if (!c.stopped) { openSession(); return; }
       return;
     }
   }
-  if (r.samples >= 16000 * (RECORD_MS / 1000)) finishRecording();
-  else setTimeout(pumpRecording, 40);
+  if (c.samples >= 16000 * (SLICE_MS / 1000)) cutSlice(c);
+  if (Date.now() - c.sessionStartedAt >= MAX_SESSION_MS) {
+    try { c.session.finish(); } catch (e) { /* 已经结束 */ }
+    if (!c.stopped) { openSession(); return; }
+  }
+  if (Date.now() - c.startedAt >= MAX_LISTEN_MS) {
+    stopListening("听满 5 分钟 · 自动停了");
+    return;
+  }
+  c.pumpTimer = setTimeout(pump, 40);
 }
 
-function startRecording() {
-  if (recording || background) return;
+function cutSlice(c) {
+  const bytes = c.samples * 2;
+  const chunks = c.chunks;
+  c.chunks = [];
+  c.samples = 0;
+  if (bytes < 16000 * 2 * (SLICE_MIN_MS / 1000)) return;
+  c.queue.push(toWav(chunks, bytes));
+  drain(c);
+}
+
+async function drain(c) {
+  if (c.busy) return;
+  c.busy = true;
+  try {
+    while (c.queue.length) {
+      const wav = c.queue.shift();
+      let res;
+      try {
+        res = await postJson("/api/voice/scan", { audio: wav });
+      } catch (e) {
+        // 连不上：这一段先落盘，联网后由 outbox 补传
+        if (!outbox.push(wav)) c.dropped += 1;
+        continue;
+      }
+      const f = res && res.faces && res.faces[0];
+      if (!f) continue;
+      c.slices += 1;
+      c.lastCard = f;
+      c.lastRev = res.rev;
+      c.lastMs = res.ms;
+      paintCard(f, res.rev, res.ms);   // 认出来就换卡片
+      paintListening();                // 再把状态行/底栏盖回"在听"
+    }
+  } finally {
+    c.busy = false;
+  }
+}
+
+function startListening() {
+  if (capture || background) return;
   let availability;
   try {
     availability = input.getVoiceInputAvailability("audio");
@@ -460,28 +527,43 @@ function startRecording() {
     return;
   }
   if (!availability || availability.canRequest === false) {
-    paintIdle("麦克风不可用 · " + (availability && availability.reason || "unknown"));
+    paintIdle("麦克风不可用 · " + ((availability && availability.reason) || "unknown"));
     return;
   }
-  let session;
-  try {
-    session = input.requestVoiceInput({ mode: "audio" });
-  } catch (e) {
-    paintIdle("开不了麦克风 · " + (e && e.message));
-    return;
-  }
-  recording = { session, chunks: [], samples: 0, startedAt: Date.now(), timer: null };
-  retained.status.setText("在听… 说话");
-  putText(retained.name, "");
-  putText(retained.role, "");
-  putText(retained.sim, "");
-  retained.info.forEach((t) => putText(t, ""));
-  retained.info[0].setText("说一句话（比如：我是王姐）");
-  retained.info[1].setText("再按一下结束，或 4 秒后自动结束");
+  capture = {
+    session: null, chunks: [], samples: 0,
+    startedAt: Date.now(), sessionStartedAt: 0,
+    slices: 0, queue: [], busy: false, lastCard: null, stopped: false, dropped: 0,
+    pumpTimer: null,
+  };
+  viewMode = "idle";
+  complexRows = null;
+  openSession();
+  paintListening();
+}
 
-  // 兜底：4 秒还没结束就主动 finish()
-  recording.timer = setTimeout(() => finishRecording(), RECORD_MS + 1200);
-  setTimeout(pumpRecording, 40);
+function stopListening(msg) {
+  const c = capture;
+  if (!c) return;
+  c.stopped = true;
+  if (c.pumpTimer) clearTimeout(c.pumpTimer);
+  try { if (c.session) c.session.finish(); } catch (e) { /* 已经结束 */ }
+  // 最后不足一片的也别浪费：够 1 秒就送出去
+  const bytes = c.samples * 2;
+  if (bytes >= 16000 * 2 * (SLICE_MIN_MS / 1000)) {
+    c.queue.push(toWav(c.chunks, bytes));
+  }
+  c.samples = 0;
+  c.chunks = [];
+  capture = null;
+  drain(c);                          // 用局部引用，队列不会因为 capture 置空而丢
+  // 停下来的画面留在"最后认出的人"上，比退回空白页有用
+  if (c.lastCard) {
+    stopNote = Date.now() + 6000;         // 底栏先显示"已停止"，6 秒后回到常态提示
+    paintCard(c.lastCard, c.lastRev, c.lastMs);
+  } else {
+    paintIdle(msg || "已停止 · 这次没认出来");
+  }
 }
 
 // ---------- 主循环 ----------
@@ -492,13 +574,12 @@ function handleNavigation() {
   do {
     try { nav = input.takeNavigationAction(); } catch (e) { nav = null; }
     if (nav === "activate") {
-      if (recording) finishRecording();
+      if (capture) stopListening();                                   // 在听 → 停
       else if (viewMode === "simple" || viewMode === "complex") toggleDetail();
-      else startRecording();
+      else startListening();                                          // 空白 → 开始持续听
     } else if (nav === "back") {
-      if (recording) {
-        stopRecording(true);
-        paintIdle("已取消");
+      if (capture) {
+        stopListening("已取消");
       } else if (viewMode !== "idle") {
         clearView();        // 清屏：回到"按一下开始听"
       }
@@ -514,7 +595,7 @@ function clearView() {
 }
 
 async function poll() {
-  if (inFlight || background || recording) return;
+  if (inFlight || background || capture) return;
   inFlight = true;
   try {
     const data = await getJson("/api/latest");
@@ -557,6 +638,7 @@ function tick() {
   const now = Date.now();
   if (now - lastPaintAt < 400) return;
   lastPaintAt = now;
+  if (capture) { paintListening(); return; }   // 在听的时候只刷计时，别把卡片冲掉
   if (!lastScene) return;
   if (complexRows) paintComplex(lastScene.card ? lastScene.card.name : "");
   else if (lastScene.card) paintCard(lastScene.card, lastScene.rev, lastScene.ms);
@@ -600,16 +682,17 @@ App.createApp((lifecycle) => {
 
   if (lifecycle === AppLifecycle.ON_BACKGROUND) {
     background = true;
-    stopRecording(true);
+    stopListening("已切到后台");
     stopTimers();
   }
 
   if (lifecycle === AppLifecycle.ON_DESTROY) {
     background = true;
-    stopRecording(true);
+    stopListening("已退出");
     stopTimers();
     retained.board = undefined;
     retained.root = undefined;
     retained.window = undefined;
   }
 });
+

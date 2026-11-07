@@ -75,6 +75,7 @@ const fusionui = {
 
 const navQueue = [];
 let pendingPcm = null;      // 按下 activate 时要"说"的那段音频（Buffer[]）
+let feed = null;            // 持续供流：{frames, perTick, timer}
 
 const input = {
   getVoiceInputAvailability: () => ({ available: true, canRequest: true, reason: "none" }),
@@ -108,6 +109,25 @@ const input = {
           sampleCount: chunk.length / 2, data: chunk,
         }));
       }, 60);
+    }
+    // 持续供流：每 40ms 灌 perTick 帧（1 帧 = 20ms 音频），模拟"一直有人在说话"
+    if (feed) {
+      const f = feed;
+      feed = null;
+      f.timer = setInterval(() => {
+        for (let i = 0; i < f.perTick && f.frames.length; i++) {
+          const chunk = f.frames.shift();
+          session._events.push({
+            type: "audio", sampleRate: 16000, channels: 1, format: "s16le",
+            sequence: 0, sampleOffset: 0, timeUs: 0,
+            sampleCount: chunk.length / 2, data: chunk,
+          });
+        }
+        if (!f.frames.length) {
+          clearInterval(f.timer);
+          f.timer = null;
+        }
+      }, 40);
     }
     return session;
   },
@@ -164,6 +184,15 @@ function wavFrames(name) {
   return frames;
 }
 
+/** 循环拼出约 seconds 秒的帧，用来喂"持续听"（1 帧 20ms）。 */
+function wavFramesLoop(name, seconds) {
+  const one = wavFrames(name);
+  const need = Math.ceil((seconds * 1000) / 20);
+  const out = [];
+  while (out.length < need) out.push(...one);
+  return out.slice(0, need);
+}
+
 // ---------- 跑 ----------
 
 (async () => {
@@ -199,19 +228,25 @@ function wavFrames(name) {
   navQueue.push("back");
   await sleep(700);
 
-  // 1) 按一下，说一句 → 应该认出王姐
-  pendingPcm = wavFrames("huihui_b");
+  // 1) 按一下 → 持续听：每 3.5 秒切一片送识别，卡片跟着更新
+  feed = { frames: wavFramesLoop("huihui_b", 12), perTick: 12 };
   navQueue.push("activate");
-  await sleep(900);
-  check("录音中状态", hud().some((v) => v.includes("在听") || v.includes("认人") || v.includes("听")),
-    JSON.stringify(hud()));
-  await sleep(2200);
+  await sleep(500);
+  check("进入持续听（状态行有计时）", hud().some((v) => v.includes("在听")), JSON.stringify(hud()));
+  await sleep(1800);
   let lines = hud();
-  check("HUD 出现「王姐」", lines.includes("王姐"), JSON.stringify(lines));
+  check("切片后认出王姐", lines.includes("王姐"), JSON.stringify(lines));
+  check("状态行有「已认 N 次」", hud().some((v) => v.includes("已认")), JSON.stringify(lines));
   check("HUD 出现身份", lines.some((v) => v.startsWith("产品经理")), JSON.stringify(lines));
-  check("HUD 出现两条信息",
-    lines.join("").includes("答应下周给报") && lines.join("").includes("养了一只叫豆"), JSON.stringify(lines));
-  check("状态是「听到」", lines.some((v) => v.includes("听到")), JSON.stringify(lines));
+  check("HUD 出两条信息（窄列会自动折行，只要求首行与第二条标题出现）",
+    lines.join("").includes("答应下周给报") && lines.join("").includes("信息2"), JSON.stringify(lines));
+
+  // 1b) 再按一下 → 停止；画面停在最后认出的人，不退回空白
+  navQueue.push("activate");
+  await sleep(700);
+  lines = hud();
+  check("再按一下停止", lines.some((v) => v.includes("已停止")), JSON.stringify(lines));
+  check("停止后卡片仍留在屏幕上", lines.includes("王姐"), JSON.stringify(lines));
 
   // 2) 简单卡片时按一下 → 展开详情；再按一下 → 回到简单数据
   navQueue.push("activate");
@@ -230,13 +265,15 @@ function wavFrames(name) {
   lines = hud();
   check("返回键清屏", lines.some((v) => v.includes("按一下开始听")), JSON.stringify(lines));
 
-  // 4) 陌生声音 → 提示没听过
-  pendingPcm = wavFrames("zira_a");
+  // 4) 陌生声音 → 提示没听过（持续听模式下也要能出"陌生人"）
+  feed = { frames: wavFramesLoop("zira_a", 8), perTick: 12 };
   navQueue.push("activate");
-  await sleep(3000);
+  await sleep(2200);
   lines = hud();
   check("陌生声音显示「陌生人」", lines.includes("陌生人"), JSON.stringify(lines));
   check("陌生声音提示录入", lines.some((v) => v.includes("控制台")), JSON.stringify(lines));
+  navQueue.push("activate");        // 停止持续听，回到卡片
+  await sleep(500);
 
   // 5) 手机拍照走人脸，眼镜要能跟着显示
   const r = await postScan(path.join(__dirname, "messi5.jpg"));
