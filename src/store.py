@@ -41,6 +41,11 @@ class Store:
         os.makedirs(self.photo_dir, exist_ok=True)
         self._data = self._load()
         self._migrate()
+        if not any(p.get("owner") for p in self._data["people"]):
+            for p in self._data["people"]:
+                if (p.get("name") or "").strip().lower() in ("wjh", "我", "me"):
+                    p["owner"] = True
+                    self._save()
 
     # ---------- 读写 ----------
 
@@ -239,6 +244,18 @@ class Store:
             rel = p["photo"]
         full = os.path.abspath(os.path.join(os.path.dirname(self.path), rel))
         return full if os.path.isfile(full) else None
+
+    def owner(self):
+        for p in self._data["people"]:
+            if p.get("owner"):
+                return p
+        return None
+
+    def set_owner(self, pid):
+        with self._lock:
+            for p in self._data["people"]:
+                p["owner"] = p["id"] == pid
+            self._save()
 
     def remove(self, pid):
         """删人，返回被删除的图片绝对路径（调用方负责删文件）。"""

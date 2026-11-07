@@ -76,6 +76,12 @@ class AgentState(TypedDict, total=False):
     asr_src: str         # local | http | text | failed | none
     audio_sec: float     # 这一片音频多长（秒）
     audio_peak: int      # 16bit 峰值，接近 0 说明麦克风没收到声音
+    pinned: str          # 已识别出的人物 id：之后的片不再重新认人
+    preset: str
+    manual: bool
+    cancelled: bool
+    slice_no: int
+    window: str
     rec_ms: int          # 让模型给"下一步建议"花了多久
     cls_ms: int          # 判断单人/多人花了多久（只有没选模式时才会调模型）
     llm_ms: int
@@ -245,6 +251,13 @@ def node_route(state: AgentState) -> dict:
 
 def node_identify(state: AgentState) -> dict:
     """先声纹，再语义。声纹是本地 40ms，语义要模型。"""
+    if state.get("pinned"):
+        pid = state["pinned"]
+        person = store_ref.get(pid) if store_ref else None
+        if person:
+            return {"person_id": pid, "person_name": person.get("name", ""),
+                    "similarity": 1.0, "matched_by": "pinned"}
+        return {"matched_by": "pinned"}
     out = tool_voice_match(state)
     merged = {k: v for k, v in out.items() if not k.startswith("_")}
     if not merged.get("person_id"):
@@ -457,7 +470,7 @@ def graph():
 
 
 def run_feed(session: str, text: str = "", audio: str = "", auto_add: bool = True,
-             mode: str = "", manual: bool = False, preset: str = "") -> dict:
+             mode: str = "", manual: bool = False, preset: str = "", pinned: str = "") -> dict:
     """跑一片。session 相同的片会落在同一个 thread 里（上下文自动保留）。
 
     manual=True：这片是用户按「确认」主动触发的，第几片都要跑"档案+转写→建议"。
@@ -475,7 +488,7 @@ def run_feed(session: str, text: str = "", audio: str = "", auto_add: bool = Tru
     state: AgentState = {"session": session, "text": text, "audio": audio,
                          "auto_add": auto_add, "degraded": False, "notes": [],
                          "mode": (mode or "").lower(), "manual": bool(manual),
-                         "preset": preset or "", "cancelled": False}
+                         "preset": preset or "", "pinned": pinned, "cancelled": False}
     cfg = {"configurable": {"thread_id": session}}
     try:
         out = graph().invoke(state, cfg)

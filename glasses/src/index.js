@@ -29,6 +29,7 @@ const MAX_SAMPLES = 16000 * 60;   // 平台单会话上限 60 秒；55 秒片不
 const OUTBOX_RETRY_MS = 8000;  // 离线录音的重发间隔
 // 卡片（认人结果/55 秒建议）露一会儿就收起来，录音不停
 let HOLD_MS = 9000;                       // 第一片自动认人后：9 秒
+const IDENTIFY_MS = Number(process.env.MEMORYLENS_IDENTIFY_MS || 20000);   // 识别人：录多久
 let PRESET_HOLD_MS = Number(process.env.MEMORYLENS_PRESET_HOLD_MS || 30000);  // 手动提交：30 秒      // 认人卡片在镜片上停留多久
 
 // 宿主注入的私有数据目录；没有（单测 / 无沙箱环境）就不落盘。
@@ -509,7 +510,9 @@ function paintListening(msg) {
   const c0 = held ? capture.lastCard : null;
   const left = c0 ? Math.max(0, Math.ceil((capture.showUntil - Date.now()) / 1000)) : 0;
   // 回复在的时候，状态行改成倒计时，让人知道还有几秒
+  const identSecs = capture.identifying ? Math.min(20, Math.round((Date.now() - capture.identAt) / 1000)) : 0;
   const head = thinking || flash
+    || (capture.identifying ? ("识别人 " + identSecs + "/20") : "")
     || (c0 ? ("回复 · " + left + "s") : statusWithBar(listenLine()));
   // 整屏指纹：文字没变就整帧跳过
   const sig = head + "|" + (c0 ? left + "|" + (c0.lines || []).join("~") : levelBar() + "|" + presetIdx);
@@ -539,12 +542,20 @@ function paintListening(msg) {
     retained.info.slice(0, 3).forEach((t) => putText(t, " "));
   }
 
-  // 下半区：三个按钮固定在这里（换焦点只改前缀，不再整块消失）
-  const chips = PRESETS.map((p, i) => (i === presetIdx ? "> " : "  ") + p.label);
-  retained.info.slice(3, 6).forEach((t, i) => putText(t, chips[i] || " "));
+  // 下半区：还没认出人 → 只给一个「识别人」；认出之后 → 三个预设按钮
+  if (!capture.identified) {
+    const secs = capture.identifying ? Math.min(20, Math.round((Date.now() - capture.identAt) / 1000)) : 0;
+    putText(retained.info[3], "> 识别人");
+    putText(retained.info[4], capture.identifying ? (secs + "/20 秒") : "录 20 秒来找人");
+    putText(retained.info[5], " ");
+    putText(retained.foot, capture.identifying ? "再按确认 提前结束" : "确认 识别人");
+  } else {
+    const chips = PRESETS.map((p, i) => (i === presetIdx ? "> " : "  ") + p.label);
+    retained.info.slice(3, 6).forEach((t, i) => putText(t, chips[i] || " "));
+    putText(retained.foot, capture.mode === "meeting" ? "确认追问 返回归档" : "上下换 确认发");
+  }
   paintedRows = "";
   cardRows = [];
-  putText(retained.foot, capture.mode === "meeting" ? "确认追问 返回归档" : "上下换 确认发");
 }
 
 // 调试用：容器里没有声卡时，用正弦波顶替麦克风，方便验证波形与切片链路
@@ -670,6 +681,10 @@ function pump() {
     if (ev.type === "audio") {
       const buf = Buffer.from(ev.data);
       c.chunks.push(buf);
+      if (c.identifying) {
+        c.identChunks.push(buf);
+        if (Date.now() - c.identAt >= IDENTIFY_MS) finishIdentify(c);
+      }
       c.samples += ev.sampleCount;
       // 用 PCM 绝对值的峰值估音量，画音量条用。
       // 平台给的不一定是 Uint8Array：有可能是 Int16Array 或 ArrayBuffer，
@@ -804,6 +819,10 @@ async function startListening(mode) {
   }
   capture = {
     lastCard: null,
+    identified: null,     // {id,name}
+    identifying: false,
+    identChunks: [],
+    identAt: 0,
     showUntil: 0,
     level: 0,          // 最近一帧的音量（0..1）
     peaks: [],         // 最近 N 帧的音量，用来画音量条
@@ -876,7 +895,7 @@ async function pushChunk(c, wav, manual, preset) {
   try {
     const res = await postJson("/api/agent/feed", {
       session: c.agentSession, audio: wav, auto_add: true, mode: c.mode,
-      manual: !!manual, preset: preset || "",
+      manual: !!manual, preset: preset || "", person_id: c.personId || "",
     }, 30000);
     c.sent += 1;
     const v = (res && res.view) || null;
@@ -1233,6 +1252,20 @@ function handleNavigation() {
   if (textMode) { navText(act); return; }
   if (capture && !capture.stopped) {
     const thinking = capture.thinkingUntil && Date.now() < capture.thinkingUntil;
+    // 还没认出对方：确认 = 录 20 秒找人（再按一次提前结束），上下不切换
+    if (!capture.identified && capture.mode !== "meeting") {
+      if (act === "activate") {
+        if (capture.identifying) { finishIdentify(capture); }
+        else { startIdentify(capture); }
+        return;
+      }
+      if (act === "back") {
+        if (thinking) { cancelThinking(); return; }
+        stopAndArchive("结束了");
+        return;
+      }
+      return;
+    }
     if (act === "back") {
       if (thinking) { cancelThinking(); return; }         // 想太久就中断这一问
       stopAndArchive("结束了");
@@ -1264,6 +1297,45 @@ function handleNavigation() {
 }
 
 // 下键：把「当前预设」+ 这段录音一起交给智能体
+function startIdentify(c) {
+  if (!c || c.stopped) return;
+  c.identifying = true;
+  c.identAt = Date.now();
+  c.identChunks = [];
+  retained.status.setText("识别人 0/20");
+  paintListening("对着对方说两句 · 20 秒");
+}
+
+async function finishIdentify(c) {
+  if (!c || !c.identifying) return;
+  c.identifying = false;
+  const chunks = c.identChunks;
+  c.identChunks = [];
+  if (!chunks.length) { paintListening("没录到声音"); return; }
+  const wav = toWav(chunks, chunks.reduce((n, b) => n + b.length, 0));
+  retained.status.setText("在想…");
+  try {
+    const r = await postJson("/api/voice/identify", { audio: "data:audio/wav;base64," + wav.toString("base64") }, 60000);
+    if (r && r.status === "known") {
+      c.identified = { id: r.person_id, name: r.name };
+      c.personId = r.person_id;
+      c.personName = r.name;
+      c.lastCard = r.card || null;
+      c.showUntil = Date.now() + PRESET_HOLD_MS;
+      if (c.lastCard) paintCard(c.lastCard, { ms: 0 });
+      retained.status.setText("认出 " + r.name);
+    } else if (r && r.status === "only_owner") {
+      paintListening("只听到你自己");
+    } else if (r && r.status === "no_owner") {
+      paintListening("先录主人的声音");
+    } else {
+      paintListening("没认出对方");
+    }
+  } catch (e) {
+    paintListening("识别人失败 · 再试一次");
+  }
+}
+
 function submitPreset() {
   const c = capture;
   if (!c || c.stopped) return;

@@ -25,6 +25,7 @@ import llm  # noqa: E402
 import presets as presets_store  # noqa: E402
 import settings as settings_store  # noqa: E402
 import voice  # noqa: E402
+import diar  # noqa: E402
 from face import FaceEngine  # noqa: E402
 from store import MATCH_THRESHOLD, Store  # noqa: E402
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -218,6 +219,11 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_json()
             if path == "/api/scan":
                 return self._scan(body)
+            if path == "/api/voice/identify":
+                try:
+                    return self._json(self._voice_identify(body))
+                except Exception as e:
+                    return self._json({"ok": False, "error": str(e)}, 500)
             if path == "/api/voice/scan":
                 return self._voice_scan(body)
             if path == "/api/agent/feed":
@@ -301,6 +307,48 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(payload)
 
     # ---------- 声纹 ----------
+
+    def _voice_identify(self, body):
+        """分轨后去掉主人那一簇，只认对方。"""
+        samples = voice.read_wav(decode_audio(body.get("audio")))
+        owner = store.owner()
+        owner_ids = set()
+        owner_embs = []
+        if owner:
+            owner_ids.add(owner["id"])
+            owner_embs = list(owner.get("voice_embeddings") or [])
+        if not owner_embs:
+            return {"ok": False, "status": "no_owner", "error": "还没录过主人的声音"}
+
+        clusters, segs = diar.split(samples)
+        if not clusters:
+            return {"ok": False, "status": "no_diar", "error": "分不开说话人（太短或太吵）"}
+
+        others = [p for p in store.voice_index() if p["id"] not in owner_ids]
+        lines = []
+        best = None
+        for spk, c in clusters.items():
+            sim_owner = max(float(np.dot(c["emb"], e)) for e in owner_embs)
+            person, sim_val, margin = voice.match(c["emb"], others)
+            lines.append({"speaker": spk, "secs": c["secs"], "sim_owner": round(sim_owner, 3),
+                          "person": (person or {}).get("name"), "sim": round(sim_val, 3)})
+            if sim_owner >= voice.THRESHOLD:
+                continue
+            if best is None or sim_val > best[0]:
+                best = (sim_val, person, sim_owner, spk)
+
+        if best is None:
+            return {"ok": False, "status": "only_owner", "clusters": lines,
+                    "error": "只听到你自己"}
+
+        sim_val, person, sim_owner, spk = best
+        if not person or sim_val < voice.THRESHOLD:
+            return {"ok": True, "status": "unknown", "clusters": lines, "similarity": round(sim_val, 3),
+                    "card": {"kind": "voice", "status": "unknown",
+                             "lines": ["没听过这个声音", "去控制台「+ 新增人物」录入"]}}
+        card = cards.build_card(person, sim_val, voice.THRESHOLD)
+        return {"ok": True, "status": "known", "person_id": person["id"], "name": person["name"],
+                "similarity": round(sim_val, 3), "clusters": lines, "card": card}
 
     def _voice_scan(self, body):
         """眼镜端送来一段语音（16k 单声道 wav），判断"这是谁在说话"。"""
@@ -388,9 +436,10 @@ class Handler(BaseHTTPRequestHandler):
         manual = bool(body.get("manual"))
         mode = str(body.get("mode") or "")
         preset = str(body.get("preset") or "")
+        pinned = str(body.get("person_id") or "")
         view = agent.run_feed(
             session, text=text, audio=audio, auto_add=bool(auto_add),
-            mode=mode, manual=manual, preset=preset,
+            mode=mode, manual=manual, preset=preset, pinned=pinned,
         )
         person = None if view.get("mode") == "meeting" else store.get(view.get("person_id") or "")
         if person:

@@ -275,20 +275,19 @@ function wavFramesLoop(name, seconds) {
     lines.join("").includes("产品经理") && (lines.join("").includes("报价单") || lines.join("").includes("豆豆")),
     JSON.stringify(lines));
 
-  // 1b) 录音中按「确认」→ 看详情，不打断录音；再按一次收起
-  await sleep(900);   // 首片刚切走，缓冲里的新音频还不够 1.5 秒，先让麦再灌一会儿
+  // 1b) 录音中按「确认」→ 进入「识别人」（新流程：先认出对方，再出三个按钮）
+  await sleep(900);
   navQueue.push("activate");
-  await waitUntil(() => hud().some((v) => v.includes("在想")), 6000);
+  await waitUntil(() => hud().some((v) => v.includes("识别人")), 6000);
   lines = hud();
-  check("录音中按确认 → 智能体开始想（状态行 在想…）",
-    lines.some((v) => v.includes("在想")), JSON.stringify(lines));
+  check("按确认进入识别人（状态行显示 识别人 N/20）",
+    lines.some((v) => v.includes("识别人")), JSON.stringify(lines));
 
-  // 关键回归：结果回来以后，"在听"页不能把卡片刷掉
-  await waitUntil(() => hud().some((v) => v.includes("王姐")) && !hud().some((v) => v.includes("在想")), 40000);
+  // 识别人期间：卡片仍然保留在上面（没有被刷成空白）
   lines = hud();
-  check("提词显示在在听页上（卡片没有被刷掉）",
-    lines.includes("王姐") && lines.filter((v) => v && v.trim() && v !== " ").length >= 5,
-    JSON.stringify(lines));
+  check("识别人期间上一张卡片还在（没被刷掉）",
+    lines.some((v) => v.includes("王姐")), JSON.stringify(lines));
+  navQueue.push("back");   // 退出识别人（返回 = 结束这段）
 
   // 1c) 按「返回」→ 结束这段录音（测试里关掉自动入库，所以停在卡片上）
   navQueue.push("back");
