@@ -16,6 +16,8 @@ const os = require("@irisview/osx/os");
 const { App, AppLifecycle, Window, WindowProperty } = os;
 const input = require("@irisview/osx/os/input");
 const { Board, Color, Font, FusionRoot, Text, TextAlign } = require("@irisview/osx/fusionui");
+const path = require("node:path");
+const { createOutbox } = require("./outbox");
 
 // 眼镜连哪台电脑。模拟器上就是本机；真机换成同一局域网里跑 server.py 的那台。
 const BACKEND = process.env.MEMORYLENS_BACKEND || "http://127.0.0.1:8765";
@@ -24,6 +26,15 @@ const NAV_MS = 120;         // 读按键/手势
 const HTTP_TIMEOUT_MS = 1500;
 const RECORD_MS = 4000;     // 一次最多听 4 秒，够说一句"我是王姐"
 const MAX_SAMPLES = 16000 * 30;
+const OUTBOX_RETRY_MS = 8000;   // 离线录音的重发间隔
+
+// 宿主注入的私有数据目录；没有（单测 / 无沙箱环境）就不落盘。
+const APP_DATA_DIR = process.env.FUSIONUI_APP_DATA_DIR;
+const outbox = createOutbox({
+  post: (p, b) => postJson(p, b),
+  dir: APP_DATA_DIR && path.isAbsolute(APP_DATA_DIR) ? path.join(APP_DATA_DIR, "outbox") : null,
+  log: (m) => console.log(m),
+});
 
 const W = 640;
 const H = 480;
@@ -42,6 +53,7 @@ let lastPaintAt = 0;
 let lastScene = null;          // {card, rev, ms} 或 {idle:"..."}，用来周期性重绘
 let pollTimer = null;
 let navTimer = null;
+let outboxTimer = null;
 let inFlight = false;
 let shownRev = -1;
 let recording = null;   // { session, chunks: Uint8Array[], samples, startedAt, timer }
@@ -409,12 +421,15 @@ async function finishRecording() {
     return;
   }
   retained.status.setText("正在认人…");
+  const wav = toWav(chunks, bytes);
   try {
-    const res = await postJson("/api/voice/scan", { audio: toWav(chunks, bytes) });
+    const res = await postJson("/api/voice/scan", { audio: wav });
     if (res && res.faces && res.faces.length) paintCard(res.faces[0], res.rev, res.ms);
     else paintIdle("后台没给结果，再试一次");
   } catch (e) {
-    paintOffline(e && e.message);
+    // 连不上就别把这段录音丢了：先落盘，联网后自动补传
+    if (outbox.push(wav)) paintIdle("后台没连上 · 已存本地，联网后自动补传");
+    else paintOffline(e && e.message);
   }
 }
 
@@ -523,6 +538,20 @@ async function poll() {
   }
 }
 
+async function flushOutbox() {
+  if (background) return;
+  let sent = 0;
+  try {
+    sent = await outbox.flush();
+  } catch (e) {
+    return;
+  }
+  if (sent > 0) {
+    console.log("[outbox] 补传了 " + sent + " 段录音");
+    paintIdle("补传了 " + sent + " 段录音");
+  }
+}
+
 function tick() {
   rafId = typeof os.requestAnimationFrame === "function" ? os.requestAnimationFrame(tick) : null;
   const now = Date.now();
@@ -542,6 +571,8 @@ function start() {
   lastPaintAt = 0;
   if (typeof os.requestAnimationFrame === "function") rafId = os.requestAnimationFrame(tick);
   navTimer = setInterval(handleNavigation, NAV_MS);
+  outboxTimer = setInterval(flushOutbox, OUTBOX_RETRY_MS);
+  setTimeout(flushOutbox, 1200);        // 起来先把上次没发出去的补上
   try { require("@irisview/osx/os").setDisplayKeepAwake(true); } catch (e) { /* 可选能力 */ }
   console.log("MemoryLens glasses app ready → " + BACKEND);
 }
@@ -550,6 +581,7 @@ function stopTimers() {
   if (rafId !== null && typeof os.cancelAnimationFrame === "function") { os.cancelAnimationFrame(rafId); rafId = null; }
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   if (navTimer) { clearInterval(navTimer); navTimer = null; }
+  if (outboxTimer) { clearInterval(outboxTimer); outboxTimer = null; }
   if (scrollTimer) { clearInterval(scrollTimer); scrollTimer = null; }   // 后台不滚
 }
 
