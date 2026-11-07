@@ -28,7 +28,8 @@ const HTTP_TIMEOUT_MS = 1500;
 const MAX_SAMPLES = 16000 * 60;   // 平台单会话上限 60 秒；55 秒片不能被 30 秒常量截断
 const OUTBOX_RETRY_MS = 8000;  // 离线录音的重发间隔
 // 卡片（认人结果/55 秒建议）露一会儿就收起来，录音不停
-const HOLD_MS = 9000;      // 认人卡片在镜片上停留多久
+const HOLD_MS = 9000;                       // 第一片自动认人后：9 秒
+const PRESET_HOLD_MS = Number(process.env.MEMORYLENS_PRESET_HOLD_MS || 30000);  // 手动提交：30 秒      // 认人卡片在镜片上停留多久
 
 // 宿主注入的私有数据目录；没有（单测 / 无沙箱环境）就不落盘。
 const APP_DATA_DIR = process.env.FUSIONUI_APP_DATA_DIR;
@@ -506,42 +507,44 @@ function paintListening(msg) {
   const flash = !thinking && capture.msg && Date.now() < capture.msgUntil ? capture.msg : "";
   const held = capture.lastCard && capture.showUntil && Date.now() < capture.showUntil;
   const c0 = held ? capture.lastCard : null;
-  // 整屏指纹：文字没变就整帧跳过（否则每 400ms 重设一遍，镜片上会闪）
-  const head = thinking || flash || statusWithBar(listenLine());
-  const sig = head + "|" + (c0 ? "" : levelBar() + "|" + presetIdx) + "|" + (c0
-    ? [c0.name, c0.role, c0.status, c0.similarity, (c0.lines || []).join("~")].join("|")
-    : "none");
+  const left = c0 ? Math.max(0, Math.ceil((capture.showUntil - Date.now()) / 1000)) : 0;
+  // 回复在的时候，状态行改成倒计时，让人知道还有几秒
+  const head = thinking || flash
+    || (c0 ? ("回复 · " + left + "s") : statusWithBar(listenLine()));
+  // 整屏指纹：文字没变就整帧跳过
+  const sig = head + "|" + (c0 ? left + "|" + (c0.lines || []).join("~") : levelBar() + "|" + presetIdx);
   if (sig === listenSig) return;
   listenSig = sig;
   putText(retained.status, head);
-  if (c0 && !complexRows) {
-    // 认出来之后：名字/身份/信息行保持卡片内容，别被"在听"的提示冲掉
-    const card = c0;
-    putText(retained.name, card.name || "陌生人");
-    putText(retained.role, card.layout === "notice" ? "多人对话 · 没入库" : (card.role || ""));
-    putText(retained.sim, card.status !== "unknown" && typeof card.similarity === "number"
-      ? "SIM " + card.similarity.toFixed(2) : "");
+
+  // 上半区：人（有回复时把回复的三行放这里）
+  if (c0) {
+    putText(retained.name, c0.name || "陌生人");
+    putText(retained.role, c0.layout === "notice" ? "多人对话 · 没入库" : (c0.role || ""));
+    putText(retained.sim, c0.status !== "unknown" && typeof c0.similarity === "number"
+      ? "SIM " + c0.similarity.toFixed(2) : "");
+    // 名字/身份已经在上面两行了，这里只放"信息行"，最多三行
+    const role = (c0.role || "").trim();
     const rows = [];
-    for (const ln of (card.lines || [])) rows.push(...splitLines(ln, 6));
-    if (rows.join("|") !== cardRows.join("|")) { cardRows = rows; rowOffset = 0; }
-    paintRows();
-    putText(retained.foot, capture.mode === "meeting" ? "确认追问 返回归档" : "上下换 确认发");
-    return;
-  }
-  if (!c0) {
+    for (const ln of (c0.lines || [])) {
+      if (role && String(ln).trim() === role) continue;   // 身份那行已经在上面显示过了
+      for (const seg of splitLines(ln, 6)) rows.push(seg);
+    }
+    retained.info.slice(0, 3).forEach((t, i) => putText(t, rows[i] || ""));
+  } else {
     const silent = capture.samples === 0 && Date.now() - capture.startedAt > 3000;
     putText(retained.name, "在听…");
     putText(retained.role, silent ? "点「确认采集」" : "直接说话就行");
     putText(retained.sim, " ");
-    const bar = levelBar();
-    const quiet = capture.peaks.slice(-12).every((v) => v < 0.03);
-    // 主页面就是"快捷预设"面板：上=换焦点，下=提交
-    const chips = PRESETS.map((p, i) => (i === presetIdx ? "> " : "  ") + p.label);
-    retained.info.forEach((t, i) => putText(t, chips[i] || ""));
-    paintedRows = "";
-    if (quiet) putText(retained.status, head + " 麦克风没声音");
+    retained.info.slice(0, 3).forEach((t) => putText(t, " "));
   }
-  putText(retained.foot, capture.mode === "meeting" ? "确认追问 返回归档" : "确认详情 返回结束");
+
+  // 下半区：三个按钮固定在这里（换焦点只改前缀，不再整块消失）
+  const chips = PRESETS.map((p, i) => (i === presetIdx ? "> " : "  ") + p.label);
+  retained.info.slice(3, 6).forEach((t, i) => putText(t, chips[i] || " "));
+  paintedRows = "";
+  cardRows = [];
+  putText(retained.foot, capture.mode === "meeting" ? "确认追问 返回归档" : "上下换 确认发");
 }
 
 // 调试用：容器里没有声卡时，用正弦波顶替麦克风，方便验证波形与切片链路
@@ -885,7 +888,7 @@ async function pushChunk(c, wav, manual, preset) {
       c.lastRev = res.rev;
       c.lastMs = v.ms || 0;
       // 关键：没有 showUntil，"在听"页就会立刻把这张卡刷掉
-      c.showUntil = Date.now() + (manual ? 20000 : HOLD_MS);
+      c.showUntil = Date.now() + (manual ? PRESET_HOLD_MS : HOLD_MS);
       lastScene = { card: c.lastCard, rev: res.rev, ms: v.ms || 0 };
       paintCard(c.lastCard, res.rev, v.ms || 0);
       paintListening();
