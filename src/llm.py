@@ -404,6 +404,31 @@ def transcribe(wav_bytes):
     )
 
 
+def transcribe_meeting(wav_bytes):
+    """整片会议音频转写：返回 {text, utterances, provider}。
+
+    会议优先整片识别，而不是按说话人短段分别识别；短段丢上下文会把
+    “氢氟酸”听成“幸福算”。utterances 用于按时间对齐到本地分人结果。
+    """
+    if not wav_bytes:
+        raise LLMUnavailable("这段音频是空的")
+    if STUB:
+        return {"text": "（stub 转写）", "utterances": [], "provider": "stub"}
+    if ASR_PROVIDER in ("doubao", "doubao_stream", "volcengine"):
+        _ASR_STATS["calls"] += 1
+        try:
+            import asr_doubao
+            detail = asr_doubao.transcribe_detail(wav_bytes)
+            if detail.get("text"):
+                detail["provider"] = "doubao"
+                return detail
+        except Exception as exc:
+            _ASR_STATS["fallbacks"] += 1
+            _ASR_STATS["last_error"] = str(exc)[:200]
+    text = transcribe(wav_bytes)
+    return {"text": text, "utterances": [], "provider": ASR_PROVIDER or "local"}
+
+
 PROMPT = """你在帮一个人整理他和某个人的对话记录。只根据给定对话原文提取信息，不要编。
 
 要求：

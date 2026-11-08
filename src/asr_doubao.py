@@ -26,6 +26,7 @@ TIMEOUT = float(os.environ.get("AR_DOUBAO_TIMEOUT", "15"))
 _DEFAULT_HOTWORDS = [
     "主席树", "主函数", "主键", "豆包", "API", "转录", "调优",
     "PDF", "bug", "二叉树", "算法", "数据结构",
+    "氢氟酸", "氟化氢", "王水", "化学",
 ]
 
 
@@ -56,6 +57,9 @@ def _fix_domain(text: str) -> str:
         ("主席数", "主席树"),
         ("豆包调鱼", "豆包调优"),
         ("转路", "转录"),
+        ("幸福算", "氢氟酸"),
+        ("幸福酸", "氢氟酸"),
+        ("青氟酸", "氢氟酸"),
     ):
         text = text.replace(src, dst)
     return text
@@ -101,7 +105,7 @@ def _extract_text(obj: dict) -> str:
     return ""
 
 
-async def _transcribe(wav_bytes: bytes) -> str:
+async def _transcribe(wav_bytes: bytes) -> dict:
     import websockets as ws_lib  # 延迟导入，没装时服务仍可走本地兜底
 
     key = _api_key()
@@ -141,6 +145,7 @@ async def _transcribe(wav_bytes: bytes) -> str:
         await ws.send(_header(_AUDIO_ONLY, 2, 0, 0) + struct.pack(">I", 0))
 
         final_text = ""
+        utterances: list[dict] = []
         while True:
             try:
                 raw = await asyncio.wait_for(ws.recv(), timeout=TIMEOUT)
@@ -175,12 +180,29 @@ async def _transcribe(wav_bytes: bytes) -> str:
                 text = _extract_text(obj)
                 if text:
                     final_text = text
+                result = obj.get("result") or {}
+                if isinstance(result, dict):
+                    for u in result.get("utterances") or []:
+                        if not isinstance(u, dict):
+                            continue
+                        ut = str(u.get("text") or "").strip()
+                        if not ut:
+                            continue
+                        item = {
+                            "text": _fix_domain(ut),
+                            "start": float(u.get("start_time") or 0) / 1000.0,
+                            "end": float(u.get("end_time") or 0) / 1000.0,
+                            "speaker_id": str((u.get("additions") or {}).get("speaker_id") or ""),
+                        }
+                        key = (round(item["start"], 2), round(item["end"], 2), item["text"])
+                        if key not in {(round(x["start"], 2), round(x["end"], 2), x["text"]) for x in utterances}:
+                            utterances.append(item)
             elif msg_type == _ERROR:
                 raise DoubaoASRError("豆包 ASR 返回错误：" + body.decode("utf-8", "replace")[:200])
-        return _fix_domain(final_text.strip())
+        return {"text": _fix_domain(final_text.strip()), "utterances": utterances}
 
 
-def transcribe_wav(wav_bytes: bytes) -> str:
+def transcribe_detail(wav_bytes: bytes) -> dict:
     if not wav_bytes:
         raise DoubaoASRError("空音频")
     try:
@@ -194,3 +216,7 @@ def transcribe_wav(wav_bytes: bytes) -> str:
         raise
     except Exception as exc:
         raise DoubaoASRError(str(exc)[:200]) from exc
+
+
+def transcribe_wav(wav_bytes: bytes) -> str:
+    return str(transcribe_detail(wav_bytes).get("text") or "").strip()

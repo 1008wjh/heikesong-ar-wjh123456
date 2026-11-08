@@ -481,15 +481,61 @@ def node_asr(state: MeetingState) -> dict:
         reverse=True,
     )[:MAX_ASR_SEGMENTS]
     selected.sort(key=lambda s: float(s.get("start") or 0))
-    for seg in selected:
-        a = max(0, int(float(seg["start"]) * voice.SAMPLE_RATE))
-        b = min(samples.size, int(float(seg["end"]) * voice.SAMPLE_RATE))
-        text = ""
-        if b - a >= int(0.2 * voice.SAMPLE_RATE):
-            try:
-                text = llm.transcribe(_wav_bytes(samples[a:b])) or ""
-            except Exception:
-                text = ""
+
+    # 关键：整片识别一次，保留上下文；再把 utterance 按时间对齐到本地分人段。
+    # 之前逐说话人短段识别，会把“氢氟酸”听成“幸福算/千佛算”。
+    detail = {"text": "", "utterances": []}
+    try:
+        detail = llm.transcribe_meeting(_wav_bytes(samples)) or detail
+    except Exception:
+        detail = {"text": "", "utterances": []}
+    per_seg = ["" for _ in selected]
+    utterances = detail.get("utterances") or []
+    if utterances:
+        for u in utterances:
+            us = float(u.get("start") or 0.0)
+            ue = float(u.get("end") or us)
+            ut = str(u.get("text") or "").strip()
+            if not ut:
+                continue
+            best, best_overlap = -1, 0.0
+            for i, seg in enumerate(selected):
+                ss = float(seg.get("start") or 0.0)
+                se = float(seg.get("end") or ss)
+                ov = max(0.0, min(se, ue) - max(ss, us))
+                if ov > best_overlap:
+                    best, best_overlap = i, ov
+            if best < 0:
+                # 没有重叠：按 utterance 中心找最近段
+                center = (us + ue) / 2
+                best = min(range(len(selected)), key=lambda i: abs(
+                    (float(selected[i].get("start") or 0) + float(selected[i].get("end") or 0)) / 2 - center))
+            per_seg[best] = (per_seg[best] + " " + ut).strip()
+    elif detail.get("text"):
+        # 本地兜底没有 utterance：整片文本放到最长的说话人段，避免丢失
+        if selected:
+            longest = max(range(len(selected)),
+                          key=lambda i: float(selected[i].get("end") or 0) - float(selected[i].get("start") or 0))
+            per_seg[longest] = str(detail["text"]).strip()
+
+    # 豆包整片识别有时只回一个大 utterance（甚至 speaker_id 全是 0），
+    # 这时不能把整段都塞给第一个发言人；按标点切成句子，顺序分给本地分人段。
+    if selected and sum(1 for x in per_seg if x.strip()) <= 1 and detail.get("text"):
+        parts = [x.strip() for x in re.split(
+            r"(?<=[。！？!?；;.!?])\s*", str(detail["text"]).strip()) if x.strip()]
+        if len(parts) > 1:
+            per_seg = ["" for _ in selected]
+            for i, part in enumerate(parts):
+                idx = min(i, len(selected) - 1)
+                per_seg[idx] = (per_seg[idx] + " " + part).strip()
+        elif selected:
+            longest = max(range(len(selected)),
+                          key=lambda i: float(selected[i].get("end") or 0) - float(selected[i].get("start") or 0))
+            per_seg = ["" for _ in selected]
+            per_seg[longest] = str(detail["text"]).strip()
+
+    for i, seg in enumerate(selected):
+        text = (per_seg[i] or "").strip()
         item = {
             "spk": seg["spk"],
             "name": names.get(seg["spk"]) or "发言人",
