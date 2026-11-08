@@ -107,6 +107,7 @@ ASR_BASE = _env("AR_ASR_BASE", "MIMO_BASE", default="https://api.xiaomimimo.com/
 ASR_MODEL = _env("AR_ASR_MODEL", "MIMO_ASR_MODEL", default="mimo-v2.5-asr")
 ASR_KEY = _env("AR_ASR_KEY", "MIMO_API_KEY")
 ASR_LANG = _env("AR_ASR_LANGUAGE", default="zh")
+_ASR_STATS = {"calls": 0, "fallbacks": 0, "last_error": ""}
 
 # 有 LLM key 就能析出；本地转写不需要 key
 LLM_READY = bool(LLM_KEY) or STUB
@@ -165,6 +166,7 @@ def status():
                     or "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async")
                    if ASR_PROVIDER in ("doubao", "doubao_stream", "volcengine")
                    else ASR_BASE if ASR_PROVIDER == "http" else "local",
+        "asrStats": dict(_ASR_STATS),
         "preset": LLM_PRESET or "custom",
         "stats": stats(),
     }
@@ -367,13 +369,15 @@ def transcribe(wav_bytes):
         return "（stub 转写）我们上次说的那个报价单，我这两天整理一下发你"
     if ASR_PROVIDER in ("doubao", "doubao_stream", "volcengine"):
         # 豆包流式 ASR 主路径；云端失败/超时自动回退本地 SenseVoice。
+        _ASR_STATS["calls"] += 1
         try:
             import asr_doubao
             text = asr_doubao.transcribe_wav(wav_bytes)
             if text:
                 return text
-        except Exception:
-            pass
+        except Exception as exc:
+            _ASR_STATS["fallbacks"] += 1
+            _ASR_STATS["last_error"] = str(exc)[:200]
         text = _local_transcribe(wav_bytes)
         if not text:
             raise LLMUnavailable("豆包转写失败，本地兜底也没听出字")
