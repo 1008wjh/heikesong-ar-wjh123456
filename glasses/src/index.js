@@ -330,6 +330,8 @@ function splitLines(text, budget) {
 
 function paintIdle(msg) {
   hideModeSel();
+  // modal pages own the screen: background polling must not overwrite them
+  if (modeSelect || textMode) return;
   // 录音期间屏幕必须一直是「在听」：任何路径想画待机都直接忽略
   if (capture) return;
   // 会议模块优先：任何"待机"路径都不要把会议 UI 冲掉
@@ -380,6 +382,8 @@ function paintOffline(err) {
 
 function paintCard(card, rev, ms) {
   hideModeSel();
+  // modal pages own the screen: background polling must not overwrite them
+  if (modeSelect || textMode) return;
   const known = card.status !== "unknown";
   const kind = card.kind === "voice" ? "听到" : "看到";
   // 智能体链路会直接给状态（待命/处理中/待确认/完成/异常），优先用它
@@ -469,14 +473,16 @@ let stopNote = 0;                // 停止持续听后，底栏先显示一阵"�
 
 let paintedRows = "";
 function paintRows() {
-  const want = cardRows.join("|");
+  // rowOffset is part of the fingerprint: without it the scroll timer only
+  // advanced the page number while the six visible rows stayed the same.
+  const want = rowOffset + "|" + cardRows.join("|");
   if (want === paintedRows) return;
   paintedRows = want;
 
   const total = cardRows.length;
   retained.info.forEach((t, i) => {
     if (!total) { putText(t, " "); return; }
-    const row = cardRows[i];
+    const row = cardRows[(i + rowOffset) % total];
     putText(t, i < Math.min(total, VISIBLE_ROWS) ? (row || "") : "");
   });
 }
@@ -1279,7 +1285,7 @@ async function drain(c) {
   try {
     while (c.queue.length) {
       const item = c.queue.shift();
-      const wav = item && item.wav ? item.wav : item;
+      const wav = item && typeof item === "object" ? (item.wav || "") : (item || "");
       const manual = !!(item && item.manual);
       const preset = (item && item.preset) || "";
       if (c.mode === "meeting") {
@@ -1924,7 +1930,7 @@ async function finishIdentify(c) {
       c.lastCard = r.card || null;
       c.showUntil = Date.now() + PRESET_HOLD_MS;
       c.buttonsAt = Date.now() + BUTTON_DELAY_MS;      // 先看档案，再出按钮
-      if (c.lastCard) paintCard(c.lastCard, { ms: 0 });
+      if (c.lastCard) paintCard(c.lastCard, 0, 0);
       // 认出来之后立刻重画下半区：三个预设按钮要在这一帧就换上去
       paintListening("认出 " + r.name);
     } else if (r && r.status === "only_owner") {
@@ -2019,9 +2025,14 @@ async function poll() {
       // 更硬的隔离：上一段晚到的归档/回复带着旧的 session，不能画到这一段上
       // （否则第二段会一直显示第一段认出的那个人和 SIM 1.00）
       if (c0.session && c0.session !== capture.agentSession) return;
+      const fresh = data.rev !== capture.lastRev;
       capture.lastCard = c0;
       capture.lastRev = data.rev;
       capture.lastMs = data.ms;
+      // A card pushed from the console/phone while listening should show up.
+      if (fresh && capture.identified && c0.session && c0.session === capture.agentSession) {
+        capture.showUntil = Date.now() + HOLD_MS;
+      }
       return;
     }
     paintCard(c0, data.rev, data.ms);
@@ -2127,6 +2138,12 @@ App.createApp((lifecycle) => {
       start();
       pollTimer = pollTimer || setInterval(poll, POLL_MS);
       navTimer = navTimer || setInterval(handleNavigation, NAV_MS);
+      outboxTimer = outboxTimer || setInterval(flushOutbox, OUTBOX_RETRY_MS);
+      // stopTimers() cancelled rAF on background; without re-arming it the
+      // whole UI freezes on the last committed frame after resume.
+      if (rafId === null && typeof os.requestAnimationFrame === "function") {
+        rafId = os.requestAnimationFrame(tick);
+      }
       if (lastScene && lastScene.card) syncScroll();     // 回前台继续滚
     }
   }

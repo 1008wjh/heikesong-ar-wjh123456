@@ -52,8 +52,22 @@ class Store:
     def _load(self):
         if not os.path.exists(self.path):
             return {"people": [], "version": 2}
-        with open(self.path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        try:
+            # utf-8-sig: tolerate files saved by Notepad/PowerShell with a BOM
+            with open(self.path, "r", encoding="utf-8-sig") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError("people.json top-level is not an object")
+        except Exception as e:
+            # a corrupt people.json must not take the whole HTTP service down
+            bad = self.path + ".bad-" + time.strftime("%Y%m%d-%H%M%S")
+            try:
+                os.replace(self.path, bad)
+            except Exception:
+                pass
+            print(f"[store] people.json parse failed ({e}); moved to {bad}; starting empty",
+                  flush=True)
+            return {"people": [], "version": 2}
         data.setdefault("people", [])
         return data
 

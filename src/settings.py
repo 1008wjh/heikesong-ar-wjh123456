@@ -33,10 +33,16 @@ def get_settings():
                     out[k] = data[k]
         except Exception:
             pass
-    # 兜个底：3–120 秒之间
-    out["hold_sec"] = max(3, min(120, int(out.get("hold_sec") or 30)))
-    out["first_hold_sec"] = max(3, min(120, int(out.get("first_hold_sec") or 9)))
-    out["identify_sec"] = max(5, min(60, int(out.get("identify_sec") or 20)))
+    # 兜个底：3–120 秒之间；单个值坏了只回落默认，不能让接口/主链路 500
+    def _sec(key, default, lo, hi):
+        try:
+            value = int(out.get(key) or default)
+        except (TypeError, ValueError):
+            value = default
+        return max(lo, min(hi, value))
+    out["hold_sec"] = _sec("hold_sec", 30, 3, 120)
+    out["first_hold_sec"] = _sec("first_hold_sec", 9, 3, 120)
+    out["identify_sec"] = _sec("identify_sec", 20, 5, 60)
     # 总提示词（系统提示词）：控制台「预设」页可编辑，给回答模型定风格/结构
     out["system_prompt"] = str(out.get("system_prompt") or "").strip()[:2000]
     return out
