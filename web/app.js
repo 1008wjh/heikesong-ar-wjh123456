@@ -6,7 +6,7 @@
 const $ = (s) => document.querySelector(s);
 
 // 改代码就 +1，页脚会显示。看到 build 不是最新的，说明浏览器还在跑旧脚本。
-const BUILD = 22;
+const BUILD = 23;
 
 const state = { people: [], threshold: 0.4 };
 
@@ -243,7 +243,22 @@ function openEditor(id) {
     : (vc > 0
       ? '已有 ' + vc + ' 条声纹，重录会覆盖。'
       : '说一句「我是 XXX」，眼镜就能听声认人。');
+  const hasClip = !!(editing && editing.voice_clip_at);
+  if (hasClip) $('#edVoiceHint').textContent += ' 最近一次注册录音已保存，可重播核对。';
   $('#edVoice').textContent = (isOwner ? '◉ 录主人声纹（' : '◉ 录声纹（') + VOICE_SECONDS + ' 秒）';
+
+  // 重播最近一次注册时的录音（旧记录没有存录音，重录一次就有）
+  const play = $('#edVoicePlay');
+  if (play) {
+    play.disabled = !hasClip;
+    play.textContent = hasClip ? '▶ 重播声纹' : '▶ 重播声纹（重录后可用）';
+    play.onclick = () => {
+      if (!editing || !hasClip) return;
+      const audio = new Audio('/api/voice/clip?id=' + encodeURIComponent(editing.id) + '&t=' + Date.now());
+      audio.play().catch((err) => toast('播放失败：' + err.message, true));
+      toast('正在重播最近一次注册录音');
+    };
+  }
   $('#edDelete').hidden = !editing;
 
   $('#empty').hidden = true;

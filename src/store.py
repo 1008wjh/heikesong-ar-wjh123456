@@ -170,6 +170,16 @@ class Store:
             self._save()
             return self._public(p)
 
+    def set_voice_clip(self, pid, at=None):
+        """记一下"最近一次注册时的录音"的时间戳（录音文件由 server 落盘）。"""
+        with self._lock:
+            p = self._raw(pid)
+            if not p:
+                return None
+            p["voice_clip_at"] = int(at or time.time())
+            self._save()
+            return self._public(p)
+
     # ---------- 写入（控制台用） ----------
 
     def save(self, pid=None, name="", role="", info=None, embedding=None,

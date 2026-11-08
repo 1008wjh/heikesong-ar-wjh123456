@@ -42,6 +42,16 @@ agent.bind_store(store)          # 智能体的工具要用同一个库实例
 _LAST = {"rev": 0, "faces": [], "at": 0, "ms": 0, "kind": "", "session": ""}
 _LAST_LOCK = threading.Lock()
 
+
+def _safe_id(pid):
+    """只留字母数字和 -_，防止路径穿越。"""
+    return "".join(ch for ch in str(pid) if ch.isalnum() or ch in "-_")[:64]
+
+
+def _voice_dir():
+    """注册声纹时保存的原始录音（隐私数据，不进仓库）。"""
+    return os.path.join(os.path.dirname(os.path.abspath(store.path)), "voiceprints")
+
 # 对话分析（模块 02）的会话：只活在内存里，服务重启就没了
 _CONV = {}
 _CONV_LOCK = threading.Lock()
@@ -185,6 +195,8 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(self.path.split("?")[1]) if "?" in self.path else {}
         if path == "/api/photo":
             return self._photo((query.get("id") or [""])[0])
+        if path == "/api/voice/clip":
+            return self._voice_clip((query.get("id") or [""])[0].strip())
         if path == "/api/people":
             return self._json({"ok": True, "people": store.people(), "threshold": MATCH_THRESHOLD})
         if path == "/api/health":
@@ -437,7 +449,10 @@ class Handler(BaseHTTPRequestHandler):
         return self._push_voice([card], int((time.time() - t0) * 1000))
 
     def _voice_enroll(self, body):
-        """把一段语音绑到某个人身上（控制台/眼镜端都能调）。"""
+        """把一段语音绑到某个人身上（控制台/眼镜端都能调）。
+
+        顺便把这段录音存下来（data/voiceprints/<pid>.wav），控制台可以"重播声纹"核对。
+        """
         pid = (body.get("id") or "").strip()
         name = (body.get("name") or "").strip()
         if not pid and name:
@@ -445,14 +460,42 @@ class Handler(BaseHTTPRequestHandler):
             pid = found[0]["id"] if found else ""
         if not pid:
             raise ValueError("要指定 id 或 name")
-        samples = voice.read_wav(decode_audio(body.get("audio")))
+        raw = decode_audio(body.get("audio"))
+        samples = voice.read_wav(raw)
         if voice.seconds(samples) < voice.MIN_SECONDS:
             raise ValueError("声音太短，至少说 1 秒")
         person = store.add_voice(pid, voice.embed(samples))
         if person is None:
             raise ValueError("没有这个人")
+        # 存一份原始录音，供控制台重播（旧记录没有这个文件，重录一次就有）
+        try:
+            if raw[:4] == b"RIFF" and len(raw) <= 5 * 1024 * 1024:
+                d = _voice_dir()
+                os.makedirs(d, exist_ok=True)
+                with open(os.path.join(d, pid + ".wav"), "wb") as f:
+                    f.write(raw)
+                store.set_voice_clip(pid)
+                person = store.get(pid) or person
+        except Exception as e:                     # 存录音失败不能影响注册
+            print(f"[voice] 保存注册录音失败: {e}")
         return self._json({"ok": True, "person": person,
                            "seconds": round(voice.seconds(samples), 1)})
+
+    def _voice_clip(self, pid):
+        """把某个人最近一次注册时的录音原样吐出来（控制台重播用）。"""
+        if not pid or not store.get(pid):
+            return self._json({"ok": False, "error": "没有这个人"}, 404)
+        full = os.path.join(_voice_dir(), _safe_id(pid) + ".wav")
+        if not os.path.isfile(full):
+            return self._json({"ok": False, "error": "没有保存的声纹录音，重录一次就有"}, 404)
+        with open(full, "rb") as f:
+            data = f.read()
+        self.send_response(200)
+        self.send_header("Content-Type", "audio/wav")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
 
     # ---------- 智能体（LangGraph） ----------
 
@@ -589,6 +632,12 @@ class Handler(BaseHTTPRequestHandler):
         if photo and os.path.isfile(photo):
             try:
                 os.remove(photo)
+            except OSError:
+                pass
+        clip = os.path.join(_voice_dir(), _safe_id(pid) + ".wav")
+        if os.path.isfile(clip):
+            try:
+                os.remove(clip)
             except OSError:
                 pass
         return self._json({"ok": True})
