@@ -584,7 +584,12 @@ function setMeetingPopup(brief, degraded) {
 }
 
 function closeMeetingPopup() {
-  if (meeting && meeting.popup) meeting.popup.open = false;
+  if (meeting) {
+    if (meeting.popup) meeting.popup.open = false;
+    // 右键关闭 AI 回答只影响浮窗，不碰录音；同时压住麦克风 watchdog，
+    // 避免关浮窗那一下触发重开 voice input，弹出“等待应用请求音频采集”。
+    meeting.suppressMicUntil = Date.now() + 6000;
+  }
   hideMeetingPopup();
 }
 
@@ -637,12 +642,16 @@ function meetingSubtitleRows() {
 
 function checkMeetingMic() {
   // 平台/模拟器偶尔会在长请求后静默关掉 voice input：capture 还在，
-  // 但音频帧不再来。超过 4.5 秒没有一帧就主动换一条语音会话。
+  // 但音频帧不再来。注意：AI 回答浮窗打开/thinking 时不能重连，
+  // 否则平台会反复弹“等待应用请求音频采集”，看起来像录音被重启。
   if (!meeting || !meeting.recording || !capture || capture.stopped) return;
+  if (meeting.thinking) return;
+  if (meeting.popup && meeting.popup.open) return;
   const now = Date.now();
+  if (now < (meeting.suppressMicUntil || 0)) return;
   const last = capture.lastAudioAt || capture.startedAt || now;
-  if (now - last < 4500) return;
-  if (now - (capture.lastMicRestartAt || 0) < 9000) return;
+  if (now - last < 8000) return;
+  if (now - (capture.lastMicRestartAt || 0) < 15000) return;
   capture.lastMicRestartAt = now;
   meeting.note = "麦克风重连中…";
   try { restartSession(capture); } catch (e) { /* 等下一轮 */ }
@@ -780,6 +789,9 @@ async function ensureMeetingCapture() {
   // 有些平台在长时间 HTTP 请求/弹窗后会静默关掉 voice input，
   // 但 meeting.recording 还是 true；这里把它重新接上。
   if (!meeting || !meeting.recording || capture) return;
+  if (meeting.thinking) return;
+  if (meeting.popup && meeting.popup.open) return;
+  if (Date.now() < (meeting.suppressMicUntil || 0)) return;
   meeting.note = "麦克风重连中…";
   paintMeeting();
   try { await startListening("meeting", meeting.session); } catch (e) { /* 下面统一判断 */ }
