@@ -58,10 +58,31 @@ def data_dir(uid: str = "") -> str:
                         shutil.copy2(src, dst)
                     except OSError:
                         pass
-            for sub in ("voiceprints", "meetings", "audio_storage"):
+            for sub in ("voiceprints", "meetings", "audio_storage", "photos"):
                 os.makedirs(os.path.join(d, sub), exist_ok=True)
             _seeded.add(uid)
+        _seed_photos(d)
     return d
+
+def _seed_photos(d: str) -> None:
+    """老用户目录没有照片时，从根 data/photos 补一份（wjh 之前图片加载不出来）。"""
+    dst = os.path.join(d, "photos")
+    try:
+        os.makedirs(dst, exist_ok=True)
+        if os.listdir(dst):
+            return
+    except OSError:
+        return
+    src = os.path.join(DEFAULT_DATA, "photos")
+    if not os.path.isdir(src):
+        return
+    for name in os.listdir(src):
+        p = os.path.join(src, name)
+        if os.path.isfile(p):
+            try:
+                shutil.copy2(p, os.path.join(dst, name))
+            except OSError:
+                pass
 
 
 def data_path(name: str, uid: str = "") -> str:
@@ -94,3 +115,10 @@ class StoreProxy:
     @property
     def path(self):
         return store().path
+
+
+def reset_store(uid: str = "") -> None:
+    """测试跑完/数据文件被外部改过后，丢掉缓存让下次重新加载。"""
+    uid = (uid or current_user()).strip() or "demo"
+    with _lock:
+        _stores.pop(uid, None)

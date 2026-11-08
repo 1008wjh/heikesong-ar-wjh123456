@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Archivo:wght@400;600&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="style.css?v=25" />
+<link rel="stylesheet" href="style.css?v=26" />
 </head>
 <body>
 
@@ -65,9 +65,9 @@
       <span class="mod-n">03</span>
       <span class="mod-t">多人会议</span>
     </button>
-    <button class="mod" disabled title="待开发">
+    <button class="mod" id="modTest" data-mod="test">
       <span class="mod-n">04</span>
-      <span class="mod-t">设置</span>
+      <span class="mod-t">验收测试</span>
     </button>
     <p class="rail-foot">数据只在本机<br />data/people.json</p>
   </nav>
@@ -266,6 +266,23 @@
       <div class="cell mtg-section mtg-offline" id="mtgOffline"></div>
     </div>
   </section>
+
+  <section class="selftest" id="selftest" hidden>
+    <div class="cell st-head">
+      <div>
+        <p class="kicker">验收测试</p>
+        <h2>8 项验收用例 + 10 次连续延迟</h2>
+        <p class="hint" id="stSub">跑在「当前登录用户」的数据上，结束后自动还原；可导出 JSON 作为提交证据。</p>
+      </div>
+      <div class="st-actions">
+        <button id="stRun" class="btn btn-save" type="button">开始测试</button>
+        <button id="stExport" class="btn" type="button" disabled>导出 JSON</button>
+      </div>
+    </div>
+    <div class="cell st-summary" id="stSummary">还没跑。点「开始测试」，约 40–60 秒。</div>
+    <div class="st-grid" id="stCases"></div>
+    <div class="cell st-lat" id="stLatency" hidden></div>
+  </section>
 </div>
 
 <div id="toast" class="toast" hidden></div>
@@ -289,6 +306,6 @@
   <p id="cmdResult" class="tiny">先在眼镜上按确认开始一段对话，再在这里发指令。</p>
 </section>
 
-<script src="app.js?v=25"></script>
+<script src="app.js?v=26"></script>
 </body>
 </html>

@@ -10,6 +10,13 @@
       .catch(() => {});
   }
 
+  document.querySelectorAll('[data-user]').forEach((b) => {
+    b.addEventListener('click', () => {
+      $('#username').value = b.getAttribute('data-user') || '';
+      $('#password').value = b.getAttribute('data-pass') || '';
+    });
+  });
+
   $('#loginForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     msg.textContent = '';

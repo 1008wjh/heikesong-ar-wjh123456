@@ -1,0 +1,146 @@
+{
+  "ok": true,
+  "at": "2026-11-08 13:17:33",
+  "elapsed_ms": 29300,
+  "cases": [
+    {
+      "id": "1",
+      "title": "新需求",
+      "expected": "新输入 -> 处理 -> 生成 ARUI",
+      "actual": {
+        "state": "完成",
+        "person": "王姐",
+        "rows": [
+          "报价单我周三前发你",
+          "电脑和报价单我都带上"
+        ]
+      },
+      "passed": true,
+      "evidence": "state+rows"
+    },
+    {
+      "id": "2",
+      "title": "内容修改",
+      "expected": "换条件结果正确变化",
+      "actual": {
+        "todo": [
+          "日期: 明天下午3点在三楼会议室开会",
+          "跟进: 记得带上电脑和充电器"
+        ],
+        "date": [
+          "日期: 明天下午3点在三楼会议室开会"
+        ],
+        "full": 3
+      },
+      "passed": true,
+      "evidence": "只保留待办/日期/显示全部"
+    },
+    {
+      "id": "3",
+      "title": "重点与布局",
+      "expected": "突出/精简，界面确实变化",
+      "actual": {
+        "first": [
+          "日期: 明天下午3点在三楼会议室开会"
+        ],
+        "layout": "focus",
+        "full": 3,
+        "todo": 2
+      },
+      "passed": true,
+      "evidence": "优先日期 + 精简行数"
+    },
+    {
+      "id": "4",
+      "title": "跨方式交互",
+      "expected": "语音/文本切换、纠正、上下文保持",
+      "actual": {
+        "voice": "王姐",
+        "text": "Lena",
+        "voice_again": "Lena"
+      },
+      "passed": true,
+      "evidence": "换成Lena 后旧 person_id 不生效"
+    },
+    {
+      "id": "5",
+      "title": "歧义与确认",
+      "expected": "冲突先澄清、确认后才变",
+      "actual": {
+        "amb": [
+          "匹配到多个人"
+        ],
+        "full": "王姐",
+        "reject": "待确认",
+        "confirm": "完成"
+      },
+      "passed": true,
+      "evidence": "换成王 -> 待确认；说全名才改"
+    },
+    {
+      "id": "6",
+      "title": "服务失败",
+      "expected": "失败给出准确反馈（静音为真实失败路径）",
+      "actual": {
+        "state": "异常",
+        "rows": [
+          "没声音 · 检查麦克风",
+          "靠近一点再说"
+        ]
+      },
+      "passed": true,
+      "evidence": "静音音频"
+    },
+    {
+      "id": "7",
+      "title": "连续请求",
+      "expected": "旧结果不覆盖/不冒充最新",
+      "actual": {
+        "latest": "完成",
+        "slow": "异常",
+        "stale": true,
+        "rows": [
+          "这条结果已过期"
+        ]
+      },
+      "passed": true,
+      "evidence": "慢请求返回过期"
+    },
+    {
+      "id": "8",
+      "title": "显示边界",
+      "expected": "长内容不溢出、详情受控",
+      "actual": {
+        "rows": [
+          "您怎么称呼？",
+          "您平时忙什么？"
+        ],
+        "detail": 5
+      },
+      "passed": true,
+      "evidence": "长文本 + 详情"
+    }
+  ],
+  "passed": 8,
+  "failed": 0,
+  "latency": {
+    "n": 10,
+    "samples_ms": [
+      1317,
+      1127,
+      697,
+      1167,
+      1057,
+      1019,
+      1032,
+      1056,
+      1076,
+      1085
+    ],
+    "min": 697,
+    "p50": 1057,
+    "p95": 1317,
+    "max": 1317,
+    "avg": 1063.3
+  }
+}

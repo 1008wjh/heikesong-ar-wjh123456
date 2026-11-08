@@ -1,0 +1,18 @@
+{
+  "cases": [
+    {"id": "1", "title": "新需求", "expected": "新输入 -> 处理 -> 生成 ARUI（非空 rows）"},
+    {"id": "2", "title": "内容修改", "expected": "只保留待办/日期、显示全部，结果正确变化"},
+    {"id": "3", "title": "重点与布局", "expected": "优先日期排第一、layout=focus；精简后行数变少"},
+    {"id": "4", "title": "跨方式交互", "expected": "语音认出王姐 -> 文本换成 Lena -> 再语音仍 Lena"},
+    {"id": "5", "title": "歧义与确认", "expected": "换成王 -> 待确认；说全名才改；否认/确认都有"},
+    {"id": "6", "title": "服务失败", "expected": "静音音频 -> 异常 + 没声音提示（真实失败路径）"},
+    {"id": "7", "title": "连续请求", "expected": "慢请求被顶掉 -> stale/过期，不冒充最新"},
+    {"id": "8", "title": "显示边界", "expected": "超长输入 rows<=6、单行<=52；详情单行<=80"}
+  ],
+  "latency": {
+    "n": 10,
+    "p50_max_ms": 2000,
+    "p95_max_ms": 3500,
+    "note": "提词路径（preset=hint，单次模型调用），含 HTTP 往返"
+  }
+}

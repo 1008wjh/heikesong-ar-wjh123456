@@ -7,24 +7,121 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Archivo:wght@400;600&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="style.css?v=25" />
+<link rel="stylesheet" href="style.css?v=26" />
 <style>
-  .login-wrap { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
-  .login-card { width: min(420px, 100%); background: var(--surface); border: 3px solid var(--line);
-    box-shadow: 10px 10px 0 rgba(0,0,0,.25); padding: 28px; }
-  .login-card h1 { margin: 0 0 6px; font-size: 34px; letter-spacing: .02em; }
-  .login-card .sub { margin: 0 0 22px; color: var(--muted); font-size: 13px; }
-  .login-card label { display: block; margin: 12px 0 0; font-size: 12px; color: var(--muted); }
-  .login-card input { width: 100%; margin-top: 6px; }
-  .login-card .btn { width: 100%; margin-top: 20px; }
-  .login-card .hint { margin-top: 16px; font-size: 12px; color: var(--muted); line-height: 1.6; }
-  .login-card .err { color: var(--accent); font-size: 12px; min-height: 16px; margin-top: 10px; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    background:
+      radial-gradient(circle at 12% 82%, rgba(200, 30, 30, 0.16) 0 180px, transparent 181px),
+      linear-gradient(135deg, #f3e7ce 0%, #efe0c2 52%, #e7d6b4 100%);
+    color: #1d1a16;
+    font-family: "Archivo", "Noto Sans SC", sans-serif;
+  }
+  body::before {
+    content: "";
+    position: fixed;
+    left: -160px;
+    bottom: -220px;
+    width: 620px;
+    height: 620px;
+    background: #c81f1f;
+    transform: rotate(24deg);
+    opacity: 0.9;
+    z-index: 0;
+  }
+  body::after {
+    content: "";
+    position: fixed;
+    right: -120px;
+    top: -140px;
+    width: 300px;
+    height: 620px;
+    background: #1d1a16;
+    transform: rotate(18deg);
+    opacity: 0.08;
+    z-index: 0;
+  }
+  .login-shell {
+    position: relative;
+    z-index: 1;
+    min-height: 100vh;
+    display: grid;
+    grid-template-columns: minmax(0, 1.1fr) minmax(360px, 440px);
+    gap: 56px;
+    align-items: center;
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 48px 40px;
+  }
+  .login-brand { display: grid; gap: 26px; align-content: center; }
+  .login-brand .kicker { margin: 0; font-size: 11px; letter-spacing: 0.22em; color: #6d6252; }
+  .login-brand h1 {
+    margin: 0;
+    font-family: "Archivo Black", sans-serif;
+    font-size: clamp(44px, 6vw, 76px);
+    line-height: 0.92;
+    letter-spacing: -0.01em;
+  }
+  .login-brand h1 span { color: #c81f1f; }
+  .login-brand .lede { margin: 0; max-width: 34em; font-size: 15px; line-height: 1.85; color: #4d463c; }
+  .feature-list { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 18px; margin: 0; padding: 0; list-style: none; }
+  .feature-list li {
+    border-top: 2px solid #1d1a16;
+    padding-top: 8px;
+    font-size: 12px;
+    color: #3d372e;
+  }
+  .feature-list b { display: block; font-size: 13px; color: #1d1a16; margin-bottom: 2px; }
+  .brand-strip { display: flex; gap: 8px; align-items: center; font-size: 11px; color: #6d6252; letter-spacing: 0.12em; }
+  .brand-strip i { width: 10px; height: 10px; background: #c81f1f; display: inline-block; transform: rotate(45deg); }
+  .login-card {
+    width: 100%;
+    background: #f7eeda;
+    border: 3px solid #1d1a16;
+    box-shadow: 14px 14px 0 rgba(29, 26, 22, 0.28);
+    padding: 30px;
+  }
+  .login-card h2 { margin: 0 0 4px; font-size: 24px; }
+  .login-card .sub { margin: 0 0 20px; color: #6d6252; font-size: 12px; }
+  .login-card label { display: block; margin: 14px 0 0; font-size: 11px; letter-spacing: 0.1em; color: #6d6252; }
+  .login-card input { width: 100%; margin-top: 6px; padding: 11px 12px; font-size: 14px; }
+  .login-card .btn { width: 100%; margin-top: 22px; padding: 12px; font-size: 13px; }
+  .login-card .hint { margin-top: 18px; font-size: 11px; color: #6d6252; line-height: 1.8; }
+  .login-card .err { color: #c81f1f; font-size: 12px; min-height: 16px; margin-top: 10px; }
+  .account-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 10px; }
+  .account-grid button {
+    border: 1px solid #1d1a16;
+    background: transparent;
+    padding: 6px 4px;
+    font-size: 10px;
+    cursor: pointer;
+  }
+  .account-grid button:hover { background: #1d1a16; color: #f7eeda; }
+  @media (max-width: 880px) {
+    .login-shell { grid-template-columns: 1fr; gap: 28px; padding: 32px 20px; }
+    .feature-list { grid-template-columns: 1fr; }
+  }
 </style>
 </head>
 <body>
-<div class="login-wrap">
+<div class="login-shell">
+  <div class="login-brand">
+    <p class="kicker">JUNCTION CHINA 2026 · 智能穿戴赛道</p>
+    <h1>MEMORY<span>LENS</span></h1>
+    <p class="lede">给 AR 眼镜用的记忆助手：抬头认人、听声辨人、把上次的承诺和这次的待办放到镜片上。<br />
+      登录后进入你自己的记忆库，账号之间的数据彼此隔离。</p>
+    <ul class="feature-list">
+      <li><b>语音认人</b>声纹 + 分轨，先认出是谁</li>
+      <li><b>双档数据</b>镜片只看一眼，详情按确认展开</li>
+      <li><b>多模态</b>语音和文本都能改同一张卡</li>
+      <li><b>验收测试</b>控制台里直接跑 8 项用例 + 延迟</li>
+    </ul>
+    <p class="brand-strip"><i></i>ARUI · 自动化 · 多模态</p>
+  </div>
+
   <form id="loginForm" class="login-card" autocomplete="on">
-    <h1>MEMORYLENS</h1>
+    <h2>登录</h2>
     <p class="sub">登录后进入你自己的记忆库</p>
     <label for="username">用户名</label>
     <input id="username" class="field" name="username" autocomplete="username" required />
@@ -32,10 +129,15 @@
     <input id="password" class="field" name="password" type="password" autocomplete="current-password" required />
     <button class="btn btn-save" type="submit">登录</button>
     <p id="loginMsg" class="err"></p>
-    <p class="hint">演示账号：<b>demo / demo123</b> · <b>guest / guest123</b> · <b>wjh / wjh123</b><br />
-      每个账号的数据各自独立。</p>
+    <div class="account-grid">
+      <button type="button" data-user="demo" data-pass="demo123">demo</button>
+      <button type="button" data-user="guest" data-pass="guest123">guest</button>
+      <button type="button" data-user="wjh" data-pass="wjh123">wjh</button>
+    </div>
+    <p class="hint">演示账号：demo / demo123 · guest / guest123 · wjh / wjh123<br />
+      每个账号的人物、声纹、会议各自独立。</p>
   </form>
 </div>
-<script src="login.js"></script>
+<script src="login.js?v=26"></script>
 </body>
 </html>

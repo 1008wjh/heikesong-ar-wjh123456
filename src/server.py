@@ -29,6 +29,7 @@ import voice  # noqa: E402
 import diar  # noqa: E402
 import meeting_service  # noqa: E402
 import auth  # noqa: E402
+import selftest  # noqa: E402
 from face import FaceEngine  # noqa: E402
 from store import MATCH_THRESHOLD, Store  # noqa: E402
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -307,6 +308,8 @@ class Handler(BaseHTTPRequestHandler):
                 userctx.set_user(got["user"]["username"])
                 self._uid = got["user"]["username"]
                 return self._json({"ok": True, **got})
+            if path == "/api/selftest/run":
+                return self._json(selftest.run(include_latency=bool(body.get("latency", True))))
             if path == "/api/auth/logout":
                 return self._json({"ok": True})
             if path == "/api/scan":

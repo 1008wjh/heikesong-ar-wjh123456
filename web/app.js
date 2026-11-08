@@ -36,7 +36,7 @@ const $ = (s) => document.querySelector(s);
 })();
 
 // 改代码就 +1，页脚会显示。看到 build 不是最新的，说明浏览器还在跑旧脚本。
-const BUILD = 25;
+const BUILD = 26;
 
 const state = { people: [], threshold: 0.4 };
 
@@ -1135,13 +1135,15 @@ const conv = {
 function setModule(name) {
   const onPreset = name === 'preset';
   const onMeeting = name === 'meeting';
-  const showPeople = !onPreset && !onMeeting;
+  const onTest = name === 'test';
+  const showPeople = !onPreset && !onMeeting && !onTest;
   if ($('#presets')) $('#presets').hidden = !onPreset;
   if ($('#meetings')) $('#meetings').hidden = !onMeeting;
+  if ($('#selftest')) $('#selftest').hidden = !onTest;
   if ($('#contentPeople')) $('#contentPeople').hidden = !showPeople;
   if ($('#listcol')) $('#listcol').hidden = !showPeople;
   [['#modPeople', showPeople], ['#modPreset', onPreset],
-    ['#modMeeting', onMeeting]].forEach(([sel, on]) => {
+    ['#modMeeting', onMeeting], ['#modTest', onTest]].forEach(([sel, on]) => {
     const el = $(sel);
     if (!el) return;
     el.classList.toggle('is-active', !!on);
@@ -1156,6 +1158,7 @@ function setModule(name) {
     meetingBindOnce();
     loadMeetings();
   }
+  if (onTest) selftestBindOnce();
 }
 
 /* ---------------- 预设（按钮 + 总提示词 + 时长） ---------------- */
@@ -1581,6 +1584,7 @@ function bind() {
   if ($('#modPeople')) $('#modPeople').onclick = () => setModule('people');
   if ($('#modPreset')) $('#modPreset').onclick = () => setModule('preset');
   if ($('#modMeeting')) $('#modMeeting').onclick = () => setModule('meeting');
+  if ($('#modTest')) $('#modTest').onclick = () => setModule('test');
   if ($('#search')) $('#search').oninput = renderPeople;
   if ($('#edCancel')) $('#edCancel').onclick = closeEditor;
   if ($('#edSave')) $('#edSave').onclick = savePerson;
@@ -1716,6 +1720,121 @@ function cmdBind() {
   setInterval(cmdPoll, 2500);
 }
 
+/* ---------------- 模块 04：验收测试 ---------------- */
+const selftestState = { last: null, running: false, bound: false };
+
+function stText(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  n.textContent = text == null ? '' : String(text);
+  return n;
+}
+
+function renderSelftest(data) {
+  const cases = data.cases || [];
+  const summary = $('#stSummary');
+  summary.textContent = '';
+  const big = document.createElement('b');
+  big.textContent = (data.passed || 0) + ' / ' + cases.length;
+  summary.appendChild(big);
+  summary.appendChild(document.createTextNode(
+    ' 项通过 · 用时 ' + Math.round((data.elapsed_ms || 0) / 1000) + ' 秒 · ' + (data.at || '')));
+  if (data.failed) {
+    const bad = document.createElement('span');
+    bad.className = 'st-fail-note';
+    bad.textContent = ' · ' + data.failed + ' 项失败';
+    summary.appendChild(bad);
+  }
+
+  const grid = $('#stCases');
+  grid.textContent = '';
+  cases.forEach((c) => {
+    const card = document.createElement('div');
+    card.className = 'st-card ' + (c.passed ? 'pass' : 'fail');
+    const head = document.createElement('div');
+    head.className = 'st-card-head';
+    head.appendChild(stText('span', 'st-id', '#' + c.id));
+    head.appendChild(stText('h3', '', c.title || ''));
+    head.appendChild(stText('span', 'st-badge ' + (c.passed ? 'pass' : 'fail'), c.passed ? 'PASS' : 'FAIL'));
+    card.appendChild(head);
+    card.appendChild(stText('p', 'st-meta', '预期：' + (c.expected || '')));
+    card.appendChild(stText('p', 'st-meta', '实际：' + JSON.stringify(c.actual)));
+    if (c.evidence) card.appendChild(stText('p', 'st-meta', '证据：' + c.evidence));
+    grid.appendChild(card);
+  });
+
+  const lat = $('#stLatency');
+  lat.hidden = !data.latency;
+  if (data.latency) {
+    const L = data.latency;
+    lat.textContent = '';
+    lat.appendChild(stText('h3', '', '10 次连续延迟（含 HTTP 往返）'));
+    lat.appendChild(stText('p', 'st-meta',
+      'min ' + L.min + ' ms · p50 ' + L.p50 + ' ms · p95 ' + L.p95 + ' ms · max ' + L.max + ' ms · avg ' + L.avg + ' ms'));
+    const table = document.createElement('table');
+    const tr = document.createElement('tr');
+    ['#', 'wall ms'].forEach((h) => tr.appendChild(stText('th', '', h)));
+    table.appendChild(tr);
+    (L.samples_ms || []).forEach((ms, i) => {
+      const row = document.createElement('tr');
+      row.appendChild(stText('td', '', i + 1));
+      row.appendChild(stText('td', '', ms));
+      table.appendChild(row);
+    });
+    lat.appendChild(table);
+  }
+  const exp = $('#stExport');
+  if (exp) exp.disabled = false;
+  selftestState.last = data;
+}
+
+async function runSelftest() {
+  if (selftestState.running) return;
+  selftestState.running = true;
+  const btn = $('#stRun');
+  const summary = $('#stSummary');
+  const grid = $('#stCases');
+  const lat = $('#stLatency');
+  if (btn) { btn.disabled = true; btn.textContent = '运行中…'; }
+  if (summary) summary.textContent = '正在跑 8 项验收 + 10 次延迟，约 20–30 秒…';
+  if (grid) grid.textContent = '';
+  if (lat) lat.hidden = true;
+  try {
+    const res = await fetch('/api/selftest/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ latency: true }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || '测试失败');
+    renderSelftest(data);
+  } catch (e) {
+    if (summary) summary.textContent = '测试失败：' + (e.message || e);
+  } finally {
+    selftestState.running = false;
+    if (btn) { btn.disabled = false; btn.textContent = '重新测试'; }
+  }
+}
+
+function exportSelftest() {
+  if (!selftestState.last) return;
+  const blob = new Blob([JSON.stringify(selftestState.last, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'memorylens-acceptance-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.json';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+}
+
+function selftestBindOnce() {
+  if (selftestState.bound) return;
+  selftestState.bound = true;
+  const run = $('#stRun');
+  const exp = $('#stExport');
+  if (run) run.onclick = runSelftest;
+  if (exp) exp.onclick = exportSelftest;
+}
 /* ---------------- 启动 ---------------- */
 
 const logoutBtn = document.getElementById('logout');

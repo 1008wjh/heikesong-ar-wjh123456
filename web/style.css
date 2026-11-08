@@ -1288,3 +1288,50 @@ h3 .mtg-badge { margin-left: 10px; vertical-align: 2px; }
   background: var(--surface); border: 2px solid var(--line); padding: 6px 10px; font-size: 12px;
   box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.18);
 }
+
+/* ---------- 模块 04：验收测试 ---------- */
+.selftest {
+  grid-column: 2 / -1;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: var(--gap);
+  min-height: 0;
+}
+.st-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 14px; }
+.st-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.st-summary { font-size: 13px; color: var(--muted); }
+.st-summary b { font-size: 20px; color: var(--ink); }
+.st-fail-note { color: var(--accent3); }
+.st-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: var(--gap);
+  align-content: start;
+  overflow: auto;
+  min-height: 0;
+}
+.st-card {
+  background: var(--surface);
+  border: 2px solid var(--line);
+  border-left: 8px solid var(--line);
+  padding: 12px;
+  display: grid;
+  gap: 6px;
+}
+.st-card.pass { border-left-color: #1c7a3a; }
+.st-card.fail { border-left-color: var(--accent3); }
+.st-card-head { display: flex; align-items: center; gap: 8px; }
+.st-card-head h3 { margin: 0; font-size: 15px; flex: 1; }
+.st-id { font-size: 11px; color: var(--muted); }
+.st-badge { font-size: 10px; letter-spacing: 0.08em; padding: 2px 8px; border: 1px solid var(--line); }
+.st-badge.pass { background: #1c7a3a; color: #fff; border-color: #1c7a3a; }
+.st-badge.fail { background: var(--accent3); color: #fff; border-color: var(--accent3); }
+.st-meta { margin: 0; font-size: 11px; color: var(--muted); line-height: 1.5; word-break: break-all; }
+.st-lat { overflow: auto; max-height: 46vh; }
+.st-lat h3 { margin: 0 0 6px; font-size: 14px; }
+.st-lat table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+.st-lat th, .st-lat td { border-bottom: 1px solid var(--line); padding: 4px 6px; text-align: left; }
+@media (max-width: 860px) {
+  .selftest { grid-column: 1; }
+  .st-head { flex-direction: column; align-items: flex-start; }
+}
