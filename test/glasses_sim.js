@@ -266,6 +266,13 @@ function wavFramesLoop(name, seconds) {
   navQueue.push("activate");
   await waitUntil(() => hud().some((v) => v.includes("单人")), 6000);
   check("先出单人/多人选择", hud().some((v) => v.includes("单人")), JSON.stringify(hud()));
+  // 模式选择：上下键要能换，选中态跟着变
+  navQueue.push("down");
+  await waitUntil(() => hud().some((v) => v.includes("【多人】")), 3000);
+  check("模式选择：下键切到多人", hud().some((v) => v.includes("【多人】")), JSON.stringify(hud()));
+  navQueue.push("up");
+  await waitUntil(() => hud().some((v) => v.includes("【单人】")), 3000);
+  check("模式选择：上键切回单人", hud().some((v) => v.includes("【单人】")), JSON.stringify(hud()));
   navQueue.push("activate");
   await waitUntil(() => hud().some((v) => v.includes("在听")), 8000);
   check("进入持续听（状态行有计时）", hud().some((v) => v.includes("在听")), JSON.stringify(hud()));
