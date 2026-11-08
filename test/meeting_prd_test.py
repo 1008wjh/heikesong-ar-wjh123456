@@ -105,9 +105,11 @@ def main():
     stopped = post(base, "/api/meeting/stop", {"session": session})
     assert stopped.get("ok") is True, stopped
     assert stopped.get("segment_count", 0) >= 3, stopped
+    assert stopped.get("summary_text"), stopped
     print("ok 停止录制：%s 人 / %s 段 / %.1fs" %
           (stopped.get("speaker_count"), stopped.get("segment_count"),
            stopped.get("duration_sec") or 0))
+    print("   总结：" + (stopped.get("summary_text") or "")[:60])
     state2 = get(base, "/api/meeting/state?session=" + session)
     assert state2.get("is_recording") is False, state2
 

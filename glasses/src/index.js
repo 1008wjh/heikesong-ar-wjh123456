@@ -537,8 +537,9 @@ function hideMeetingUi() {
 
 function showMeetingUi() {
   setHiddenSafe(retained.recBadge, false);
-  setHiddenSafe(retained.subTitle, false);
-  (retained.subRows || []).forEach((slot) => slot.tiles.forEach((t) => setHiddenSafe(t, false)));
+  // 用户已取消底部字幕：会议不再渲染 subTitle / subRows，只留录制状态 + AI 回答
+  setHiddenSafe(retained.subTitle, true);
+  (retained.subRows || []).forEach((slot) => slot.tiles.forEach((t) => setHiddenSafe(t, true)));
 }
 
 // 按"字宽"切行：中文 1，英文/数字约 0.55（沿用 splitLines 的规则）
@@ -553,13 +554,25 @@ function wrapMeetingText(text, budget) {
   return out.length ? out : ["（没有内容）"];
 }
 
-function setMeetingPopup(answer, degraded) {
-  const lines = wrapMeetingText(answer, 30);
-  if (degraded) {
-    lines.push("");
-    lines.push(...wrapMeetingText("· 本地兜底：补 DEEPSEEK_API_KEY 后自动升级为大模型", 30));
+function setMeetingPopup(brief, degraded) {
+  // 小屏只显示：结论 + 关键词 + 最多 3 条短要点；回答过长不滚动，直接截断。
+  const raw = [];
+  if (brief && brief.summary) raw.push("结论：" + brief.summary);
+  if (brief && Array.isArray(brief.keywords) && brief.keywords.length) {
+    raw.push("关键词：" + brief.keywords.slice(0, 4).join(" / "));
   }
-  if (meeting) meeting.popup = { open: true, lines: lines, offset: 0 };
+  (brief && Array.isArray(brief.points) ? brief.points : []).slice(0, 3)
+    .forEach((p, i) => raw.push((i + 1) + ". " + p));
+  if (!raw.length) {
+    raw.push(String((brief && brief.answer) || "（没有内容）").slice(0, 28));
+  }
+  if (degraded) raw.push("· 本地兜底（补 Key 后升级）");
+  const lines = [];
+  for (const line of raw) lines.push(...wrapMeetingText(line, 30));
+  if (meeting) {
+    meeting.popup = { open: true, lines: lines.slice(0, MEETING_POPUP_ROWS) };
+    meeting.answerBrief = brief || {};
+  }
 }
 
 function closeMeetingPopup() {
@@ -567,28 +580,16 @@ function closeMeetingPopup() {
   hideMeetingPopup();
 }
 
-function scrollMeetingPopup(dir) {
-  if (!meeting || !meeting.popup || !meeting.popup.open) return;
-  const maxOffset = Math.max(0, meeting.popup.lines.length - MEETING_POPUP_ROWS);
-  const next = Math.max(0, Math.min(maxOffset, (meeting.popup.offset || 0) + dir));
-  meeting.popup.offset = next;
-  paintMeetingPopup();
-}
-
 function paintMeetingPopup() {
   if (!meeting || !meeting.popup || !meeting.popup.open) { hideMeetingPopup(); return; }
   if (!retained.popupLines) return;
   (retained.popupWidgets || []).forEach((w) => setHiddenSafe(w, false));
   const lines = meeting.popup.lines || [];
-  const maxOffset = Math.max(0, lines.length - MEETING_POPUP_ROWS);
-  const off = Math.max(0, Math.min(maxOffset, meeting.popup.offset || 0));
-  meeting.popup.offset = off;
-  putText(retained.popupTitle, "AI 回答 · 第" + (off + 1) + "/" + Math.max(1, lines.length) + "行"
-    + (meeting.answerDegraded ? " · 兜底" : ""));
+  putText(retained.popupTitle, "AI 回答" + (meeting.answerDegraded ? " · 兜底" : ""));
   for (let i = 0; i < MEETING_POPUP_ROWS; i++) {
-    putSlot(retained.popupLines[i], lines[off + i] || "");
+    putSlot(retained.popupLines[i], lines[i] || "");
   }
-  putText(retained.popupFoot, "左键刷新 · 右键关闭 · 上/下 滚动");
+  putText(retained.popupFoot, "左键刷新 · 右键关闭");
 }
 
 function meetingSpeakerNo(seg) {
@@ -632,10 +633,12 @@ function paintMeeting() {
   showMeetingUi();
   const rec = !!meeting.recording;
   const secs = rec && meeting.startedAt ? clockOf(Date.now() - meeting.startedAt, 1) : "";
+  const viewState = (meeting.view && meeting.view.state) || "";
   let status;
   if (meeting.thinking) status = "AI 正在想…";
   else if (meeting.note) status = String(meeting.note).slice(0, 28);
-  else status = rec ? ("多人会议 · 录制中 " + secs) : "多人会议 · 未录制";
+  else if (rec) status = "多人会议 · 录制中 " + secs + (viewState ? " · " + viewState : "");
+  else status = "多人会议 · 未录制" + (viewState ? " · " + viewState : "");
   putText(retained.brand, "● MemoryLens");
   putText(retained.status, status);
   putText(retained.name, "多人会议");
@@ -643,21 +646,29 @@ function paintMeeting() {
   putText(retained.sim, "");
   putText(retained.recBadge, rec ? "● 录制中 " + secs : "○ 未录制");
   retained.info.forEach((t) => putText(t, " "));
-  // 浮窗开着时，把上半区文字让出来（底板是空 Text，下面的字透出来会乱）
-  if (meeting.popup && meeting.popup.open) {
+
+  const popupOpen = !!(meeting.popup && meeting.popup.open);
+  if (popupOpen) {
+    // 浮窗开着时，上半区让给回答
     putText(retained.name, " ");
     putText(retained.role, " ");
     putText(retained.sim, " ");
+  } else {
+    // 不显示字幕，改显示会议卡：状态/待办/总结（最多 3 行）
+    const rows = (meeting.view && Array.isArray(meeting.view.rows) ? meeting.view.rows : [])
+      .filter((x) => String(x || "").trim());
+    if (!rows.length && meeting.summary) rows.push("总结：" + meeting.summary);
+    if (!rows.length && meeting.keyPoints && meeting.keyPoints.length) {
+      rows.push(...meeting.keyPoints.slice(0, 3));
+    }
+    rows.slice(0, 3).forEach((line, i) => putText(retained.info[i], String(line).slice(0, 24)));
   }
 
-  const rows = meetingSubtitleRows();
-  retained.subRows.forEach((slot, i) => putSlot(slot, rows[i] || ""));
-  putText(retained.subTitle, rec ? "实时转写 · 录音中" : (meeting.saved ? "会议已保存 · 可回看" : "实时转写 · 按确认开始"));
   putText(retained.foot, rec
-    ? "确认 停止 · 左AI 右关 · 上下滚"
-    : (meeting.saved ? "确认 再录 · 左AI · 返回退出" : "确认 开始 · 左AI · 返回退出"));
+    ? "确认 停止 · 左问 右关 · 上打字"
+    : (meeting.saved ? "确认 再录 · 左问 · 上打字 · 返回退出" : "确认 开始 · 左问 · 返回退出"));
 
-  if (meeting.popup && meeting.popup.open) paintMeetingPopup();
+  if (popupOpen) paintMeetingPopup();
   else hideMeetingPopup();
 }
 
@@ -684,7 +695,8 @@ async function enterMeeting() {
     session: "", meetingId: "", recording: false, stopping: false, startedAt: 0,
     segments: [], speakers: [], segmentCount: 0, duration: 0, note: "",
     saved: false, thinking: false, answerAsked: false, answerDegraded: false,
-    popup: { open: false, lines: [], offset: 0 },
+    view: null, summary: "", keyPoints: [], actionItems: [],
+    popup: { open: false, lines: [] },
   };
   paintMeeting();
   await ensureMeetingSession();
@@ -708,6 +720,9 @@ async function startMeetingRecording() {
   meeting.segments = [];
   meeting.speakers = [];
   meeting.segmentCount = 0;
+  meeting.view = null;
+  meeting.summary = "";
+  meeting.keyPoints = [];
   meeting.answerAsked = false;
   closeMeetingPopup();
   paintMeeting();
@@ -742,7 +757,7 @@ async function stopMeetingRecording() {
   await p;
 }
 
-async function askMeeting() {
+async function askMeeting(question) {
   if (!meeting) return;
   const sid = meeting.session || (await ensureMeetingSession());
   if (!sid) {
@@ -754,12 +769,14 @@ async function askMeeting() {
   meeting.note = "AI 正在想…";
   paintMeeting();
   try {
-    const r = await postJson("/api/meeting/ask", { session: sid }, 30000);
+    const body = { session: sid };
+    if (question) body.question = String(question).slice(0, 240);
+    const r = await postJson("/api/meeting/ask", body, 30000);
     if (r && r.ok) {
       meeting.answerAsked = true;
       meeting.answer = r.answer || "";
       meeting.answerDegraded = !!r.degraded;
-      setMeetingPopup(r.answer || "", !!r.degraded);
+      setMeetingPopup(r, !!r.degraded);
       meeting.note = "";
     } else {
       meeting.note = "AI 失败：" + ((r && r.error) || "未知错误");
@@ -799,11 +816,12 @@ function navMeeting(act) {
   }
   if (act === "left") { askMeeting(); return; }
   if (act === "right") { if (meeting.popup && meeting.popup.open) closeMeetingPopup(); return; }
-  if (act === "up" || act === "down") {
-    // 上下键只在浮窗开启时滚动文本；关着时保持系统原逻辑（会议模块内无动作）
-    if (meeting.popup && meeting.popup.open) scrollMeetingPopup(act === "up" ? -1 : 1);
+  if (act === "up") {
+    // 回答已截断，不需要滚动；浮窗关闭时上键打开短语键盘，用文字提问/发指令
+    if (!(meeting.popup && meeting.popup.open)) openText("keys");
     return;
   }
+  if (act === "down") return;
   if (act === "back") { exitMeeting(); return; }
 }
 
@@ -812,6 +830,7 @@ function onMeetingFeed(res) {
   if (res.session && meeting.session && res.session !== meeting.session) return;
   if (Array.isArray(res.segments)) meeting.segments = res.segments;
   if (Array.isArray(res.speakers)) meeting.speakers = res.speakers;
+  if (res.view) meeting.view = res.view;
   meeting.segmentCount = res.segment_count || (meeting.segments || []).length;
   meeting.duration = res.duration_sec || meeting.duration;
   if (!meeting.thinking) meeting.note = "";
@@ -1399,8 +1418,13 @@ async function stopAndArchive(msg) {
       if (r && r.ok) {
         m.segmentCount = r.segment_count || m.segmentCount;
         m.duration = r.duration_sec || m.duration;
-        m.note = "会议已保存 · " + (r.speaker_count || 0) + " 人 / "
-          + (r.segment_count || 0) + " 段";
+        m.summary = r.summary_text || r.summary || "";
+        m.keyPoints = Array.isArray(r.key_points) ? r.key_points : [];
+        m.actionItems = Array.isArray(r.action_items) ? r.action_items : [];
+        m.view = null;   // 停录后会议卡让位给总结
+        m.note = "会议已保存 · " + (m.summary
+          ? m.summary.slice(0, 14)
+          : ((r.speaker_count || 0) + " 人 / " + (r.segment_count || 0) + " 段"));
       } else {
         m.note = "会议保存失败 · " + ((r && r.error) || "未知错误");
       }
@@ -1492,6 +1516,7 @@ function openText(kind) {
 
 function closeText() {
   textMode = null;
+  if (meeting) { paintMeeting(); return; }
   if (capture) { paintListening(); return; }
   if (lastScene && lastScene.card) { paintCard(lastScene.card, lastScene.rev, lastScene.ms); return; }
   paintIdle("按一下开始听 · 上=打字 下=看建议");
@@ -1528,6 +1553,26 @@ async function sendText(text) {
   const t = (text || "").trim();
   if (!t) return;
   textMode = null;
+  // 会议模式：问句走 AI 回答；其它短指令走会议文本指令（确认人数/切布局等）。
+  if (meeting) {
+    const isQuestion = /^[问查]/.test(t) || /[?？]/.test(t)
+      || /什么|怎么|谁|哪|多少|几点|为什么|多久/.test(t);
+    if (isQuestion) {
+      askMeeting(t.replace(/^[问查]\s*/, "").trim() || t);
+      return;
+    }
+    const sid = meeting.session || (await ensureMeetingSession());
+    if (!sid) { meeting.note = "后台没连上"; paintMeeting(); return; }
+    try {
+      const resp = await postJson("/api/meeting/feed", { session: sid, text: t }, 15000);
+      if (resp && resp.ok) onMeetingFeed(resp);
+      else { meeting.note = "指令失败"; paintMeeting(); }
+    } catch (e) {
+      meeting.note = "指令失败 · 检查后端";
+      paintMeeting();
+    }
+    return;
+  }
   // 会议中的文本是对“当前会议”的指令，不能再开 text-* 新 session。
   let session = "text-" + Date.now().toString(36);
   let mode = "";

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import os
 import re
 import threading
@@ -30,6 +31,7 @@ import diarize
 import llm
 import meeting_db as db
 import meeting_store
+import settings as settings_store
 import voice
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -244,8 +246,33 @@ def stop(session: str) -> dict:
         speaker_count = len({s.get("spk_id") for s in segments if s.get("spk_id")})
     segment_count = len(segments)
     summary = (archived.get("summary") if archived.get("ok") else "") or row.get("summary") or ""
-    db.finish_session(session, duration, speaker_count, segment_count, summary)
+    transcript = "\n".join(
+        "%s：%s" % ((s.get("name") or s.get("spk_id") or "发言人").strip(),
+                   (s.get("content") or "").strip())
+        for s in segments if (s.get("content") or "").strip()
+    )
+    system_prompt = (settings_store.get_settings().get("system_prompt") or "")
+    try:
+        brief = llm.summarize_meeting(transcript, system_prompt=system_prompt)
+        degraded = False
+    except llm.LLMUnavailable:
+        brief = _fallback_summary(segments, archived, summary)
+        degraded = True
+    summary_text = brief.get("summary") or summary
+    key_points = brief.get("key_points") or []
+    action_items = brief.get("action_items") or []
+    if not action_items:
+        action_items = [a.get("task") or "" for a in (archived.get("action_items") or []) if a.get("task")]
+    db.finish_session(session, duration, speaker_count, segment_count, summary,
+                      summary_text=summary_text, key_points=key_points,
+                      action_items=action_items)
     db.set_offline_status(session, int(row.get("offline_diarization_status") or 0))
+    try:
+        meeting_store.patch(session, summary_text=summary_text,
+                            key_points=key_points, action_items=action_items,
+                            summary_counts=summary)
+    except Exception:
+        pass
     return {
         "ok": True,
         "session": session,
@@ -254,8 +281,32 @@ def stop(session: str) -> dict:
         "duration_sec": duration,
         "segment_count": segment_count,
         "summary": summary,
-        "action_items": archived.get("action_items") or [],
+        "summary_text": summary_text,
+        "key_points": key_points,
+        "action_items": action_items,
+        "degraded": degraded,
         "path": archived.get("path") or meeting_store.meta_path(session),
+    }
+
+
+def _fallback_summary(segments: list[dict], archived: dict, counts: str) -> dict:
+    """没 Key 时的总结兜底：人数/段数/待办 + 最近几条原话。"""
+    key_points = []
+    for s in (segments or [])[-3:]:
+        content = (s.get("content") or "").strip()
+        if content:
+            who = (s.get("name") or "发言人").strip()
+            key_points.append("%s：%s" % (who, content[:48]))
+    actions = []
+    for a in (archived.get("action_items") or []):
+        task = (a.get("task") or "").strip()
+        if task:
+            owner = (a.get("owner") or "").strip()
+            actions.append((owner + "：" if owner else "") + task)
+    return {
+        "summary": (counts or "会议已结束") + ("；" + key_points[0][:40] if key_points else ""),
+        "key_points": key_points,
+        "action_items": actions[:6],
     }
 
 
@@ -309,41 +360,85 @@ def _short(text: str, n: int) -> str:
     return text[:n] + ("…" if len(text) > n else "")
 
 
-def _fallback_answer(session: str) -> str:
-    """没配大模型 Key / 模型不可用时的本地兜底：仍然给要点，但明确标注。"""
+def _retrieve_context(session: str, question: str = "") -> str:
+    """本地会议文字检索：关键词/字符命中 + 近期权重，不调用任何外部搜索。"""
+    question = (question or "").strip()
+    if not question:
+        return context_text(session)
+    segments = db.get_segments(session)
+    if not segments:
+        return ""
+    keys = set(llm.keywords_of(question, 8))
+    qchars = set(re.findall(r"[\u4e00-\u9fff]", question))
+    scored = []
+    for i, seg in enumerate(segments):
+        content = (seg.get("content") or "")
+        score = sum(2.0 for k in keys if k and k in content)
+        score += 0.15 * len(qchars & set(content))
+        score += 0.5 * (i / max(1, len(segments) - 1))   # 越近权重越高
+        scored.append((score, i, seg))
+    chosen = {i for _, i, _ in sorted(scored, key=lambda x: x[0], reverse=True)[:6]}
+    for i in range(max(0, len(segments) - 4), len(segments)):
+        chosen.add(i)
+    lines = []
+    for i in sorted(chosen):
+        seg = segments[i]
+        name = (seg.get("name") or seg.get("spk_id") or "发言人").strip()
+        content = (seg.get("content") or "").strip()
+        if content:
+            lines.append("%s：%s" % (name, content))
+    return "\n".join(lines)
+
+
+def _fallback_brief(session: str, question: str = "") -> dict:
+    """没配 Key 时的本地兜底：仍然给结论/关键词/要点，但明确标注。"""
     ring = list(_ring(session))
     if not ring:
-        return "还没有听到会议内容：先按「确认」开始录制，等字幕出来再按左键。"
+        return {"summary": "还没有会议内容，先按确认开始录制",
+                "keywords": [], "points": [],
+                "answer": "还没有听到会议内容：先按「确认」开始录制，再按左键。"}
     recent = ring[-3:]
     asked = [s for s in ring if _QUESTION_RE.search(s.get("content") or "")]
-    core = asked[-1] if asked else (ring[-1] if ring else {})
-    lines = ["1. 核心问题：" + _short(core.get("content") or "会议中的待确认事项", 34)]
-    for i, s in enumerate(recent, 2):
+    core = asked[-1] if asked else ring[-1]
+    joined = " ".join((s.get("content") or "") for s in recent)
+    if question:
+        summary = "关于「%s」：%s" % (_short(question, 14), _short(core.get("content") or "会议里没有直接答案", 26))
+    else:
+        summary = _short(core.get("content") or "会议中的待确认事项", 30)
+    keywords = llm.keywords_of((question or "") + " " + joined, 3)
+    points = []
+    for s in recent:
         who = (s.get("name") or "发言人").strip()
-        lines.append("%d. %s：%s" % (i, who, _short(s.get("content") or "", 30)))
-    lines.append("（未配置大模型 Key，本地规则兜底；补 Key 后自动升级为大模型回答）")
-    return "\n".join(lines[:5])
+        points.append("%s：%s" % (who, _short(s.get("content") or "", 30)))
+    answer = "\n".join([summary] + points + ["（未配置大模型 Key，本地规则兜底）"])
+    return {"summary": summary, "keywords": keywords, "points": points[:3],
+            "answer": answer}
 
 
-def ask(session: str) -> dict:
-    """左键触发：用最近上下文生成要点式回答，并写 ai_answer_record。"""
+def ask(session: str, question: str = "") -> dict:
+    """左键/文字提问：本地检索会议文本 → 可编辑提示词 → DeepSeek → 小屏摘要。"""
     row = db.get_session(session)
     if not row:
         return {"ok": False, "error": "没有这段会议，先按确认开始录制"}
     t0 = time.time()
-    context = context_text(session)
+    system_prompt = (settings_store.get_settings().get("system_prompt") or "")
+    context = _retrieve_context(session, question)
     try:
-        answer = llm.answer_meeting(context)
+        brief = llm.answer_meeting(context, question=question, system_prompt=system_prompt)
         degraded = False
     except llm.LLMUnavailable:
-        answer = _fallback_answer(session)
+        brief = _fallback_brief(session, question)
         degraded = True
     created = db.now_text()
-    rec = db.add_answer(session, context, answer, created)
+    rec = db.add_answer(session, context, brief.get("answer") or "", created)
     return {
         "ok": True,
         "session": session,
-        "answer": answer,
+        "answer": brief.get("answer") or "",
+        "summary": brief.get("summary") or "",
+        "keywords": brief.get("keywords") or [],
+        "points": brief.get("points") or [],
+        "question": question,
         "context_snapshot": context,
         "create_time": created,
         "id": rec.get("id"),
@@ -433,8 +528,21 @@ def _meeting_dict(row: dict) -> dict:
         "is_recording": bool(row.get("is_recording")),
         "offline_diarization_status": int(row.get("offline_diarization_status") or 0),
         "summary": row.get("summary") or "",
+        "summary_text": row.get("summary_text") or "",
+        "key_points": _json_list(row.get("key_points")),
+        "action_items": _json_list(row.get("action_items")),
         "audio_file_path": row.get("audio_file_path") or "",
     }
+
+
+def _json_list(raw) -> list:
+    if not raw:
+        return []
+    try:
+        got = json.loads(raw) if isinstance(raw, str) else raw
+        return [str(x) for x in got] if isinstance(got, list) else []
+    except Exception:
+        return []
 
 
 def list_meetings(limit: int = 100) -> dict:

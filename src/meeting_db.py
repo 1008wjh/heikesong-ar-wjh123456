@@ -40,7 +40,10 @@ CREATE TABLE IF NOT EXISTS meeting_session (
     duration_sec                REAL NOT NULL DEFAULT 0,
     speaker_count               INTEGER NOT NULL DEFAULT 0,
     segment_count               INTEGER NOT NULL DEFAULT 0,
-    summary                     TEXT NOT NULL DEFAULT ''
+    summary                     TEXT NOT NULL DEFAULT '',
+    summary_text                TEXT NOT NULL DEFAULT '',
+    key_points                  TEXT NOT NULL DEFAULT '',
+    action_items                TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS speech_record (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -93,6 +96,11 @@ def init() -> None:
         try:
             conn.execute("PRAGMA journal_mode = WAL")
             conn.executescript(SCHEMA)
+            # 老库升级：补总结字段（SQLite 没有 IF NOT EXISTS ADD COLUMN）
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(meeting_session)")}
+            for name in ("summary_text", "key_points", "action_items"):
+                if name not in cols:
+                    conn.execute("ALTER TABLE meeting_session ADD COLUMN %s TEXT NOT NULL DEFAULT ''" % name)
             conn.commit()
         finally:
             conn.close()
@@ -172,17 +180,22 @@ def update_progress(session: str, duration_sec: float, speaker_count: int,
 
 def finish_session(session: str, duration_sec: float, speaker_count: int,
                    segment_count: int, summary: str = "",
-                   finish_time: str | None = None) -> None:
+                   finish_time: str | None = None,
+                   summary_text: str = "", key_points=None,
+                   action_items=None) -> None:
     init()
     with _LOCK:
         conn = connect()
         try:
             conn.execute(
                 "UPDATE meeting_session SET is_recording = 0, finish_time = ?,"
-                " duration_sec = ?, speaker_count = ?, segment_count = ?, summary = ?"
+                " duration_sec = ?, speaker_count = ?, segment_count = ?, summary = ?,"
+                " summary_text = ?, key_points = ?, action_items = ?"
                 " WHERE session_id = ?",
                 (finish_time or now_text(), round(float(duration_sec or 0), 2),
-                 int(speaker_count or 0), int(segment_count or 0), summary, session),
+                 int(speaker_count or 0), int(segment_count or 0), summary,
+                 summary_text or "", json.dumps(key_points or [], ensure_ascii=False),
+                 json.dumps(action_items or [], ensure_ascii=False), session),
             )
             conn.commit()
         finally:

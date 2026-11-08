@@ -36,6 +36,7 @@ $env:AR_LLM_PRESET = "deepseek"
 
 import json
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -509,38 +510,140 @@ MEETING_QA_PROMPT = """下面是一段线下会议对话，请完成以下要求
 1. 从对话中提取出核心问题；
 2. 针对问题给出分点式的精简回答要点；
 3. 语言简洁，避免长段落，适配小屏幕阅读。
+4. 回答过长时，先给一句结论 + 3 个关键词 + 最多 4 条短要点。
 
 对话上下文：
 {context}"""
 
+MEETING_ANSWER_SCHEMA = """只输出 JSON，不要解释、不要代码块：
+{"summary":"不超过30字的结论","keywords":["关键词1","关键词2","关键词3"],
+ "points":["不超过20字的要点1","要点2","要点3"],"answer":"完整一点的回答，最多5条"}"""
 
-def answer_meeting(context):
-    """多人会议的一键 AI 应答（PRD 固定提示词）。
+_CN_STOP = set("的了是在我你他她它们这那和与及就都而把被让给对说有个一不没很也还又或如果因为所以但是然后可以我们你们他们")
 
-    返回可以直接上 AR 小屏的要点式文本。没配 Key 时抛 LLMUnavailable，
-    由会议服务层降级成本地规则兜底——不假装模型可用。
+
+def keywords_of(text, n=4):
+    """从一段中文/英文文本里抽关键词（不依赖分词库，供小屏摘要兜底）。"""
+    text = str(text or "")
+    words = []
+    # 英文词
+    for w in re.findall(r"[A-Za-z][A-Za-z0-9_-]{1,20}", text):
+        words.append(w.lower())
+    # 中文二元组，过滤高频虚词
+    cn = re.findall(r"[\u4e00-\u9fff]", text)
+    for i in range(len(cn) - 1):
+        a, b = cn[i], cn[i + 1]
+        if a in _CN_STOP or b in _CN_STOP:
+            continue
+        words.append(a + b)
+    freq = {}
+    for w in words:
+        if len(w.strip()) < 2:
+            continue
+        freq[w] = freq.get(w, 0) + 1
+    ranked = sorted(freq.items(), key=lambda kv: (-kv[1], kv[0]))
+    out = []
+    for w, _ in ranked:
+        if w not in out:
+            out.append(w)
+        if len(out) >= n:
+            break
+    return out
+
+
+def _meeting_brief(summary, keywords, points, answer):
+    summary = str(summary or "").strip()[:60]
+    keywords = [str(x).strip()[:12] for x in (keywords or []) if str(x).strip()][:4]
+    points = [str(x).strip()[:40] for x in (points or []) if str(x).strip()][:4]
+    answer = str(answer or "").strip()
+    if not answer:
+        answer = "\n".join(([summary] if summary else []) + points)
+    return {"summary": summary, "keywords": keywords, "points": points,
+            "answer": answer or "（没有内容）"}
+
+
+def answer_meeting(context, question="", system_prompt=""):
+    """多人会议的一键 AI 应答。
+
+    返回 {summary, keywords, points, answer}；小屏只显示 summary/keywords/points，
+    answer 留在控制台历史里。没配 Key 时抛 LLMUnavailable，由服务层兜底。
     """
     context = (context or "").strip()
-    if not context:
+    if not context and not (question or "").strip():
         raise LLMUnavailable("还没有会议上下文")
+    question = (question or "").strip()
+    custom = (system_prompt or "").strip()
+    user = MEETING_QA_PROMPT.format(context=context[-5000:])
+    if question:
+        user += "\n\n用户这次的问题：" + question[:300]
+    if custom:
+        user = "系统提示词（用户可编辑，优先遵守）：\n" + custom[:2000] + "\n\n" + user
     if STUB:
-        return ("1. 核心问题：报价单什么时候发、会议怎么安排？\n"
-                "2. 王姐会在下周三之前把报价单发过来。\n"
-                "3. 明天下午 3 点、三楼会议室开会，记得带电脑和充电器。\n"
-                "4. 会后需要确认会议时间并发送纪要。")
+        return _meeting_brief("王姐下周三前发报价单，明天下午3点三楼开会",
+                              ["报价单", "下周三", "三楼会议室"],
+                              ["王姐下周三前发报价单", "明天下午3点三楼开会", "记得带电脑和充电器"],
+                              "1. 王姐下周三前发报价单。\n2. 明天下午3点三楼会议室开会。\n3. 记得带电脑和充电器。")
     if not LLM_KEY:
         raise LLMUnavailable("没配文本模型 Key（AR_LLM_KEY / DEEPSEEK_API_KEY 等）")
     out = _chat_plain(
         "你是线下会议的 AI 助手。回答必须精简、分点、适合 AR 小屏阅读；"
-        "只根据给出的会议上下文，不要编造没出现的信息。",
-        MEETING_QA_PROMPT.format(context=context[-4000:]),
-        max_tokens=520,
+        "只根据给出的会议上下文，不要编造没出现的信息。"
+        + MEETING_ANSWER_SCHEMA,
+        user,
+        max_tokens=560,
         temperature=0.2,
     )
     out = (out or "").strip()
     if not out:
         raise LLMUnavailable("模型没有返回内容")
-    return out
+    obj = _loads_loose(out)
+    if isinstance(obj, dict):
+        summary = obj.get("summary") or obj.get("结论") or ""
+        keywords = obj.get("keywords") or obj.get("关键词") or []
+        points = obj.get("points") or obj.get("要点") or []
+        answer = obj.get("answer") or obj.get("回答") or ""
+        brief = _meeting_brief(summary, keywords, points, answer)
+        # 模型只给了 summary/points、没给 answer 时，拼出可读文本
+        if not brief["answer"].strip() and (brief["summary"] or brief["points"]):
+            brief["answer"] = "\n".join(([brief["summary"]] if brief["summary"] else []) + brief["points"])
+        return brief
+    # 模型没按 JSON 回：保留原文，摘要用首行 + 关键词
+    first = out.splitlines()[0][:60]
+    return _meeting_brief(first, keywords_of(out, 3), out.splitlines()[:3], out)
+
+
+def summarize_meeting(transcript, system_prompt=""):
+    """会后总结：返回 {summary, key_points, action_items}。"""
+    transcript = (transcript or "").strip()
+    if len(transcript) < 8:
+        raise LLMUnavailable("会议内容太短，先多说几句")
+    custom = (system_prompt or "").strip()
+    user = ("下面是一场线下会议的全部转写。请总结：\n"
+            "1) 一句话结论（≤40字）；2) 3–5 条关键结论；3) 待办（谁、做什么、什么时候）。\n"
+            "只根据原文，不要编。只输出 JSON："
+            '{"summary":"...","key_points":["..."],"action_items":["..."]}\n\n'
+            "会议转写：\n" + transcript[-8000:])
+    if custom:
+        user = "系统提示词（用户可编辑，优先遵守）：\n" + custom[:2000] + "\n\n" + user
+    if STUB:
+        return {"summary": "3 人会议：报价单与明天下午开会安排",
+                "key_points": ["王姐下周三前发报价单", "明天下午3点三楼会议室开会"],
+                "action_items": ["王姐：下周三前发报价单", "全员：明天下午3点带电脑到三楼"]}
+    if not LLM_KEY:
+        raise LLMUnavailable("没配文本模型 Key")
+    out = _chat_plain(
+        "你是会议纪要助手，输出必须精简、可执行、只依据原文。",
+        user, max_tokens=600, temperature=0.2,
+    )
+    obj = _loads_loose(out)
+    if not isinstance(obj, dict):
+        raise LLMUnavailable("模型没按 JSON 返回总结")
+    pick = lambda k, alt: [str(x).strip()[:80] for x in (obj.get(k) or obj.get(alt) or []) if str(x).strip()][:6]
+    return {
+        "summary": str(obj.get("summary") or obj.get("结论") or "").strip()[:120],
+        "key_points": pick("key_points", "关键结论"),
+        "action_items": pick("action_items", "待办"),
+    }
 
 
 def analyze(transcript, person):

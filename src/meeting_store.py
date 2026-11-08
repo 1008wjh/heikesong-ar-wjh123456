@@ -87,6 +87,21 @@ def archive(session: str, state: dict) -> dict:
     }
 
 
+def patch(session: str, **fields) -> dict | None:
+    """给已归档的 meta.json 补字段（总结/要点等），原子写。"""
+    path = meta_path(session)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            obj = json.load(f) or {}
+    except Exception:
+        return None
+    obj.update(fields)
+    _write_atomic(path, obj)
+    return obj
+
+
 def load(session: str) -> dict | None:
     path = meta_path(session)
     if not os.path.isfile(path):

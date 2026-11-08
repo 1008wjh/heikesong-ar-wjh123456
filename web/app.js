@@ -6,7 +6,7 @@
 const $ = (s) => document.querySelector(s);
 
 // 改代码就 +1，页脚会显示。看到 build 不是最新的，说明浏览器还在跑旧脚本。
-const BUILD = 22;
+const BUILD = 23;
 
 const state = { people: [], threshold: 0.4 };
 
@@ -660,7 +660,7 @@ function renderMtgList() {
 
     const info = mk('div', 'mtg-info');
     const line = mk('div', 'mtg-line');
-    line.append(mk('span', 'mtg-sum', item.summary || '（没有摘要）'));
+    line.append(mk('span', 'mtg-sum', item.summary_text || item.summary || '（没有摘要）'));
     if (Number(item.is_recording)) line.append(mk('i', 'mtg-rec', '录音中'));
     info.append(
       line,
@@ -785,7 +785,7 @@ function resetMtgSections(text) {
 function renderMtgDetail(data) {
   const m = (data && data.meeting) || {};
   if ($('#mtgSid')) $('#mtgSid').textContent = m.session_id || mtg.current || '—';
-  if ($('#mtgDTitle')) $('#mtgDTitle').textContent = m.summary || '多人会议';
+  if ($('#mtgDTitle')) $('#mtgDTitle').textContent = m.summary_text || m.summary || '多人会议';
   const bits = [];
   if (m.create_time) bits.push('创建 ' + fmtTime(m.create_time));
   if (m.finish_time) bits.push('结束 ' + fmtTime(m.finish_time));
@@ -816,6 +816,25 @@ function renderMtgFacts(m, data) {
     cell.append(mk('span', 'mtg-fact-k', k), mk('b', 'mtg-fact-v', v));
     box.append(cell);
   });
+
+  if (m.summary_text) {
+    const cell = mk('div', 'mtg-fact is-wide');
+    cell.append(mk('span', 'mtg-fact-k', '会议总结'));
+    cell.append(mk('b', 'mtg-fact-v', m.summary_text));
+    box.append(cell);
+  }
+  if (Array.isArray(m.key_points) && m.key_points.length) {
+    const cell = mk('div', 'mtg-fact is-wide');
+    cell.append(mk('span', 'mtg-fact-k', '关键结论'));
+    cell.append(mk('b', 'mtg-fact-v', m.key_points.join(' · ')));
+    box.append(cell);
+  }
+  if (Array.isArray(m.action_items) && m.action_items.length) {
+    const cell = mk('div', 'mtg-fact is-wide');
+    cell.append(mk('span', 'mtg-fact-k', '待办'));
+    cell.append(mk('b', 'mtg-fact-v', m.action_items.join(' · ')));
+    box.append(cell);
+  }
 
   if (speakers.length) {
     const cell = mk('div', 'mtg-fact is-wide');

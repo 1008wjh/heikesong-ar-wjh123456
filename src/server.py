@@ -265,7 +265,7 @@ class Handler(BaseHTTPRequestHandler):
                 session = str(body.get("session") or "")
                 if not session:
                     return self._json({"ok": False, "error": "缺少 session"}, 400)
-                return self._json(meeting_service.ask(session))
+                return self._json(meeting_service.ask(session, str(body.get("question") or "")))
             if path == "/api/meeting/stop":
                 session = str(body.get("session") or "")
                 if not session:
