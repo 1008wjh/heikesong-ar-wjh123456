@@ -206,12 +206,17 @@ def transcribe_detail(wav_bytes: bytes) -> dict:
     if not wav_bytes:
         raise DoubaoASRError("空音频")
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                return pool.submit(asyncio.run, _transcribe(wav_bytes)).result(timeout=TIMEOUT + 10)
-        return asyncio.run(_transcribe(wav_bytes))
+        # 不要用 asyncio.get_event_loop()：Python 3.12 在 meeting-offline 等
+        # 非主线程里没有 current loop，会直接抛 "There is no current event loop"，
+        # 结果每个豆包调用都被静默回退到本地 ASR。
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(_transcribe(wav_bytes))
+        # 极端情况下调用方本身在 async loop 里：换线程跑，避免嵌套 loop。
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            return pool.submit(asyncio.run, _transcribe(wav_bytes)).result(timeout=TIMEOUT + 10)
     except DoubaoASRError:
         raise
     except Exception as exc:
