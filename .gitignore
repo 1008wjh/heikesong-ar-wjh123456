@@ -40,3 +40,6 @@ simstate/
 
 # 真人录音（隐私）：只在本地用来回归，不进仓库
 test/voice/rec_*.wav
+
+# 注册声纹的原始录音（隐私）
+data/voiceprints/

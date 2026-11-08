@@ -367,7 +367,10 @@ class Handler(BaseHTTPRequestHandler):
             lines.append({"speaker": spk, "secs": c["secs"], "sim_owner": round(sim_owner, 3),
                           "person": (person or {}).get("name"), "sim": round(sim_val, 3)})
             if owner_embs and sim_owner >= voice.IDENTIFY_THRESHOLD:
-                continue
+                # 只有"更像主人、且没有明显更像别人"才剔除；
+                # 两个人声纹接近时（比如 0.49），不能把对方的话当主人剔掉
+                if person is None or sim_owner > sim_val + voice.IDENTIFY_MARGIN:
+                    continue
             if best is None or sim_val > best[0]:
                 best = (sim_val, person, sim_owner, spk)
 
@@ -389,8 +392,11 @@ class Handler(BaseHTTPRequestHandler):
             return {"ok": True, "status": "known", "created": True,
                     "person_id": person["id"], "name": person["name"],
                     "similarity": 1.0, "clusters": lines, "card": card}
-        card = cards.build_card(person, sim_val, voice.THRESHOLD)
-        return {"ok": True, "status": "known", "person_id": person["id"], "name": person["name"],
+        # voice_index() 是轻量视图（只有 id/name/role/声纹），出卡前必须换成完整记录，
+        # 否则 simple/info 都拿不到，镜片上只有名字和身份、没有简单数据。
+        full = store.get(person["id"]) or person
+        card = cards.build_card(full, sim_val, voice.THRESHOLD)
+        return {"ok": True, "status": "known", "person_id": full["id"], "name": full["name"],
                 "similarity": round(sim_val, 3), "clusters": lines, "card": card}
 
     def _voice_scan(self, body):
