@@ -758,10 +758,29 @@ async function stopMeetingRecording() {
   await p;
 }
 
+async function flushMeetingAudio() {
+  // 左键提问前，把当前还没切片的这几秒强制切出去并等转写回来；
+  // 否则问题还在麦克风缓冲里，AI 只能看到上一段上下文。
+  if (!meeting || !meeting.recording || !capture) return;
+  const c = capture;
+  try { cutSlice(c, 1000); } catch (e) { /* 音频太短就不强切 */ }
+  const deadline = Date.now() + 12000;
+  while (Date.now() < deadline && (c.busy || (c.queue && c.queue.length))) {
+    await new Promise((resolve) => setTimeout(resolve, 120));
+  }
+}
+
 async function askMeeting(question) {
   if (!meeting) return;
+  meeting.thinking = true;
+  if (meeting.recording) {
+    meeting.note = "先听完最后一句…";
+    paintMeeting();
+    await flushMeetingAudio();
+  }
   const sid = meeting.session || (await ensureMeetingSession());
   if (!sid) {
+    meeting.thinking = false;
     meeting.note = "后台没连上 · 先启动 start.bat";
     paintMeeting();
     return;
