@@ -81,7 +81,8 @@ function toast(msg, bad) {
 }
 
 function photoUrl(p) {
-  return '/api/photo?id=' + encodeURIComponent(p.id) + '&t=' + (p.photo ? Date.now() : 0);
+  const tk = encodeURIComponent(localStorage.getItem('ml_token') || '');
+  return '/api/photo?id=' + encodeURIComponent(p.id) + '&t=' + (p.photo ? Date.now() : 0) + '&token=' + tk;
 }
 
 /* ---------------- 列表 ---------------- */
@@ -284,7 +285,8 @@ function openEditor(id) {
     play.textContent = hasClip ? '▶ 重播声纹' : '▶ 重播声纹（重录后可用）';
     play.onclick = () => {
       if (!editing || !hasClip) return;
-      const audio = new Audio('/api/voice/clip?id=' + encodeURIComponent(editing.id) + '&t=' + Date.now());
+      const tk = encodeURIComponent(localStorage.getItem('ml_token') || '');
+      const audio = new Audio('/api/voice/clip?id=' + encodeURIComponent(editing.id) + '&t=' + Date.now() + '&token=' + tk);
       audio.play().catch((err) => toast('播放失败：' + err.message, true));
       toast('正在重播最近一次注册录音');
     };

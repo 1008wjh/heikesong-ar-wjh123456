@@ -207,6 +207,13 @@ class Handler(BaseHTTPRequestHandler):
             return True
         header = self.headers.get("Authorization") or ""
         token = header[7:].strip() if header.lower().startswith("bearer ") else ""
+        if not token:
+            # <img> / <audio> 带不了 header：照片、声纹重播用 ?token= 传
+            try:
+                qs = parse_qs(self.path.split("?")[1]) if "?" in self.path else {}
+                token = (qs.get("token") or [""])[0].strip()
+            except Exception:
+                token = ""
         uid = auth.verify_token(token) if token else ""
         if uid:
             self._uid = uid
