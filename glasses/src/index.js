@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 
 // 模拟器里 JS 异常只会让客户端显示"应用需要处理"；把堆栈打出来便于定位。
 try {
@@ -185,6 +185,19 @@ function buildHud() {
 
   retained.info = [0, 1, 2, 3, 4, 5].map((i) =>
     makeText(retained.board, 8, 216 + i * 30, 200, 28, 16, COL.white));
+
+  // 模式页两套静态页面：切页只改可见性、不改文字。
+  // 单色屏上「改 Text 内容」经常不触发重绘，整块显隐才稳。
+  retained.modePages = [
+    ["【单人】", "  多人", "一个人聊 · 55 秒"],
+    ["  单人", "【多人】", "2 人以上 · 分人待办"],
+  ].map((rows) => rows.map((row, i) => {
+    const t = makeText(retained.board, 8, 216 + i * 30, 200, i < 2 ? 28 : 22, i < 2 ? 16 : 13,
+      i < 2 ? COL.white : COL.dim);
+    putText(t, row);
+    try { t.setHidden(true); } catch (e) { /* 旧运行时没有 hidden */ }
+    return t;
+  }));
 
   retained.foot = makeText(retained.board, 8, H - 40, 200, 22, 13, COL.dim);
   putText(retained.foot, "按一下就说");
@@ -1753,6 +1766,7 @@ function openMode() {
 
 function closeMode() {
   modeSelect = null;
+  showInfoRows();
   if (lastScene && lastScene.card) { paintCard(lastScene.card, lastScene.rev, lastScene.ms); return; }
   paintIdle("按一下开始 · 先选单人还是多人");
 }
@@ -1792,17 +1806,20 @@ function paintMode() {
   putText(retained.name, "开始记录");
   putText(retained.role, "先选这一段是什么");
   putText(retained.sim, " ");
-  // 模拟器/单色屏上原生 Select 的选中框不会跟着 index 走（只显示一个 []），
-  // 统一用 Text 手搓，左右键一定能看到【】移动。
-  const rows = MODE_ITEMS.map((m, i) => (i === modeSelect.index ? "【" + m.label + "】" : "  " + m.label));
-  retained.info.forEach((t, i) => putText(t, rows[i] || ""));
-  putText(retained.info[2], MODE_ITEMS[modeSelect.index].hint);
+  // 切页：只改可见性，不改文字。单色屏上「改 Text 内容」不一定触发重绘，整块显隐才稳。
+  retained.info.forEach((t) => { try { t.setHidden(true); } catch (e) { /* optional */ } });
+  retained.modePages.forEach((page, i) => {
+    page.forEach((t) => { try { t.setHidden(i !== modeSelect.index); } catch (e) { /* optional */ } });
+  });
   putText(retained.foot, "上下选 确认进入 返回关掉");
-  // Text 内容变化不一定会让宿主重绘这一块，显式 invalidate 一次。
-  try {
-    retained.info.forEach((t) => { if (t && t.invalidate) t.invalidate(); });
-    if (retained.foot && retained.foot.invalidate) retained.foot.invalidate();
-  } catch (e) { /* optional */ }
+  try { if (retained.board && retained.board.invalidate) retained.board.invalidate(); } catch (e) { /* optional */ }
+}
+
+function showInfoRows() {
+  retained.info.forEach((t) => { try { t.setHidden(false); } catch (e) { /* optional */ } });
+  (retained.modePages || []).forEach((page) => page.forEach((t) => {
+    try { t.setHidden(true); } catch (e) { /* optional */ }
+  }));
 }
 
 function navMode(act) {
@@ -1823,6 +1840,7 @@ function navMode(act) {
   if (act === "activate") {
     const mode = MODE_ITEMS[modeSelect.index].key;
     modeSelect = null;
+    showInfoRows();
     if (mode === "meeting") {
       enterMeeting().catch(() => {});
       return;

@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 
 /**
  * 眼镜端（glasses/src/index.js）离线仿真。
@@ -67,13 +67,15 @@ const fusionui = {
   Text: {
     create() {
       const node = {
-        value: "",
+        value: "", hidden: false,
         __w: 0, __h: 0,
         setParent() {}, setIgnoreLayout() {}, setPosition() {}, setSize([w, h]) { node.__w = w; node.__h = h; },
         setAlignment() {},
         resetAlignment() {}, updateLayout() {}, invalidate() {},
         getLocalStyle: styleObject,
         setText(v) { node.value = String(v); },
+        setHidden(v) { node.hidden = !!v; },
+        getHidden() { return node.hidden; },
         getText() { return node.value; },
         setLongMode() {}, resetLongMode() {}, setHeightByLineCount() {},
       };
@@ -181,7 +183,7 @@ async function waitUntil(fn, ms = 6000) {
 }
 
 function hud() {
-  return texts.map((t) => t.value).filter((v) => v !== "");
+  return texts.filter((t) => !t.hidden).map((t) => t.value).filter((v) => v !== "");
 }
 
 async function postScan(imagePath) {
