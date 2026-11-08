@@ -220,7 +220,9 @@ class Handler(BaseHTTPRequestHandler):
             auth.set_active(uid)
             userctx.set_user(uid)
             return True
-        if path in self.GLASSES_PATHS:
+        if path in self.GLASSES_PATHS or path.startswith("/api/meeting/"):
+            # 眼镜端没有登录页，但会议模块必须能录/停/问/归档；
+            # 沿用“最近登录的用户”，不要求 Bearer token。
             self._uid = auth.active_user() or "demo"
             userctx.set_user(self._uid)
             return True
