@@ -16,10 +16,8 @@ DEFAULT = {"hold_sec": 30, "first_hold_sec": 9, "identify_sec": 20,
 
 
 def _path():
-    base = os.environ.get("AR_DATA_DIR") or os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data"
-    )
-    return os.path.join(base, "settings.json")
+    import userctx
+    return userctx.data_path("settings.json")
 
 
 def get_settings():

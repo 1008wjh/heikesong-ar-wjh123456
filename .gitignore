@@ -48,3 +48,8 @@ test/voice/rec_*.wav
 
 # 注册声纹的原始录音（隐私）
 data/voiceprints/
+
+# 登录用户数据（每人一个目录）与 JWT 密钥
+data/users/
+data/users.json
+data/.jwt_secret

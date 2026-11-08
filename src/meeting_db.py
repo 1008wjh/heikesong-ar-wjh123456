@@ -78,8 +78,10 @@ def now_text() -> str:
 
 
 def connect() -> sqlite3.Connection:
-    os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, timeout=15)
+    import userctx
+    path = userctx.data_path("meetings.db")
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    conn = sqlite3.connect(path, timeout=15)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 15000")
     return conn

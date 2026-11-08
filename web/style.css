@@ -1281,3 +1281,10 @@ h3 .mtg-badge { margin-left: 10px; vertical-align: 2px; }
   .mtg-ans-body { grid-template-columns: 1fr; gap: 4px; }
   .mtg-ans-k { padding-top: 0; }
 }
+
+
+.auth-chip {
+  position: fixed; right: 16px; top: 12px; z-index: 60; display: flex; gap: 8px; align-items: center;
+  background: var(--surface); border: 2px solid var(--line); padding: 6px 10px; font-size: 12px;
+  box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.18);
+}
