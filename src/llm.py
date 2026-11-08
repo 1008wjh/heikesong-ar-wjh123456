@@ -151,6 +151,8 @@ def status():
         "asrAvailable": asr_available(),
         "stub": STUB,
         "model": LLM_MODEL,
+        "meetingAnswerModel": (os.environ.get("AR_MEETING_ANSWER_MODEL") or "").strip() or LLM_MODEL,
+        "meetingSummaryModel": (os.environ.get("AR_MEETING_SUMMARY_MODEL") or "").strip() or LLM_MODEL,
         "base": LLM_BASE,
         "asr": ASR_MODEL if ASR_PROVIDER == "http" else ("sense-voice" if os.path.basename(ASR_DIR).startswith("sense") else "paraformer-zh-small"),
         "asrProvider": ASR_PROVIDER,
