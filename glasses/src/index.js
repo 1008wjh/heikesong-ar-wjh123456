@@ -910,18 +910,25 @@ function navMeeting(act) {
   if (act === "left") { askMeeting(); return; }
   // 浮窗开着时，右键/返回键都只关浮窗，绝不能顺势退出并停止录音。
   if (act === "right") { if (meeting.popup && meeting.popup.open) closeMeetingPopup(); return; }
-  if (act === "back" && meeting.recording && meeting.popup && meeting.popup.open) {
-    // 录音中返回键也只关浮窗；停录后返回仍然正常退出。
-    closeMeetingPopup();
-    return;
-  }
   if (act === "up") {
     // 回答已截断，不需要滚动；浮窗关闭时上键打开短语键盘，用文字提问/发指令
     if (!(meeting.popup && meeting.popup.open)) openText("keys");
     return;
   }
   if (act === "down") return;
-  if (act === "back") { exitMeeting(); return; }
+  if (act === "back") {
+    // 录音中返回键只关浮窗/给提示，绝不停止采集；要停止必须按确认键。
+    if (meeting.popup && meeting.popup.open) {
+      closeMeetingPopup();
+      return;
+    }
+    if (meeting.recording) {
+      meeting.note = "录音中 · 按确认停止后再退出";
+      paintMeeting();
+      return;
+    }
+    exitMeeting();
+  }
 }
 
 function onMeetingFeed(res) {

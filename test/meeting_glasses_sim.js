@@ -195,6 +195,11 @@ function has(re) { return hud().some((v) => re.test(v)); }
   check("右键关闭浮窗", !has(/^AI 回答/), JSON.stringify(hud().slice(0, 12)));
   check("右键关浮窗不停止录音", has(/录制中/), JSON.stringify(hud().slice(0, 12)));
 
+  // 5.1) 录音中的返回键也不能停止采集，只能提示先按确认
+  navQueue.push("back");
+  await sleep(400);
+  check("录音中返回不停止录音", has(/录音中|录制中/), JSON.stringify(hud().slice(0, 12)));
+
   // 6) 浮窗关闭时上键打开文字键盘（用文字提问/发指令）
   navQueue.push("up");
   const gotKeys = await waitUntil(() => has(/打字 · 方向键选/), 5000);
