@@ -109,5 +109,9 @@ set "AR_ASR_FALLBACK=local"
 
 ## 8. 当前状态
 
-- 方案已定：**豆包流式 2.0 做 ASR 主路径，本地 SenseVoice 兜底；CAM++ + AHC 做分人**。
-- 等 API 文档/凭证到位后开始实现，不在没有协议细节时改主链路。
+- 已接入 `bigmodel_async` + `x-api-key`（`src/asr_doubao.py`），已验证 Key 可用；
+- `AR_ASR_PROVIDER=doubao` 时主路径走豆包，失败/超时回退本地 SenseVoice；
+- 实测一段 6 秒会议音频：第一次冷启动约 12 秒，之后约 1.2 秒；文字准确率明显好于本地；
+- 当前眼镜端仍是 6–8 秒切片，所以只是“每个切片用豆包”，还不是边说话边出字；
+- 下一步：客户端改为 200–500ms 小片持续发送，后端维护一条连续 WebSocket，才能实现真正的实时字幕；
+- 分人仍由本地 CAM++ + 全局 AHC 负责，豆包返回的 `speaker_id` 只作为辅助参考。

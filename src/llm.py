@@ -142,6 +142,9 @@ def available():
 
 
 def asr_available():
+    if ASR_PROVIDER in ("doubao", "doubao_stream", "volcengine"):
+        return bool((os.environ.get("AR_DOUBAO_API_KEY")
+                     or os.environ.get("VOLCENGINE_VOICE_API_KEY") or "").strip())
     return ASR_READY
 
 
@@ -154,9 +157,14 @@ def status():
         "meetingAnswerModel": (os.environ.get("AR_MEETING_ANSWER_MODEL") or "").strip() or LLM_MODEL,
         "meetingSummaryModel": (os.environ.get("AR_MEETING_SUMMARY_MODEL") or "").strip() or LLM_MODEL,
         "base": LLM_BASE,
-        "asr": ASR_MODEL if ASR_PROVIDER == "http" else ("sense-voice" if os.path.basename(ASR_DIR).startswith("sense") else "paraformer-zh-small"),
+        "asr": ("doubao" if ASR_PROVIDER in ("doubao", "doubao_stream", "volcengine")
+                else ASR_MODEL if ASR_PROVIDER == "http"
+                else ("sense-voice" if os.path.basename(ASR_DIR).startswith("sense") else "paraformer-zh-small")),
         "asrProvider": ASR_PROVIDER,
-        "asrBase": ASR_BASE if ASR_PROVIDER == "http" else "local",
+        "asrBase": (os.environ.get("AR_DOUBAO_ENDPOINT")
+                    or "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async")
+                   if ASR_PROVIDER in ("doubao", "doubao_stream", "volcengine")
+                   else ASR_BASE if ASR_PROVIDER == "http" else "local",
         "preset": LLM_PRESET or "custom",
         "stats": stats(),
     }
@@ -357,6 +365,19 @@ def transcribe(wav_bytes):
         raise LLMUnavailable("这段音频是空的")
     if STUB:
         return "（stub 转写）我们上次说的那个报价单，我这两天整理一下发你"
+    if ASR_PROVIDER in ("doubao", "doubao_stream", "volcengine"):
+        # 豆包流式 ASR 主路径；云端失败/超时自动回退本地 SenseVoice。
+        try:
+            import asr_doubao
+            text = asr_doubao.transcribe_wav(wav_bytes)
+            if text:
+                return text
+        except Exception:
+            pass
+        text = _local_transcribe(wav_bytes)
+        if not text:
+            raise LLMUnavailable("豆包转写失败，本地兜底也没听出字")
+        return text
     if ASR_PROVIDER == "local":
         text = _local_transcribe(wav_bytes)
         if not text:

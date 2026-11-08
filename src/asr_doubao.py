@@ -1,0 +1,151 @@
+# -*- coding: utf-8 -*-
+"""豆包流式语音识别 2.0：每次转写一段 WAV。
+
+当前用于替换本地 SenseVoice 的 per-segment ASR；后续接真正的连续流式时，
+复用这里的鉴权/协议常量和解析函数。
+"""
+from __future__ import annotations
+
+import asyncio
+import gzip
+import json
+import os
+import struct
+import uuid
+
+ENDPOINT = os.environ.get(
+    "AR_DOUBAO_ENDPOINT",
+    "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async",
+)
+RESOURCE_ID = os.environ.get("AR_DOUBAO_RESOURCE_ID", "volc.seedasr.sauc.duration")
+MODEL = os.environ.get("AR_DOUBAO_MODEL", "bigmodel")
+TIMEOUT = float(os.environ.get("AR_DOUBAO_TIMEOUT", "15"))
+
+_HEADER_SIZE = 4
+_FULL_CLIENT = 0b0001
+_AUDIO_ONLY = 0b0010
+_FULL_RESPONSE = 0b1001
+_ERROR = 0b1111
+
+
+class DoubaoASRError(RuntimeError):
+    pass
+
+
+def available() -> bool:
+    return bool(_api_key())
+
+
+def _api_key() -> str:
+    return (os.environ.get("AR_DOUBAO_API_KEY")
+            or os.environ.get("VOLCENGINE_VOICE_API_KEY") or "").strip()
+
+
+def _header(msg_type: int, flags: int, serialization: int, compression: int) -> bytes:
+    return struct.pack("BBBB", (1 << 4) | 1, (msg_type << 4) | flags,
+                       (serialization << 4) | compression, 0)
+
+
+def _extract_text(obj: dict) -> str:
+    result = obj.get("result") or {}
+    if isinstance(result, dict):
+        text = (result.get("text") or "").strip()
+        if text:
+            return text
+        parts = []
+        for u in result.get("utterances") or []:
+            if isinstance(u, dict) and u.get("text"):
+                parts.append(str(u["text"]).strip())
+        return "".join(parts).strip()
+    if isinstance(result, str):
+        return result.strip()
+    return ""
+
+
+async def _transcribe(wav_bytes: bytes) -> str:
+    import websockets as ws_lib  # 延迟导入，没装时服务仍可走本地兜底
+
+    key = _api_key()
+    if not key:
+        raise DoubaoASRError("没配 AR_DOUBAO_API_KEY")
+    headers = {
+        "X-Api-Key": key,
+        "X-Api-Resource-Id": RESOURCE_ID,
+        "X-Api-Request-Id": str(uuid.uuid4()),
+        "X-Api-Sequence": "-1",
+    }
+    async with ws_lib.connect(ENDPOINT, additional_headers=headers,
+                              max_size=64 * 1024 * 1024) as ws:
+        payload = json.dumps({
+            "user": {"uid": "memorylens"},
+            "audio": {"format": "wav", "rate": 16000, "bits": 16, "channel": 1},
+            "request": {
+                "model_name": MODEL,
+                "enable_itn": True,
+                "enable_punc": True,
+                "enable_ddc": True,
+                "show_utterances": True,
+                "enable_nonstream": True,
+            },
+        }, ensure_ascii=False).encode("utf-8")
+        payload = gzip.compress(payload)
+        await ws.send(_header(_FULL_CLIENT, 0, 1, 1)
+                      + struct.pack(">I", len(payload)) + payload)
+        await ws.send(_header(_AUDIO_ONLY, 0, 0, 0)
+                      + struct.pack(">I", len(wav_bytes)) + wav_bytes)
+        await ws.send(_header(_AUDIO_ONLY, 2, 0, 0) + struct.pack(">I", 0))
+
+        final_text = ""
+        while True:
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout=TIMEOUT)
+            except asyncio.TimeoutError:
+                break
+            except Exception:
+                break
+            if isinstance(raw, str):
+                continue
+            if len(raw) < 8:
+                continue
+            h = raw[:4]
+            msg_type = (h[1] >> 4) & 0x0F
+            flags = h[1] & 0x0F
+            compression = h[2] & 0x0F
+            has_seq = flags in (1, 3)
+            off = 4 + (4 if has_seq else 0)
+            if len(raw) < off + 4:
+                continue
+            size = struct.unpack(">I", raw[off:off + 4])[0]
+            body = raw[off + 4:off + 4 + size]
+            if compression == 1:
+                try:
+                    body = gzip.decompress(body)
+                except Exception:
+                    pass
+            if msg_type == _FULL_RESPONSE and body:
+                try:
+                    obj = json.loads(body.decode("utf-8"))
+                except Exception:
+                    continue
+                text = _extract_text(obj)
+                if text:
+                    final_text = text
+            elif msg_type == _ERROR:
+                raise DoubaoASRError("豆包 ASR 返回错误：" + body.decode("utf-8", "replace")[:200])
+        return final_text.strip()
+
+
+def transcribe_wav(wav_bytes: bytes) -> str:
+    if not wav_bytes:
+        raise DoubaoASRError("空音频")
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                return pool.submit(asyncio.run, _transcribe(wav_bytes)).result(timeout=TIMEOUT + 10)
+        return asyncio.run(_transcribe(wav_bytes))
+    except DoubaoASRError:
+        raise
+    except Exception as exc:
+        raise DoubaoASRError(str(exc)[:200]) from exc
