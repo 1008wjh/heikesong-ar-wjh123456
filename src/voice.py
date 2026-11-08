@@ -27,6 +27,11 @@ PEAK_MIN = float(os.environ.get("AR_VOICE_PEAK_MIN", "300"))
 # 陌生声音评分低于这个值才允许自动建号，避免把"像但不确定"的人建重复
 AUTOADD_MAX = float(os.environ.get("AR_VOICE_AUTOADD_MAX", "0.62"))
 MARGIN = float(os.environ.get("AR_VOICE_MARGIN", "0.08"))
+# 「识别人」专用的阈值：真实录音（微信/电话/会议室）和注册时的近场麦克风差别很大，
+# 同一个人常常只有 0.5~0.6；用 0.72 会全部判成陌生人。0.45 + margin 只在
+# 明显比第二个人像时才认，实测对 TTS 陌生人（≤0.30）仍不会误认。
+IDENTIFY_THRESHOLD = float(os.environ.get("AR_IDENTIFY_THRESHOLD", "0.45"))
+IDENTIFY_MARGIN = float(os.environ.get("AR_IDENTIFY_MARGIN", "0.08"))
 
 _extractor = None
 _lock = threading.Lock()        # 推理锁
@@ -125,14 +130,16 @@ def seconds(samples: np.ndarray) -> float:
     return samples.size / SAMPLE_RATE
 
 
-def match(emb: np.ndarray, people: list[dict]) -> tuple[dict | None, float, float]:
+def match(emb: np.ndarray, people: list[dict], threshold=None, margin=None) -> tuple[dict | None, float, float]:
     """在人脉库里找最像的人。
 
     返回 (person|None, best_sim, margin)。判定要同时满足：
-      1) 最高分 >= THRESHOLD          —— 绝对像
-      2) 领先第二名 >= MARGIN         —— 明显比"第二像的人"更像
+      1) 最高分 >= threshold（默认 THRESHOLD）  —— 绝对像
+      2) 领先第二名 >= margin（默认 MARGIN）    —— 明显比"第二像的人"更像
     第 2 条是为了挡住"两个声线接近的人"互相串号。
     """
+    thr = THRESHOLD if threshold is None else float(threshold)
+    mar = MARGIN if margin is None else float(margin)
     scored = []
     for p in people:
         for v in p.get("voice_embeddings") or []:
@@ -143,6 +150,6 @@ def match(emb: np.ndarray, people: list[dict]) -> tuple[dict | None, float, floa
     best_sim, best = scored[0]
     second = scored[1][0] if len(scored) > 1 else -1.0
     margin = best_sim - max(second, -1.0) if len(scored) > 1 else 1.0
-    if best_sim >= THRESHOLD and margin >= MARGIN:
+    if best_sim >= thr and margin >= mar:
         return best, best_sim, margin
     return None, best_sim, margin
