@@ -58,10 +58,10 @@ SEG_MODEL = os.environ.get(
     "AR_DIAR_SEG_MODEL",
     os.path.join(ROOT, "models", "diarization", "pyannote-segmentation-3.0.onnx"),
 )
-MERGE_SIM = min(max(_env_float("AR_DIAR_MERGE_SIM", 0.75), 0.1), 0.99)
+MERGE_SIM = min(max(_env_float("AR_DIAR_MERGE_SIM", 0.78), 0.1), 0.99)
 MAX_SPEAKERS = max(1, _env_int("AR_DIAR_MAX_SPEAKERS", 8))
-MIN_SEG_SECONDS = _env_float("AR_DIAR_MIN_SEG", 0.8)
-MIN_SPEAKER_SECONDS = _env_float("AR_DIAR_MIN_SPEAKER_SEC", 1.0)
+MIN_SEG_SECONDS = _env_float("AR_DIAR_MIN_SEG", 1.0)
+MIN_SPEAKER_SECONDS = _env_float("AR_DIAR_MIN_SPEAKER_SEC", 1.5)
 GAP_SECONDS = _env_float("AR_DIAR_GAP", 0.35)
 MIN_ON = _env_float("AR_DIAR_MIN_ON", 0.3)
 MIN_OFF = _env_float("AR_DIAR_MIN_OFF", 0.5)

@@ -391,26 +391,21 @@ def _retrieve_context(session: str, question: str = "") -> str:
 
 
 def _fallback_brief(session: str, question: str = "") -> dict:
-    """没配 Key 时的本地兜底：仍然给结论/关键词/要点，但明确标注。"""
+    """没配 Key 时的本地兜底：明确说明"没有大模型"，不把问题复述一遍。"""
     ring = list(_ring(session))
     if not ring:
         return {"summary": "还没有会议内容，先按确认开始录制",
                 "keywords": [], "points": [],
                 "answer": "还没有听到会议内容：先按「确认」开始录制，再按左键。"}
-    recent = ring[-3:]
-    asked = [s for s in ring if _QUESTION_RE.search(s.get("content") or "")]
-    core = asked[-1] if asked else ring[-1]
-    joined = " ".join((s.get("content") or "") for s in recent)
+    summary = "未配置大模型 Key，AI 回答暂不可用"
+    keywords = llm.keywords_of(" ".join((s.get("content") or "") for s in ring[-4:]), 3)
+    points = [
+        "已保留会议转写，共 %d 条上下文" % len(ring),
+        "补 AR_LLM_KEY 后可按问题生成回答",
+    ]
     if question:
-        summary = "关于「%s」：%s" % (_short(question, 14), _short(core.get("content") or "会议里没有直接答案", 26))
-    else:
-        summary = _short(core.get("content") or "会议中的待确认事项", 30)
-    keywords = llm.keywords_of((question or "") + " " + joined, 3)
-    points = []
-    for s in recent:
-        who = (s.get("name") or "发言人").strip()
-        points.append("%s：%s" % (who, _short(s.get("content") or "", 30)))
-    answer = "\n".join([summary] + points + ["（未配置大模型 Key，本地规则兜底）"])
+        points.insert(0, "收到问题，但没有模型 Key 无法作答")
+    answer = "\n".join([summary] + points)
     return {"summary": summary, "keywords": keywords, "points": points[:3],
             "answer": answer}
 

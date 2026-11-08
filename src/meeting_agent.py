@@ -26,7 +26,10 @@ import meeting_store
 import voice
 
 MAX_SPEAKERS = 8
-SPEAKER_MATCH = 0.72
+# 同一个人换语气/音量时质心会漂移；会议只要求"区分不同人"，宁可合并近的，
+# 也不要因为 1-2 秒的短句就长出一个新发言人。
+SPEAKER_MATCH = float(os.environ.get("AR_MEETING_SPEAKER_MATCH", "0.78"))
+MIN_NEW_SPEAKER_SEC = float(os.environ.get("AR_MEETING_MIN_NEW_SPEAKER_SEC", "4.0"))
 MAX_SEGMENTS = 400
 # 55 秒会议通常只有十几段；24 是上限，避免长段会议把后半段整段丢掉。
 MAX_ASR_SEGMENTS = 24
@@ -106,7 +109,7 @@ def _norm(v: np.ndarray) -> np.ndarray:
     return v / n if n > 0 else v
 
 
-def _best_speaker(centroid: np.ndarray, speakers: list[dict]):
+def _nearest_speaker(centroid: np.ndarray, speakers: list[dict]):
     best, best_sim = None, -1.0
     c = _norm(centroid)
     for sp in speakers:
@@ -116,6 +119,11 @@ def _best_speaker(centroid: np.ndarray, speakers: list[dict]):
         sim = float(np.dot(c, _norm(np.asarray(raw, dtype=np.float32))))
         if sim > best_sim:
             best, best_sim = sp, sim
+    return best, best_sim
+
+
+def _best_speaker(centroid: np.ndarray, speakers: list[dict]):
+    best, best_sim = _nearest_speaker(centroid, speakers)
     return (best, best_sim) if best is not None and best_sim >= SPEAKER_MATCH else (None, best_sim)
 
 
@@ -367,8 +375,16 @@ def node_merge(state: MeetingState) -> dict:
     for i, sp in enumerate(res.get("speakers") or []):
         centroid = centroids[i] if i < len(centroids) else None
         hit, sim = (None, -1.0)
+        sp_secs = float(sp.get("seconds") or 0)
         if centroid is not None:
             hit, sim = _best_speaker(np.asarray(centroid, dtype=np.float32), speakers)
+            # 短句不配新建发言人：换语气/一句插话很容易长出一个“发言人N”。
+            # 有已有发言人时，直接并入最接近的那个；超过人数上限也并入最近。
+            if hit is None and speakers and (sp_secs < MIN_NEW_SPEAKER_SEC
+                                             or len(speakers) >= MAX_SPEAKERS):
+                near, near_sim = _nearest_speaker(np.asarray(centroid, dtype=np.float32), speakers)
+                if near is not None:
+                    hit, sim = near, near_sim
         if hit is not None:
             sid = hit["id"]
             hit["centroid"] = _norm(0.7 * _norm(np.asarray(hit["centroid"], dtype=np.float32))
@@ -397,7 +413,55 @@ def node_merge(state: MeetingState) -> dict:
             continue
         mapped.append({"start": float(seg.get("start") or 0),
                        "end": float(seg.get("end") or 0), "spk": sid})
+    _consolidate_short_speakers(speakers, mapped)
     return {"speakers": speakers, "mapped": mapped}
+
+
+def _consolidate_short_speakers(speakers: list[dict], mapped: list[dict]) -> None:
+    """把"只说了几秒"的发言人并回最像的已有人声。
+
+    真实会议里同一个人换语气/离麦远一点，质心就会掉到 0.7 左右；如果这时
+    只看阈值，就会多出一个发言人。这里对**短发言人**放宽到 0.68，并只允许
+    并入比他更长的发言人，避免把真正的新人（通常会说更久）吞掉。
+    """
+    while len(speakers) > 1:
+        short = None
+        for sp in speakers:
+            if float(sp.get("seconds") or 0) < 6.0:
+                short = sp
+                break
+        if short is None:
+            return
+        best, best_sim = None, -1.0
+        c = short.get("centroid") or []
+        if not c:
+            return
+        c = _norm(np.asarray(c, dtype=np.float32))
+        for other in speakers:
+            if other is short:
+                continue
+            raw = other.get("centroid") or []
+            if not raw:
+                continue
+            sim = float(np.dot(c, _norm(np.asarray(raw, dtype=np.float32))))
+            if sim > best_sim:
+                best, best_sim = other, sim
+        if best is None or best_sim < 0.68:
+            return
+        keep_secs = float(best.get("seconds") or 0)
+        short_secs = float(short.get("seconds") or 0)
+        total = max(0.01, keep_secs + short_secs)
+        bc = np.asarray(best.get("centroid") or [], dtype=np.float32)
+        sc = np.asarray(short.get("centroid") or [], dtype=np.float32)
+        merged = (bc * keep_secs + sc * short_secs) / total
+        best["centroid"] = _norm(merged).tolist()
+        best["seconds"] = round(total, 2)
+        sid_short = short.get("id")
+        sid_keep = best.get("id")
+        speakers.remove(short)
+        for seg in mapped:
+            if seg.get("spk") == sid_short:
+                seg["spk"] = sid_keep
 
 
 def node_asr(state: MeetingState) -> dict:
