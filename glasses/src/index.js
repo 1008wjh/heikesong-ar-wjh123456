@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 
 // 模拟器里 JS 异常只会让客户端显示"应用需要处理"；把堆栈打出来便于定位。
 try {
@@ -704,10 +704,15 @@ function paintMeeting() {
     putText(retained.role, " ");
     putText(retained.sim, " ");
   } else {
-    // 不显示字幕，改显示会议卡：状态/待办/总结（最多 3 行）
-    // 眼镜上不显示会议总结：总结只留控制台/接口；这里只显示会议卡 rows。
+    // 不显示字幕，只显示有内容的会议卡行（待办/确认等）。
+    // 人数、段数、说话人时长、倒计时属于调试信息，关闭 AI 回答后不要回填到屏幕上。
     const rows = (meeting.view && Array.isArray(meeting.view.rows) ? meeting.view.rows : [])
-      .filter((x) => String(x || "").trim());
+      .map((x) => String(x || "").trim())
+      .filter(Boolean)
+      .filter((x) => !/^(检测到|已转写|按「?返回|时长)/.test(x))
+      .filter((x) => !/\d+\s*人/.test(x) && !/\d+\s*段/.test(x))
+      .filter((x) => !/·\s*\d+(\.\d+)?\s*(s|秒)/i.test(x))
+      .filter((x) => !/\d{1,2}:\d{2}/.test(x));
     rows.slice(0, 3).forEach((line, i) => putText(retained.info[i], String(line).slice(0, 24)));
   }
 
