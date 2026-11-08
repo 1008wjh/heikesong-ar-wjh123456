@@ -61,7 +61,67 @@ foreach ($d in $distros) {
     if ($distro) { break }
 }
 if (-not $distro) {
-    Fail '[!!] Developer kit not found in any WSL distro. Run the IrisView installer, or pass IRIS_KIT / use tools\kit-docker.ps1.'
+    Say '[..] no IrisView kit in WSL; trying Docker + WSLg fallback...' 'Yellow'
+
+    $oldEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $dockerVer = (& docker info --format '{{.ServerVersion}}' 2>$null) -join ''
+    $dockerOk = ($LASTEXITCODE -eq 0 -and "$dockerVer".Trim().Length -gt 0)
+    $ErrorActionPreference = $oldEap
+    if (-not $dockerOk) {
+        Fail '[!!] Developer kit not found in WSL and Docker is not running. Start Docker Desktop, or install the kit into a WSL distro.'
+    }
+
+    function Test-BackendDocker {
+        try {
+            $r = Invoke-WebRequest -Uri 'http://127.0.0.1:8765/api/health' -TimeoutSec 2 -UseBasicParsing
+            return ($r.StatusCode -eq 200)
+        } catch { return $false }
+    }
+
+    if (-not $NoBackend) {
+        if (Test-BackendDocker) {
+            Say '[ok] backend is already listening on 8765' 'Green'
+        } else {
+            Say '[..] starting backend (start.bat)...' 'Yellow'
+            $env:ML_NO_BROWSER = '1'
+            Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', 'start.bat' -WorkingDirectory $root -WindowStyle Hidden
+            $ok = $false
+            for ($i = 0; $i -lt 30; $i++) {
+                Start-Sleep -Seconds 2
+                if (Test-BackendDocker) { $ok = $true; break }
+            }
+            if (-not $ok) { Fail '[!!] backend did not come up in 60s; run start.bat manually to see the error.' }
+            Say '[ok] backend is up' 'Green'
+        }
+    }
+
+    $pkg = Join-Path $root 'dist\memorylens.fuiapp'
+    $src = Join-Path $root 'glasses\src\index.js'
+    $needBuild = $ForceBuild -or (-not (Test-Path $pkg))
+    if (-not $needBuild -and (Test-Path $src)) {
+        if ((Get-Item $pkg).LastWriteTime -lt (Get-Item $src).LastWriteTime) { $needBuild = $true }
+    }
+    if ($needBuild) {
+        Say '[..] rebuilding glasses package in Docker (30-60s)...' 'Yellow'
+        & powershell -NoProfile -File (Join-Path $PSScriptRoot 'kit-docker.ps1') build
+        if ($LASTEXITCODE -ne 0) { Fail '[!!] build failed; see the log above.' }
+        & powershell -NoProfile -File (Join-Path $PSScriptRoot 'kit-docker.ps1') package
+        if ($LASTEXITCODE -ne 0) { Fail '[!!] package failed; see the log above.' }
+        Say '[ok] package rebuilt' 'Green'
+    }
+
+    if ($CheckOnly) {
+        Say '[ok] environment check passed (Docker / image / backend / package)' 'Green'
+        exit 0
+    }
+
+    Say 'Docker + WSLg mode: a white client window and a black lens window will open.' 'Gray'
+    Say 'Close the window or press Ctrl+C to stop.' 'Gray'
+    & powershell -NoProfile -File (Join-Path $PSScriptRoot 'kit-docker.ps1') gui -Port $Port
+    $code = $LASTEXITCODE
+    if ($code -ne 0) { Fail ('[!!] simulator failed to start (exit ' + $code + '); see the log above.') }
+    exit 0
 }
 Say ("[ok] distro=" + $distro + " kit=" + $kit) 'Green'
 
