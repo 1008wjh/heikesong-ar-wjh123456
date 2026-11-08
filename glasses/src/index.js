@@ -758,6 +758,22 @@ async function stopMeetingRecording() {
   await p;
 }
 
+async function ensureMeetingCapture() {
+  // 有些平台在长时间 HTTP 请求/弹窗后会静默关掉 voice input，
+  // 但 meeting.recording 还是 true；这里把它重新接上。
+  if (!meeting || !meeting.recording || capture) return;
+  meeting.note = "麦克风重连中…";
+  paintMeeting();
+  try { await startListening("meeting", meeting.session); } catch (e) { /* 下面统一判断 */ }
+  if (!capture) {
+    meeting.recording = false;
+    meeting.note = "麦克风断了 · 按确认重开";
+  } else {
+    meeting.note = "录音继续";
+  }
+  paintMeeting();
+}
+
 async function flushMeetingAudio() {
   // 左键提问前，把当前还没切片的这几秒强制切出去并等转写回来；
   // 否则问题还在麦克风缓冲里，AI 只能看到上一段上下文。
@@ -805,6 +821,7 @@ async function askMeeting(question) {
     meeting.note = "AI 请求失败 · 检查后端";
   }
   meeting.thinking = false;
+  if (meeting.recording && !capture) await ensureMeetingCapture();
   paintMeeting();
 }
 
@@ -1730,27 +1747,26 @@ function paintMode() {
   putText(retained.name, "开始记录");
   putText(retained.role, "先选这一段是什么");
   putText(retained.sim, " ");
-  const sel = ensureModeSel();
-  if (sel) {
-    // 有原生组件就用它：选项、选中态、高亮都由平台画
-    try {
-      sel.setSelectedIndex(modeSelect.index);
-      sel.setHidden(false);
-    } catch (e) { /* 忽略 */ }
-    retained.info.forEach((t) => putText(t, " "));
-    putText(retained.info[0], MODE_ITEMS[modeSelect.index].hint);
-  } else {
-    const rows = MODE_ITEMS.map((m, i) => (i === modeSelect.index ? "【" + m.label + "】" : "  " + m.label));
-    retained.info.forEach((t, i) => putText(t, rows[i] || ""));
-    putText(retained.info[2], MODE_ITEMS[modeSelect.index].hint);
-  }
+  // 模拟器/单色屏上原生 Select 的选中框不会跟着 index 走（只显示一个 []），
+  // 统一用 Text 手搓，左右键一定能看到【】移动。
+  const rows = MODE_ITEMS.map((m, i) => (i === modeSelect.index ? "【" + m.label + "】" : "  " + m.label));
+  retained.info.forEach((t, i) => putText(t, rows[i] || ""));
+  putText(retained.info[2], MODE_ITEMS[modeSelect.index].hint);
   putText(retained.foot, "确认进入 返回关掉");
 }
 
 function navMode(act) {
   if (!modeSelect) return;
-  if (act === "left" || act === "up") { modeSelect.index = (modeSelect.index + 1) % MODE_ITEMS.length; paintMode(); return; }
-  if (act === "right" || act === "down") { modeSelect.index = (modeSelect.index + 1) % MODE_ITEMS.length; paintMode(); return; }
+  if (act === "left" || act === "up") {
+    modeSelect.index = (modeSelect.index - 1 + MODE_ITEMS.length) % MODE_ITEMS.length;
+    paintMode();
+    return;
+  }
+  if (act === "right" || act === "down") {
+    modeSelect.index = (modeSelect.index + 1) % MODE_ITEMS.length;
+    paintMode();
+    return;
+  }
   if (act === "back") { closeMode(); return; }
   if (act === "activate") {
     const mode = MODE_ITEMS[modeSelect.index].key;
