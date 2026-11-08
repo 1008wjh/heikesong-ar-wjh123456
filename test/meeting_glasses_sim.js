@@ -193,6 +193,7 @@ function has(re) { return hud().some((v) => re.test(v)); }
   navQueue.push("right");
   await sleep(600);
   check("右键关闭浮窗", !has(/^AI 回答/), JSON.stringify(hud().slice(0, 12)));
+  check("右键关浮窗不停止录音", has(/录制中/), JSON.stringify(hud().slice(0, 12)));
 
   // 6) 浮窗关闭时上键打开文字键盘（用文字提问/发指令）
   navQueue.push("up");
