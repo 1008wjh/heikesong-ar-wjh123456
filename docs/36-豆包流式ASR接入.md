@@ -20,9 +20,12 @@
 
 接入前需要确认/提供：
 
-- AppID
-- Access Token / Secret Key（按控制台要求）
-- Cluster / 模型 ID（豆包流式语音识别 2.0）
+- **豆包语音 API Key**：控制台创建，请求头 `x-api-key`；新版接口不需要 AppID
+- 模型：实时语音识别用 `bigmodel_async`，一句话识别用 `bigmodel_nostream`
+- Resource ID / Endpoint（以官方 WebSocket 文档为准）
+
+> 注意：火山 IAM 的 Access Key ID / Secret Access Key 是云资源管理密钥，
+> **不是**豆包语音的 `x-api-key`，不能直接用于语音识别。
 - 接口地址和协议（WebSocket 或 HTTP chunk）
 - 是否支持：
   - 16k / 单声道 / PCM；
@@ -62,10 +65,10 @@
 
 ```bat
 set "AR_ASR_PROVIDER=doubao_stream"
-set "AR_DOUBAO_APP_ID=..."
-set "AR_DOUBAO_ACCESS_TOKEN=..."
-set "AR_DOUBAO_CLUSTER=..."
+set "AR_DOUBAO_API_KEY=..."
+set "AR_DOUBAO_MODEL=bigmodel_async"
 set "AR_DOUBAO_ENDPOINT=wss://..."     REM 以控制台文档为准
+set "AR_DOUBAO_RESOURCE_ID=..."        REM 以控制台文档为准
 set "AR_DOUBAO_TIMEOUT=3"
 set "AR_ASR_FALLBACK=local"
 ```
