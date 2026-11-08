@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Archivo:wght@400;600&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="style.css?v=20" />
+<link rel="stylesheet" href="style.css?v=22" />
 </head>
 <body>
 
@@ -267,6 +267,25 @@
 
 <div id="toast" class="toast" hidden></div>
 
-<script src="app.js?v=23"></script>
+<!-- 对眼镜说一句：文本通道，和语音共用同一个会话 -->
+<section id="cmdBar" class="cmdbar" aria-label="对眼镜说一句">
+  <div class="cmdbar-head">
+    <b>对眼镜说一句</b>
+    <span id="cmdSession" class="cmd-state">待机</span>
+  </div>
+  <div class="cmdbar-row">
+    <input id="cmdText" class="field" placeholder="只看待办 / 换成Lena / 不是他，是王姐" />
+    <button id="cmdSend" class="btn btn-save" type="button" disabled>发送</button>
+  </div>
+  <div class="cmdbar-chips">
+    <button class="mini" type="button" data-cmd="只看待办">只看待办</button>
+    <button class="mini" type="button" data-cmd="优先日期">优先日期</button>
+    <button class="mini" type="button" data-cmd="显示全部">显示全部</button>
+    <button class="mini" type="button" data-cmd="不是他">不是他</button>
+  </div>
+  <p id="cmdResult" class="tiny">先在眼镜上按确认开始一段对话，再在这里发指令。</p>
+</section>
+
+<script src="app.js?v=24"></script>
 </body>
 </html>

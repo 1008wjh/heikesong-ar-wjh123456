@@ -322,6 +322,13 @@ class Store:
             p = self._raw(pid)
             if not p:
                 return None
+            # 自动建号的陌生人：库里只留声纹（和名字/一句说明），
+            # 不自动写「对话要点」也不存对话原文 —— 避免模型/转写幻觉变成"详细数据"。
+            # 人工在控制台改过名、补过资料之后（名字不再以「陌生人」开头），才开始积累。
+            if str(p.get("name") or "").startswith("陌生人"):
+                p["last_met"] = time.strftime("%Y-%m-%d")
+                self._save()
+                return self._public(p)
             facts = p.setdefault("complex", {}).setdefault("对话要点", {})
             if not isinstance(facts, dict):
                 facts = {}

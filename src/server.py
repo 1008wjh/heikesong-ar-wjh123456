@@ -40,7 +40,7 @@ agent.bind_store(store)          # 智能体的工具要用同一个库实例
 
 # 最近一次识别结果。手机抓拍 → 这里 → 眼镜轮询取走。
 # 眼镜端（IrisView 应用）没有摄像头，只能"看"这里的最新一帧结果。
-_LAST = {"rev": 0, "faces": [], "at": 0, "ms": 0, "kind": ""}
+_LAST = {"rev": 0, "faces": [], "at": 0, "ms": 0, "kind": "", "session": ""}
 _LAST_LOCK = threading.Lock()
 
 # 对话分析（模块 02）的会话：只活在内存里，服务重启就没了
@@ -224,7 +224,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/latest/reset":
             # 调试用：把"眼镜上现在显示的那条"清掉，方便验证下一次推送
             with _LAST_LOCK:
-                _LAST.update({"rev": _LAST["rev"] + 1, "faces": [], "at": time.time(), "ms": 0, "kind": ""})
+                _LAST.update({"rev": _LAST["rev"] + 1, "faces": [], "at": time.time() * 1000,
+                              "ms": 0, "kind": "", "session": ""})
                 rev = _LAST["rev"]
             return self._json({"ok": True, "rev": rev})
         if path.startswith("/api/card/") and path.endswith("/full"):
@@ -358,8 +359,9 @@ class Handler(BaseHTTPRequestHandler):
         with _LAST_LOCK:
             _LAST["rev"] += 1
             _LAST["faces"] = out
-            _LAST["at"] = time.time()
+            _LAST["at"] = time.time() * 1000      # 毫秒：和眼镜端 Date.now() 比，统一口径
             _LAST["ms"] = payload["ms"]
+            _LAST["session"] = ""
             payload["rev"] = _LAST["rev"]
         return self._json(payload)
 
@@ -402,7 +404,8 @@ class Handler(BaseHTTPRequestHandler):
         if not person or sim_val < voice.THRESHOLD:
             # 陌生人：直接建号入库（带这一簇的声纹），之后就能被认出来
             name = _next_stranger_name()
-            rec = store.save(name=name, role="陌生人", info=["眼镜端自动建的，回头改个名字"])
+            rec = store.save(name=name, role="陌生人", info=["眼镜端自动建的，回头改个名字"],
+                             simple={}, complex_={})
             store.add_voice(rec["id"], clusters[spk]["emb"])
             person = store.get(rec["id"]) or rec
             sim_val = max(sim_val, 0.0)
@@ -452,6 +455,7 @@ class Handler(BaseHTTPRequestHandler):
                 name=_next_stranger_name(),
                 role="陌生人 · 眼镜端自动建的",
                 info=["语音自动入库，回头改个名字", "", ""],
+                simple={}, complex_={},
             )
             store.add_voice(person["id"], emb)
             person = [p for p in store.people() if p["id"] == person["id"]][0]
@@ -528,13 +532,18 @@ class Handler(BaseHTTPRequestHandler):
             "degraded": bool(view.get("degraded")),
         }
         payload = {"ok": True, "session": session, "view": view, "ms": view.get("ms", 0),
-                   "faces": [card], "kind": "agent"}
+                   "faces": [card], "kind": "agent", "stale": bool(view.get("stale"))}
+        if view.get("stale"):
+            # 旧请求的结果：不写 _LAST，免得把眼镜上最新的卡片顶掉
+            payload["rev"] = _LAST["rev"]
+            return self._json(payload)
         with _LAST_LOCK:
             _LAST["rev"] += 1
             _LAST["faces"] = [card]
-            _LAST["at"] = time.time()
+            _LAST["at"] = time.time() * 1000      # 毫秒：和眼镜端 Date.now() 比，统一口径
             _LAST["ms"] = view.get("ms", 0)
             _LAST["kind"] = "agent"
+            _LAST["session"] = session
             payload["rev"] = _LAST["rev"]
         return self._json(payload)
 
@@ -550,9 +559,10 @@ class Handler(BaseHTTPRequestHandler):
         with _LAST_LOCK:
             _LAST["rev"] += 1
             _LAST["faces"] = cards_out
-            _LAST["at"] = time.time()
+            _LAST["at"] = time.time() * 1000      # 毫秒：和眼镜端 Date.now() 比，统一口径
             _LAST["ms"] = ms
             _LAST["kind"] = "voice"
+            _LAST["session"] = ""
             payload["rev"] = _LAST["rev"]
         return self._json(payload)
 

@@ -29,6 +29,30 @@ PRESET_OP = {"todo": "filter", "recall": "recall", "hint": "next"}
 _CANCEL = set()
 _CANCEL_LOCK = threading.Lock()
 
+# 文本纠正过的"当前是谁"：session -> person_id。
+# 眼镜端每片还会带它自己记的旧 person_id，这里以纠正为准（否则改完下一片又变回去）。
+_PIN = {}
+_PIN_LOCK = threading.Lock()
+
+# 同一个 session 的请求序号：新请求一到，旧请求的结果就作废（不能覆盖最新结果）
+_SEQ = {}
+_SEQ_LOCK = threading.Lock()
+
+
+def _bump(session: str) -> int:
+    with _SEQ_LOCK:
+        n = _SEQ.get(session, 0) + 1
+        _SEQ[session] = n
+        if len(_SEQ) > 500:
+            _SEQ.clear()
+            _SEQ[session] = n
+        return n
+
+
+def _is_current(session: str, n: int) -> bool:
+    with _SEQ_LOCK:
+        return _SEQ.get(session, 0) == n
+
 
 def cancel(session: str) -> bool:
     """作废某个会话正在跑的结果（interrupt）。"""
@@ -93,6 +117,10 @@ class AgentState(TypedDict, total=False):
     manual: bool         # 用户按「确认」主动触发的那一片（第几片都要给建议）
     preset: str          # 主页面快捷预设 id（todo/summary/next/recall）
     cancelled: bool      # 这次请求被 /api/agent/cancel 作废了
+    cmd: str             # 文本指令：filter/focus/person/person_miss/reject/all/cancel/confirm
+    cmd_arg: str         # 指令参数（"只留待办"里的 待办）
+    seq: int             # 这个 session 的请求序号：被更新的请求顶掉就作废
+    stale: bool          # 结果已过期（不要画、不要写档案）
 
 
 # ---------- 工具：匹配、抽取 ----------
@@ -123,7 +151,8 @@ def tool_voice_match(state: AgentState) -> dict:
     if state.get("auto_add") and len(heard) >= 2 and float(sim) < voice.AUTOADD_MAX:
         name = next_stranger_name(store_ref)
         created = store_ref.save(name=name, role="陌生人 · 眼镜端自动建的",
-                                 info=["语音自动入库，回头改个名字", "", ""])
+                                 info=["语音自动入库，回头改个名字", "", ""],
+                                 simple={}, complex_={})
         store_ref.add_voice(created["id"], emb)
         return {"person_id": created["id"], "person_name": name, "similarity": 1.0,
                 "matched_by": "voice", "notes": ["新面孔，已建号 %s" % name]}
@@ -203,6 +232,44 @@ def rule_extract(text: str) -> list[dict]:
     return out
 
 
+# ---------- 文本指令（确定性，不走模型） ----------
+# 眼镜键盘只有十来个字，主要给控制台/文本通道用；语音转写出来的短命令也认。
+# 覆盖验收里的"内容修改 / 重点与布局 / 跨方式纠正 / 歧义确认"。
+_CMD_SPECS = (
+    ("cancel", re.compile(r"^(取消|不要了|算了|退出去)[。！!？?]?$")),
+    ("all", re.compile(r"^(显示全部|全部|回到刚才|恢复|还原|显示完整)[。！!？?]?$")),
+    ("reject", re.compile(r"^(不是他|不是这个人|认错了|换个人)[。！!？?]?$")),
+    ("confirm", re.compile(r"^(就是他|确认是他|对，就是他)[。！!？?]?$")),
+    ("filter", re.compile(r"^(?:只看|只留|只保留|只显示|仅看|筛选)\s*(.+?)[。！!？?]?$")),
+    ("focus", re.compile(r"^(?:优先|先看|重点|突出|强调)(?:看|显示)?\s*(.+?)[。！!？?]?$")),
+    ("person", re.compile(
+        r"^(?:换成|切换成|切换到|改成|不是他[，,\s]*(?:是)?|认错了[，,\s]*(?:是)?)"
+        r"\s*(.+?)[。！!？?]?$")),
+)
+
+
+def parse_command(text: str) -> tuple:
+    """把一句短指令解析成 (cmd, arg)；不是指令返回 ("", "")。"""
+    t = (text or "").strip()
+    if not t or len(t) > 24:
+        return "", ""
+    for name, rx in _CMD_SPECS:
+        m = rx.match(t)
+        if m:
+            arg = (m.group(1) or "").strip() if m.groups() else ""
+            return name, arg
+    return "", ""
+
+
+def _people_matching(name: str) -> list[dict]:
+    """按名字找：先精确，再包含；返回可能的多个人（用于歧义确认）。"""
+    exact = [p for p in _people() if (p.get("name") or "") == name]
+    if exact:
+        return exact
+    return [p for p in _people()
+            if name and (name in (p.get("name") or "") or (p.get("name") or "") in name)]
+
+
 # ---------- 图 ----------
 
 def node_ingest(state: AgentState) -> dict:
@@ -222,6 +289,11 @@ def node_ingest(state: AgentState) -> dict:
                 peak = int(_np.abs(arr).max())
         except Exception:
             peak = -1
+    if not text and audio and 0 <= peak < voice.PEAK_MIN:
+        # 基本是静音：别送进转写（模型会在静音上编出字），直接给"没声音"
+        return {"text": "", "asr_src": "silent", "audio_sec": sec, "audio_peak": peak,
+                "notes": (state.get("notes") or []) + ["这段基本是静音，跳过转写"],
+                "slice_no": int(state.get("slice_no") or 0) + 1}
     if not text and audio:
         t0 = time.time()
         try:
@@ -234,7 +306,8 @@ def node_ingest(state: AgentState) -> dict:
     elif text:
         asr_src = "text"
     window = ((state.get("window") or "") + " " + text).strip()[-2000:]
-    return {"text": text[:MAX_TRANSCRIPT], "window": window,
+    cmd, cmd_arg = parse_command(text)      # 短指令（文本或转写出来的都算）
+    return {"text": text[:MAX_TRANSCRIPT], "window": window, "cmd": cmd, "cmd_arg": cmd_arg,
             "asr_ms": asr_ms, "asr_src": asr_src,
             "audio_sec": sec, "audio_peak": peak,
             "slice_no": int(state.get("slice_no") or 0) + 1}
@@ -260,6 +333,36 @@ def node_route(state: AgentState) -> dict:
     except llm.LLMUnavailable:
         return {"mode": "single", "degraded": True,
                 "cls_ms": int((time.time() - t0) * 1000)}
+
+
+def node_command(state: AgentState) -> dict:
+    """"换成谁"这类指令要先解析成人，再交给 render 出卡。
+
+    其他指令（只看/优先/恢复/取消/确认）不需要额外信息，render 里直接拼。
+    """
+    cmd = state.get("cmd") or ""
+    arg = (state.get("cmd_arg") or "").strip(" 　,，")
+    notes = list(state.get("notes") or [])
+    if cmd != "person":
+        return {}
+    if not arg or arg in ("他", "她", "这个人", "刚才那个", "刚才的人"):
+        return {"notes": notes + ["没说换成谁"]}
+    hits = _people_matching(arg)
+    if not hits:
+        return {"cmd": "person_miss", "notes": notes + ["没找到「%s」" % arg]}
+    if len(hits) > 1:
+        names = " / ".join((p.get("name") or "")[:8] for p in hits[:3])
+        return {"cmd": "person_ambiguous", "cmd_arg": names,
+                "notes": notes + ["匹配到多个人：%s" % names]}
+    person = hits[0]
+    sid = state.get("session") or ""
+    with _PIN_LOCK:
+        if len(_PIN) > 200:
+            _PIN.clear()
+        _PIN[sid] = person["id"]
+    notes.append("用户纠正：换成 %s" % person["name"])
+    return {"person_id": person["id"], "person_name": person["name"],
+            "matched_by": "text", "similarity": 1.0, "notes": notes}
 
 
 def node_identify(state: AgentState) -> dict:
@@ -309,6 +412,78 @@ def suggest_options(state_name, person_name):
     return ["只留待办", "再说细一点", "不是他"]
 
 
+def _item_rows(items) -> list:
+    return ["%s: %s" % (it.get("key", "其他"), it.get("value", "")) for it in items]
+
+
+def _filter_items(items, arg: str) -> list:
+    """按"待办/日期/承诺/任意词"筛要点；空参数原样返回。"""
+    if not arg:
+        return list(items)
+    if any(k in arg for k in ("待办", "行动", "跟进")):
+        want = ("答应的事", "跟进", "日期")
+        return [it for it in items if str(it.get("key")) in want]
+    if any(k in arg for k in ("日期", "时间", "截止", "什么时候")):
+        return [it for it in items if str(it.get("key")) == "日期"]
+    if any(k in arg for k in ("承诺", "答应")):
+        return [it for it in items if str(it.get("key")) == "答应的事"]
+    return [it for it in items
+            if arg in str(it.get("key")) or arg in str(it.get("value"))]
+
+
+def _render_command(state: AgentState, cmd: str) -> dict:
+    """文本指令的卡片：改对象、改重点、改布局，全在现有 view 字段里表达。"""
+    pid = state.get("person_id") or ""
+    name = state.get("person_name") or ""
+    person = store_ref.get(pid) if (pid and store_ref) else None
+    items = state.get("items") or []
+    arg = (state.get("cmd_arg") or "").strip()
+    base = {"person": name, "person_id": pid,
+            "matched_by": state.get("matched_by") or "text",
+            "similarity": state.get("similarity") or 1.0,
+            "options": [], "degraded": False}
+    if cmd == "cancel":
+        return {"state": "异常", "layout": "notice",
+                "rows": ["已取消", "按一下重新问"], **base}
+    if cmd == "reject":
+        return {"state": "待确认", "layout": "card",
+                "rows": ["不是他？", "说「换成 名字」，或去控制台改"], **base}
+    if cmd == "confirm":
+        if not person:
+            return {"state": "待确认", "layout": "card",
+                    "rows": ["还没认出是谁", "先说两句或「换成 名字」"], **base}
+        rows = cards.simple_lines(person, 4) or ["已确认"]
+        return {"state": "完成", "layout": "card", "rows": rows, **base}
+    if cmd == "person_miss":
+        return {"state": "异常", "layout": "notice",
+                "rows": ["没找到「%s」" % arg, "说全名，或去控制台加"], **base}
+    if cmd == "person_ambiguous":
+        return {"state": "待确认", "layout": "card",
+                "rows": ["匹配到多个人", arg or "说全名"], **base}
+    if cmd == "person":
+        rows = cards.simple_lines(person, 4) if person else ["没找到这个人"]
+        return {"state": "完成", "layout": "card", "rows": rows, **base}
+    if cmd == "all":
+        rows = cards.simple_lines(person, 4) if person else _item_rows(items)[:4]
+        if not rows:
+            rows = ["还没有可显示的内容", "先认一个人，或说两句"]
+        return {"state": "完成", "layout": "card", "rows": rows, **base}
+    if cmd in ("filter", "focus"):
+        hit = _filter_items(items, arg)
+        if cmd == "filter":
+            rows = _item_rows(hit)[:4]
+            if not rows:
+                rows = ["没有「%s」相关的记录" % arg, "换个条件，或先聊两句"]
+            return {"state": "完成", "layout": "focus", "rows": rows, **base}
+        rest = [it for it in items if it not in hit]
+        rows = _item_rows(hit + rest)[:4]
+        if not rows:
+            rows = ["这段还没有要点", "先说两句再试"]
+        return {"state": "完成", "layout": "focus", "rows": rows, **base}
+    rows = _item_rows(items)[:4] or ["好了"]
+    return {"state": "完成", "layout": "card", "rows": rows, **base}
+
+
 def node_render(state: AgentState) -> dict:
     """把"人 + 要点"渲染成镜片视图模型（五状态之一 + 布局）。"""
     if state.get("mode") == "meeting":
@@ -319,6 +494,8 @@ def node_render(state: AgentState) -> dict:
             "person": "",
             "degraded": state.get("degraded", False),
         }}
+    if state.get("cmd"):
+        return {"view": _render_command(state, state["cmd"])}
     name = state.get("person_name") or ""
     items = state.get("items") or []
     preset = state.get("preset") or ""
@@ -329,6 +506,10 @@ def node_render(state: AgentState) -> dict:
     if state.get("asr_src") == "failed" and not (state.get("text") or "").strip():
         return {"view": {"state": "异常", "layout": "notice",
                          "rows": ["这段没听清", "再说一遍，或用手打"], "person": "",
+                         "degraded": False}}
+    if state.get("asr_src") == "silent" and not (state.get("text") or "").strip():
+        return {"view": {"state": "异常", "layout": "notice",
+                         "rows": ["没声音 · 检查麦克风", "靠近一点再说"], "person": "",
                          "degraded": False}}
     if preset == "todo":
         # 只留待办：内容变少 + 布局变 focus（对应评分里的"重点/布局变化"）
@@ -436,6 +617,13 @@ def node_recommend(state: AgentState) -> dict:
         got = llm.recommend(dialog,
                             state.get("person_name") or "", profile, state.get("items") or [],
                             system_prompt=system_prompt)
+        # 模型跑完这段时间里用户点了「返回」或被新请求顶掉：结果作废
+        if _cancelled(state.get("session") or ""):
+            return {"cancelled": True, "next_actions": [],
+                    "notes": (state.get("notes") or []) + ["用户已取消，这版结果作废"]}
+        if state.get("seq") and not _is_current(state.get("session") or "", state["seq"]):
+            return {"stale": True, "next_actions": [],
+                    "notes": (state.get("notes") or []) + ["已被新请求顶掉，这版结果作废"]}
         if got.get("fallback"):
             # 模型重试两次仍不可用：用规则给三条，界面照常出卡，但标记降级
             return {"next_actions": got.get("next") or [],
@@ -452,6 +640,10 @@ def node_recommend(state: AgentState) -> dict:
 
 def node_commit(state: AgentState) -> dict:
     """有主、有要点才写档案；多人或没认出人就只留在界面上。"""
+    if state.get("cmd"):
+        return {}          # 文本指令只改画面，不写档案
+    if state.get("seq") and not _is_current(state.get("session") or "", state["seq"]):
+        return {"notes": (state.get("notes") or []) + ["旧请求已过期，不写档案"]}
     pid = state.get("person_id")
     items = state.get("items") or []
     if pid and items and state.get("mode") != "meeting":
@@ -465,6 +657,7 @@ def node_commit(state: AgentState) -> dict:
 def build(memory=None):
     g = StateGraph(AgentState)
     g.add_node("ingest", node_ingest)
+    g.add_node("command", node_command)
     g.add_node("route", node_route)
     g.add_node("identify", node_identify)
     g.add_node("extract", node_extract)
@@ -473,14 +666,19 @@ def build(memory=None):
     g.add_node("commit", node_commit)
 
     g.add_edge(START, "ingest")
-    g.add_edge("ingest", "route")
+    # 短指令直接进 command（不调模型、不做单人/多人判断），普通输入才走 route
+    g.add_conditional_edges("ingest", lambda s: "command" if s.get("cmd") else "route",
+                            {"command": "command", "route": "route"})
+    g.add_edge("command", "render")
     g.add_conditional_edges("route", lambda s: "meeting" if s.get("mode") == "meeting" else "single",
                             {"single": "identify", "meeting": "render"})
     g.add_edge("identify", "extract")
     g.add_edge("extract", "recommend")
     g.add_edge("recommend", "render")
-    g.add_conditional_edges("render", lambda s: "skip" if s.get("mode") == "meeting" else "commit",
-                            {"commit": "commit", "skip": END})
+    g.add_conditional_edges(
+        "render",
+        lambda s: "skip" if (s.get("mode") == "meeting" or s.get("cmd")) else "commit",
+        {"commit": "commit", "skip": END})
     g.add_edge("commit", END)
     return g.compile(checkpointer=memory) if memory else g.compile()
 
@@ -519,10 +717,18 @@ def run_feed(session: str, text: str = "", audio: str = "", auto_add: bool = Tru
         )
     t0 = time.time()
     _clear_cancel(session)          # 新请求开始，作废上一轮留下的取消标记
+    seq = _bump(session)            # 新请求一到，同 session 的旧请求就作废
+    # 文本纠正过"是谁"的会话：以纠正为准。眼镜端每片还带它自己记的旧 person_id，
+    # 不覆盖的话改完下一片又变回原来的人。
+    with _PIN_LOCK:
+        fixed = _PIN.get(session)
+    if fixed:
+        pinned = fixed
     state: AgentState = {"session": session, "text": text, "audio": audio,
                          "auto_add": auto_add, "degraded": False, "notes": [],
                          "mode": (mode or "").lower(), "manual": bool(manual),
-                         "preset": preset or "", "pinned": pinned, "cancelled": False}
+                         "preset": preset or "", "pinned": pinned, "cancelled": False,
+                         "cmd": "", "cmd_arg": "", "seq": seq, "stale": False}
     cfg = {"configurable": {"thread_id": session}}
     try:
         out = graph().invoke(state, cfg)
@@ -531,14 +737,23 @@ def run_feed(session: str, text: str = "", audio: str = "", auto_add: bool = Tru
                         "rows": ["智能体出错了", str(e)[:40]], "person": ""},
                "degraded": True}
     view = out.get("view") or {"state": "异常", "layout": "notice", "rows": ["没有结果"], "person": ""}
+    if not out.get("cancelled") and (out.get("stale") or not _is_current(session, seq)):
+        # 旧结果：不冒充最新，也不写档案（commit 里已经拦过一次）
+        view = {"state": "异常", "layout": "notice",
+                "rows": ["这条结果已过期", "以最新一次为准"], "person": "",
+                "degraded": False, "stale": True}
     view["rev"] = int(time.time() * 1000) % 1000000
     view["ms"] = int((time.time() - t0) * 1000)
     view["notes"] = out.get("notes") or []
+    if out.get("cmd"):
+        calllog.emit(kind="text.command", session=session, cmd=out.get("cmd"),
+                     arg=out.get("cmd_arg") or "", state=view.get("state"),
+                     person=view.get("person") or "", ms=view["ms"])
     calllog.emit(
         kind="agent.feed", session=session, mode=out.get("mode") or "",
         slice_no=out.get("slice_no"), state=view.get("state"),
         person=view.get("person") or "", person_id=view.get("person_id") or "",
-        matched_by=out.get("matched_by") or "none",
+        matched_by=out.get("matched_by") or "none", stale=bool(view.get("stale")),
         similarity=view.get("similarity"), items=len(out.get("items") or []),
         degraded=bool(out.get("degraded")), rule_fallback=bool(out.get("rule_fallback")),
         skipped_short=bool(out.get("skipped_short")),
