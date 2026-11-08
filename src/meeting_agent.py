@@ -29,7 +29,7 @@ MAX_SPEAKERS = 8
 # 同一个人换语气/音量时质心会漂移；会议只要求"区分不同人"，宁可合并近的，
 # 也不要因为 1-2 秒的短句就长出一个新发言人。
 SPEAKER_MATCH = float(os.environ.get("AR_MEETING_SPEAKER_MATCH", "0.78"))
-MIN_NEW_SPEAKER_SEC = float(os.environ.get("AR_MEETING_MIN_NEW_SPEAKER_SEC", "4.0"))
+MIN_NEW_SPEAKER_SEC = float(os.environ.get("AR_MEETING_MIN_NEW_SPEAKER_SEC", "2.5"))
 MAX_SEGMENTS = 400
 # 55 秒会议通常只有十几段；24 是上限，避免长段会议把后半段整段丢掉。
 MAX_ASR_SEGMENTS = 24

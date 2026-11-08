@@ -34,6 +34,7 @@ $env:AR_LLM_PRESET = "deepseek"
 - 不在这里做持久化，写入都回 store。
 """
 
+import ast
 import json
 import os
 import re
@@ -391,7 +392,7 @@ PROMPT = """你在帮一个人整理他和某个人的对话记录。只根据�
 key 只能从这里选：答应的事 / 偏好 / 近况 / 关系 / 日期 / 跟进 / 其他"""
 
 
-def _chat_plain(system, user, max_tokens=64, temperature=0.0, tag="chat"):
+def _chat_plain(system, user, max_tokens=64, temperature=0.0, tag="chat", model=None):
     """只要一段短回答的调用（分类、选人、提词）。"""
     if STUB:
         raise LLMUnavailable("stub 模式没有这个能力")
@@ -400,7 +401,7 @@ def _chat_plain(system, user, max_tokens=64, temperature=0.0, tag="chat"):
     data = _post_json(
         "/chat/completions",
         {
-            "model": LLM_MODEL,
+            "model": model or LLM_MODEL,
             "temperature": temperature,
             "max_tokens": max_tokens,
             "messages": [
@@ -552,6 +553,16 @@ def keywords_of(text, n=4):
 
 
 def _meeting_brief(summary, keywords, points, answer):
+    # 有些模型会把 answer 再套一层对象：{"answer":{"summary":...}}；
+    # 这时优先用外层 summary/points，不能把 dict 直接 str() 上小屏。
+    if isinstance(answer, dict):
+        summary = summary or answer.get("summary") or answer.get("conclusion") or ""
+        keywords = keywords or answer.get("keywords") or []
+        points = points or answer.get("points") or []
+        answer = answer.get("answer") or answer.get("text") or ""
+    elif isinstance(answer, (list, tuple)):
+        points = points or [str(x) for x in answer]
+        answer = ""
     summary = str(summary or "").strip()[:60]
     keywords = [str(x).strip()[:12] for x in (keywords or []) if str(x).strip()][:4]
     points = [str(x).strip()[:40] for x in (points or []) if str(x).strip()][:4]
@@ -585,20 +596,30 @@ def answer_meeting(context, question="", system_prompt=""):
                               "1. 王姐下周三前发报价单。\n2. 明天下午3点三楼会议室开会。\n3. 记得带电脑和充电器。")
     if not LLM_KEY:
         raise LLMUnavailable("没配文本模型 Key（AR_LLM_KEY / DEEPSEEK_API_KEY 等）")
+    # 左键实时问答优先速度：可单独指定非推理模型（如 glm-4-flash），
+    # 会后总结继续用 AR_LLM_MODEL（如 glm-5.3-flash）保质量。
+    answer_model = (os.environ.get("AR_MEETING_ANSWER_MODEL") or "").strip() or LLM_MODEL
+    default_max = "600" if "glm-4-flash" in answer_model.lower() else "1600"
+    try:
+        answer_max = int(os.environ.get("AR_MEETING_ANSWER_MAX_TOKENS") or default_max)
+    except ValueError:
+        answer_max = int(default_max)
     out = _chat_plain(
         "你是线下会议的 AI 助手。回答必须精简、分点、适合 AR 小屏阅读；"
         "只根据给出的会议上下文，不要编造没出现的信息。"
         + MEETING_ANSWER_SCHEMA,
         user,
-        max_tokens=560,
+        max_tokens=answer_max,
         temperature=0.2,
+        model=answer_model,
     )
     out = (out or "").strip()
     if not out:
         raise LLMUnavailable("模型没有返回内容")
     obj = _loads_loose(out)
     if isinstance(obj, dict):
-        summary = obj.get("summary") or obj.get("结论") or ""
+        summary = (obj.get("summary") or obj.get("conclusion")
+                   or obj.get("结论") or obj.get("核心结论") or "")
         keywords = obj.get("keywords") or obj.get("关键词") or []
         points = obj.get("points") or obj.get("要点") or []
         answer = obj.get("answer") or obj.get("回答") or ""
@@ -618,24 +639,33 @@ def summarize_meeting(transcript, system_prompt=""):
     if len(transcript) < 8:
         raise LLMUnavailable("会议内容太短，先多说几句")
     custom = (system_prompt or "").strip()
-    user = ("下面是一场线下会议的全部转写。请总结：\n"
+    user = ("首要任务：下面是一场线下会议的全部转写，请总结：\n"
             "1) 一句话结论（≤40字）；2) 3–5 条关键结论；3) 待办（谁、做什么、什么时候）。\n"
-            "只根据原文，不要编。只输出 JSON："
+            "只根据原文，不要编。只输出 JSON，不要解释、不要代码块："
             '{"summary":"...","key_points":["..."],"action_items":["..."]}\n\n'
             "会议转写：\n" + transcript[-8000:])
+    # 用户可编辑提示词只作为“措辞风格”补充，放在 JSON 任务之后；
+    # 否则默认的“商务助理”提示词会让模型输出散文，解析失败。
     if custom:
-        user = "系统提示词（用户可编辑，优先遵守）：\n" + custom[:2000] + "\n\n" + user
+        user += "\n\n风格偏好（只影响措辞，不得改变 JSON 结构）：\n" + custom[:1600]
     if STUB:
         return {"summary": "3 人会议：报价单与明天下午开会安排",
                 "key_points": ["王姐下周三前发报价单", "明天下午3点三楼会议室开会"],
                 "action_items": ["王姐：下周三前发报价单", "全员：明天下午3点带电脑到三楼"]}
     if not LLM_KEY:
         raise LLMUnavailable("没配文本模型 Key")
-    out = _chat_plain(
-        "你是会议纪要助手，输出必须精简、可执行、只依据原文。",
-        user, max_tokens=600, temperature=0.2,
-    )
-    obj = _loads_loose(out)
+    obj = None
+    summary_model = (os.environ.get("AR_MEETING_SUMMARY_MODEL") or "").strip() or LLM_MODEL
+    for attempt, max_tokens in enumerate((1800, 2600)):
+        out = _chat_plain(
+            "你是会议纪要助手，输出必须精简、可执行、只依据原文。",
+            user, max_tokens=max_tokens, temperature=0.2, model=summary_model,
+        )
+        obj = _loads_loose(out)
+        if isinstance(obj, dict):
+            break
+        user += ("\n\n上一次输出不是合法 JSON。请严格只输出 "
+                 '{"summary":"...","key_points":["..."],"action_items":["..."]}，不要解释、不要代码块。')
     if not isinstance(obj, dict):
         raise LLMUnavailable("模型没按 JSON 返回总结")
     pick = lambda k, alt: [str(x).strip()[:80] for x in (obj.get(k) or obj.get(alt) or []) if str(x).strip()][:6]
@@ -734,5 +764,10 @@ def _loads_loose(text):
         text = text[start : end + 1]
     try:
         return json.loads(text)
+    except Exception:
+        pass
+    # 有些模型会回 Python dict 的单引号形式（conclusion/keywords/points）
+    try:
+        return ast.literal_eval(text)
     except Exception:
         return None
