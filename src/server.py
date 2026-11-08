@@ -24,9 +24,11 @@ import cards  # noqa: E402
 import llm  # noqa: E402
 import presets as presets_store  # noqa: E402
 import settings as settings_store  # noqa: E402
+import userctx  # noqa: E402
 import voice  # noqa: E402
 import diar  # noqa: E402
 import meeting_service  # noqa: E402
+import auth  # noqa: E402
 from face import FaceEngine  # noqa: E402
 from store import MATCH_THRESHOLD, Store  # noqa: E402
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -34,7 +36,7 @@ WEB = os.path.join(ROOT, "web")
 PORT = int(os.environ.get("AR_PORT", "8765"))
 MAX_SIDE = 960  # 送进检测前先缩放，CPU 上快 3 倍
 
-store = Store()
+store = userctx.StoreProxy()   # 按当前登录用户转发（AR_AUTH_DISABLED=1 时仍用根 data/）
 engine = FaceEngine()
 agent.bind_store(store)          # 智能体的工具要用同一个库实例
 
@@ -180,9 +182,48 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------- 路由 ----------
 
+    # 眼镜端没有登录页：这几条允许不带 token，按"最近登录的用户"处理
+    GLASSES_PATHS = (
+        "/api/latest", "/api/agent/feed", "/api/agent/archive", "/api/agent/cancel",
+        "/api/voice/scan", "/api/voice/identify",
+    )
+
+    def _authorize(self):
+        """每个请求进来先确定用户；失败直接回 401。"""
+        path = self.path.split("?")[0]
+        self._uid = ""
+        if auth.DISABLED:
+            self._uid = "demo"
+            userctx.set_user("demo")
+            return True
+        if not path.startswith("/api/"):
+            self._uid = auth.active_user() or "demo"
+            userctx.set_user(self._uid)
+            return True
+        if path in ("/api/health", "/api/auth/login"):
+            self._uid = auth.active_user() or "demo"
+            userctx.set_user(self._uid)
+            return True
+        header = self.headers.get("Authorization") or ""
+        token = header[7:].strip() if header.lower().startswith("bearer ") else ""
+        uid = auth.verify_token(token) if token else ""
+        if uid:
+            self._uid = uid
+            auth.set_active(uid)
+            userctx.set_user(uid)
+            return True
+        if path in self.GLASSES_PATHS:
+            self._uid = auth.active_user() or "demo"
+            userctx.set_user(self._uid)
+            return True
+        self._json({"ok": False, "error": "未登录或登录已过期"}, 401)
+        return False
+
     def do_GET(self):
         # 读接口也兜一层：异常也要返回 JSON + 打日志，别让连接直接被掐断
         try:
+            if not self._authorize():
+                return
             return self._do_get()
         except Exception as e:
             traceback.print_exc()
@@ -194,6 +235,10 @@ class Handler(BaseHTTPRequestHandler):
     def _do_get(self):
         path = self.path.split("?")[0]
         query = parse_qs(self.path.split("?")[1]) if "?" in self.path else {}
+        if path == "/api/auth/me":
+            uid = getattr(self, "_uid", "") or auth.active_user() or "demo"
+            return self._json({"ok": True, "user": {
+                "username": uid, "name": auth.display_name(uid)}})
         if path == "/api/photo":
             return self._photo((query.get("id") or [""])[0])
         if path == "/api/voice/clip":
@@ -250,7 +295,20 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.split("?")[0]
         try:
+            if not self._authorize():
+                return
             body = self._read_json()
+            if path == "/api/auth/login":
+                try:
+                    got = auth.login(str(body.get("username") or ""),
+                                     str(body.get("password") or ""))
+                except ValueError as e:
+                    return self._json({"ok": False, "error": str(e)}, 401)
+                userctx.set_user(got["user"]["username"])
+                self._uid = got["user"]["username"]
+                return self._json({"ok": True, **got})
+            if path == "/api/auth/logout":
+                return self._json({"ok": True})
             if path == "/api/scan":
                 return self._scan(body)
             if path == "/api/voice/identify":

@@ -68,7 +68,8 @@ def _rel_audio(session: str) -> str:
 
 
 def _abs_audio(session: str) -> str:
-    return os.path.join(AUDIO_DIR, session + ".pcm")
+    import userctx
+    return os.path.join(userctx.data_path("audio_storage"), session + ".pcm")
 
 
 def decode_audio(payload: str) -> bytes:
@@ -121,7 +122,7 @@ def _wav_bytes(samples: np.ndarray) -> bytes:
 def _append_audio(session: str, pcm: bytes) -> None:
     if not pcm:
         return
-    os.makedirs(AUDIO_DIR, exist_ok=True)
+    os.makedirs(os.path.dirname(_abs_audio(session)), exist_ok=True)
     with open(_abs_audio(session), "ab") as f:
         f.write(pcm)
 
@@ -143,7 +144,7 @@ def start(session: str | None = None) -> dict:
     if row:
         return _session_payload(row, resumed=True)
     meeting_id = _new_meeting_id(session)
-    os.makedirs(AUDIO_DIR, exist_ok=True)
+    os.makedirs(os.path.dirname(_abs_audio(session)), exist_ok=True)
     audio_abs = _abs_audio(session)
     if not os.path.isfile(audio_abs):
         open(audio_abs, "ab").close()

@@ -20,10 +20,8 @@ DEFAULT = [
 
 
 def _path():
-    base = os.environ.get("AR_DATA_DIR") or os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data"
-    )
-    return os.path.join(base, "presets.json")
+    import userctx
+    return userctx.data_path("presets.json")
 
 
 def list_presets():

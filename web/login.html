@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MEMORYLENS · 登录</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Archivo:wght@400;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="style.css?v=25" />
+<style>
+  .login-wrap { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
+  .login-card { width: min(420px, 100%); background: var(--surface); border: 3px solid var(--line);
+    box-shadow: 10px 10px 0 rgba(0,0,0,.25); padding: 28px; }
+  .login-card h1 { margin: 0 0 6px; font-size: 34px; letter-spacing: .02em; }
+  .login-card .sub { margin: 0 0 22px; color: var(--muted); font-size: 13px; }
+  .login-card label { display: block; margin: 12px 0 0; font-size: 12px; color: var(--muted); }
+  .login-card input { width: 100%; margin-top: 6px; }
+  .login-card .btn { width: 100%; margin-top: 20px; }
+  .login-card .hint { margin-top: 16px; font-size: 12px; color: var(--muted); line-height: 1.6; }
+  .login-card .err { color: var(--accent); font-size: 12px; min-height: 16px; margin-top: 10px; }
+</style>
+</head>
+<body>
+<div class="login-wrap">
+  <form id="loginForm" class="login-card" autocomplete="on">
+    <h1>MEMORYLENS</h1>
+    <p class="sub">登录后进入你自己的记忆库</p>
+    <label for="username">用户名</label>
+    <input id="username" class="field" name="username" autocomplete="username" required />
+    <label for="password">密码</label>
+    <input id="password" class="field" name="password" type="password" autocomplete="current-password" required />
+    <button class="btn btn-save" type="submit">登录</button>
+    <p id="loginMsg" class="err"></p>
+    <p class="hint">演示账号：<b>demo / demo123</b> · <b>guest / guest123</b> · <b>wjh / wjh123</b><br />
+      每个账号的数据各自独立。</p>
+  </form>
+</div>
+<script src="login.js"></script>
+</body>
+</html>

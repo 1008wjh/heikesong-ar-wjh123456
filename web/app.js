@@ -5,8 +5,38 @@
 
 const $ = (s) => document.querySelector(s);
 
+/* ---------------- 登录态：所有 /api 请求带 Bearer，401 回登录页 ---------------- */
+(function authSetup() {
+  const token = localStorage.getItem('ml_token') || '';
+  if (!token) { location.replace('login.html'); return; }
+  const _fetch = window.fetch.bind(window);
+  window.fetch = (url, opts = {}) => {
+    const u = String(url);
+    if (u.indexOf('/api/') === 0) {
+      const headers = Object.assign({}, opts.headers || {});
+      headers['Authorization'] = 'Bearer ' + token;
+      opts = Object.assign({}, opts, { headers });
+    }
+    return _fetch(url, opts).then((r) => {
+      if (r.status === 401) {
+        localStorage.removeItem('ml_token');
+        location.replace('login.html');
+      }
+      return r;
+    });
+  };
+  _fetch('/api/auth/me', { headers: { Authorization: 'Bearer ' + token } })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((d) => {
+      if (!d || !d.ok) return;
+      const el = document.getElementById('whoami');
+      if (el) el.textContent = (d.user && (d.user.name || d.user.username)) || d.user.username;
+    })
+    .catch(() => {});
+})();
+
 // 改代码就 +1，页脚会显示。看到 build 不是最新的，说明浏览器还在跑旧脚本。
-const BUILD = 24;
+const BUILD = 25;
 
 const state = { people: [], threshold: 0.4 };
 
@@ -1687,6 +1717,9 @@ function cmdBind() {
 }
 
 /* ---------------- 启动 ---------------- */
+
+const logoutBtn = document.getElementById('logout');
+if (logoutBtn) logoutBtn.onclick = () => { localStorage.removeItem('ml_token'); location.replace('login.html'); };
 
 bind();
 cmdBind();

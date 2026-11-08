@@ -21,7 +21,8 @@ def _safe_session(session: str) -> str:
 
 
 def meeting_dir(session: str) -> str:
-    return os.path.join(MEETINGS_DIR, "agent_" + _safe_session(session))
+    import userctx
+    return os.path.join(userctx.data_path("meetings"), "agent_" + _safe_session(session))
 
 
 def meta_path(session: str) -> str:
