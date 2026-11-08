@@ -631,8 +631,22 @@ function meetingSubtitleRows() {
   return rows.slice(-MEETING_SUB_ROWS);
 }
 
+function checkMeetingMic() {
+  // 平台/模拟器偶尔会在长请求后静默关掉 voice input：capture 还在，
+  // 但音频帧不再来。超过 4.5 秒没有一帧就主动换一条语音会话。
+  if (!meeting || !meeting.recording || !capture || capture.stopped) return;
+  const now = Date.now();
+  const last = capture.lastAudioAt || capture.startedAt || now;
+  if (now - last < 4500) return;
+  if (now - (capture.lastMicRestartAt || 0) < 9000) return;
+  capture.lastMicRestartAt = now;
+  meeting.note = "麦克风重连中…";
+  try { restartSession(capture); } catch (e) { /* 等下一轮 */ }
+}
+
 function paintMeeting() {
   if (!meeting) return;
+  checkMeetingMic();
   hideModeSel();
   showMeetingUi();
   const rec = !!meeting.recording;
@@ -1155,6 +1169,7 @@ function pump() {
         if (Date.now() - c.identAt >= IDENTIFY_MS) finishIdentify(c);
       }
       c.samples += ev.sampleCount;
+      c.lastAudioAt = Date.now();
       // 用 PCM 绝对值的峰值估音量，画音量条用。
       // 平台给的不一定是 Uint8Array：有可能是 Int16Array 或 ArrayBuffer，
       // 直接按 int16 视图读，避免"有声音但波形不动"。
@@ -1306,6 +1321,7 @@ async function startListening(mode, agentSession) {
     level: 0,          // 最近一帧的音量（0..1）
     peaks: [],         // 最近 N 帧的音量，用来画音量条
     session: null, chunks: [], samples: 0,    startedAt: Date.now(), sessionStartedAt: 0,
+    lastAudioAt: Date.now(), lastMicRestartAt: 0,
     slices: 0, sent: 0, queue: [], busy: false,
     mode: mode === "meeting" ? "meeting" : "single",
     agentSession: agentSession || ("g-" + Date.now().toString(36)),
@@ -1743,7 +1759,7 @@ function hideModeSel() {
 
 function paintMode() {
   if (!modeSelect) return;
-  putText(retained.status, "选模式 · 左右选 · 确认进入");
+  putText(retained.status, "选模式 · 上下选 · 确认进入");
   putText(retained.name, "开始记录");
   putText(retained.role, "先选这一段是什么");
   putText(retained.sim, " ");
@@ -1752,7 +1768,7 @@ function paintMode() {
   const rows = MODE_ITEMS.map((m, i) => (i === modeSelect.index ? "【" + m.label + "】" : "  " + m.label));
   retained.info.forEach((t, i) => putText(t, rows[i] || ""));
   putText(retained.info[2], MODE_ITEMS[modeSelect.index].hint);
-  putText(retained.foot, "确认进入 返回关掉");
+  putText(retained.foot, "上下选 确认进入 返回关掉");
 }
 
 function navMode(act) {
