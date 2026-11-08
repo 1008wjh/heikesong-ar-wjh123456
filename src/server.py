@@ -348,10 +348,13 @@ class Handler(BaseHTTPRequestHandler):
         best = None
         for spk, c in clusters.items():
             sim_owner = max((float(np.dot(c["emb"], e)) for e in owner_embs), default=0.0)
-            person, sim_val, margin = voice.match(c["emb"], others)
+            # 识别人用更宽的实际录音阈值；否则微信/电话录音常被当成陌生人
+            person, sim_val, margin = voice.match(
+                c["emb"], others,
+                threshold=voice.IDENTIFY_THRESHOLD, margin=voice.IDENTIFY_MARGIN)
             lines.append({"speaker": spk, "secs": c["secs"], "sim_owner": round(sim_owner, 3),
                           "person": (person or {}).get("name"), "sim": round(sim_val, 3)})
-            if owner_embs and sim_owner >= voice.THRESHOLD:
+            if owner_embs and sim_owner >= voice.IDENTIFY_THRESHOLD:
                 continue
             if best is None or sim_val > best[0]:
                 best = (sim_val, person, sim_owner, spk)
@@ -361,7 +364,7 @@ class Handler(BaseHTTPRequestHandler):
                     "error": "只听到你自己"}
 
         sim_val, person, sim_owner, spk = best
-        if not person or sim_val < voice.THRESHOLD:
+        if not person or sim_val < voice.IDENTIFY_THRESHOLD:
             # 陌生人：直接建号入库（带这一簇的声纹），之后就能被认出来
             name = _next_stranger_name()
             rec = store.save(name=name, role="陌生人", info=["眼镜端自动建的，回头改个名字"],
