@@ -692,7 +692,9 @@ function paintMeeting() {
   putText(retained.brand, "● MemoryLens");
   putText(retained.status, status);
   putText(retained.name, "多人会议");
-  putText(retained.role, meetingRoleLine());
+  // 不在会议主页回填 S1/S2/人数/时长这类调试信息；
+  // 状态行已经说明录制/待确认，屏幕只保留标题和状态。
+  putText(retained.role, " ");
   putText(retained.sim, "");
   putText(retained.recBadge, rec ? "● 录制中 " + secs : "○ 未录制");
   retained.info.forEach((t) => putText(t, " "));
