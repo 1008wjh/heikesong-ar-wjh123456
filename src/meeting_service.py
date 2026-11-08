@@ -410,12 +410,29 @@ def _fallback_brief(session: str, question: str = "") -> dict:
             "answer": answer}
 
 
+_ASK_RE = re.compile(r"[?？]|吗|什么|怎么|如何|谁|哪|几点|多少|多久|为什么|是否|能不能|要不要|请问")
+
+
+def _find_latest_question(session: str) -> str:
+    """从后往前找最近一句"像问题"的转写，左键没输入文字时用它。"""
+    for seg in reversed(db.get_segments(session)):
+        text = (seg.get("content") or "").strip()
+        if text and _ASK_RE.search(text):
+            return text
+    return ""
+
+
 def ask(session: str, question: str = "") -> dict:
-    """左键/文字提问：本地检索会议文本 → 可编辑提示词 → DeepSeek → 小屏摘要。"""
+    """左键/文字提问：从后往前找问题 → 检索会议文本 → 提示词 → 模型回答。"""
     row = db.get_session(session)
     if not row:
         return {"ok": False, "error": "没有这段会议，先按确认开始录制"}
     t0 = time.time()
+    question = (question or "").strip()
+    auto_question = False
+    if not question:
+        question = _find_latest_question(session)
+        auto_question = bool(question)
     system_prompt = (settings_store.get_settings().get("system_prompt") or "")
     context = _retrieve_context(session, question)
     try:
@@ -434,6 +451,7 @@ def ask(session: str, question: str = "") -> dict:
         "keywords": brief.get("keywords") or [],
         "points": brief.get("points") or [],
         "question": question,
+        "auto_question": auto_question,
         "context_snapshot": context,
         "create_time": created,
         "id": rec.get("id"),

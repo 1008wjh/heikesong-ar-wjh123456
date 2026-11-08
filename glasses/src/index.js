@@ -557,7 +557,7 @@ function wrapMeetingText(text, budget) {
 function setMeetingPopup(brief, degraded) {
   // 小屏只显示：结论 + 关键词 + 最多 3 条短要点；回答过长不滚动，直接截断。
   const raw = [];
-  if (brief && brief.summary) raw.push("结论：" + brief.summary);
+  if (brief && brief.summary) raw.push("回答：" + brief.summary);
   if (brief && Array.isArray(brief.keywords) && brief.keywords.length) {
     raw.push("关键词：" + brief.keywords.slice(0, 4).join(" / "));
   }
@@ -655,12 +655,9 @@ function paintMeeting() {
     putText(retained.sim, " ");
   } else {
     // 不显示字幕，改显示会议卡：状态/待办/总结（最多 3 行）
+    // 眼镜上不显示会议总结：总结只留控制台/接口；这里只显示会议卡 rows。
     const rows = (meeting.view && Array.isArray(meeting.view.rows) ? meeting.view.rows : [])
       .filter((x) => String(x || "").trim());
-    if (!rows.length && meeting.summary) rows.push("总结：" + meeting.summary);
-    if (!rows.length && meeting.keyPoints && meeting.keyPoints.length) {
-      rows.push(...meeting.keyPoints.slice(0, 3));
-    }
     rows.slice(0, 3).forEach((line, i) => putText(retained.info[i], String(line).slice(0, 24)));
   }
 
@@ -1424,9 +1421,9 @@ async function stopAndArchive(msg) {
         m.keyPoints = Array.isArray(r.key_points) ? r.key_points : [];
         m.actionItems = Array.isArray(r.action_items) ? r.action_items : [];
         m.view = null;   // 停录后会议卡让位给总结
-        m.note = "会议已保存 · " + (m.summary
-          ? m.summary.slice(0, 14)
-          : ((r.speaker_count || 0) + " 人 / " + (r.segment_count || 0) + " 段"));
+        // 眼镜上只提示保存结果，不显示会议总结（总结在控制台看）
+        m.note = "会议已保存 · " + (r.speaker_count || 0) + " 人 / "
+          + (r.segment_count || 0) + " 段";
       } else {
         m.note = "会议保存失败 · " + ((r && r.error) || "未知错误");
       }

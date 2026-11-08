@@ -209,7 +209,8 @@ function has(re) { return hud().some((v) => re.test(v)); }
   const saved = await waitUntil(() => has(/会议已保存/), 60000);
   check("确认键停止并保存会议", saved, JSON.stringify(hud().slice(0, 12)));
   check("停止后状态回到未录制", has(/未录制/) || has(/再录/), JSON.stringify(hud().slice(0, 12)));
-  check("停止后能看到会议总结", has(/总结/) || has(/会议已保存/), JSON.stringify(hud().slice(0, 12)));
+  check("停录后只提示保存，不在眼镜上显示总结",
+    has(/会议已保存/) && !has(/总结/), JSON.stringify(hud().slice(0, 12)));
 
   // 8) 返回退出到模块选择页
   navQueue.push("back");
