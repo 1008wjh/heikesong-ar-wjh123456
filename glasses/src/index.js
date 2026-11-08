@@ -168,6 +168,10 @@ function buildHud() {
   retained.board.setSize([W, H, 0]);
   retained.board.getLocalStyle().setBackgroundColor(Color.fromRGB8(0, 0, 0));
 
+  // 方向键只转发给有焦点的窗口（确认/返回不依赖焦点）。不主动要焦点时，
+  // 真机/客户端会出现「上/下按了没反应、中括号不动」。启动和进模式页各要一次。
+  try { input.requestWindowFocus(retained.window); } catch (e) { /* 旧运行时没有 */ }
+
   // 镜片上单个 Text 只画得出一百一十几像素，所以整块 HUD 就按这个宽度排成窄列。
   retained.brand = makeText(retained.board, 8, 24, 320, 30, 18, COL.cyan);
   putText(retained.brand, "● MemoryLens");
@@ -1719,6 +1723,7 @@ const MODE_ITEMS = [
 
 function openMode() {
   modeSelect = { index: 0 };
+  try { input.requestWindowFocus(retained.window); } catch (e) { /* 方向键需要焦点 */ }
   paintMode();
 }
 
@@ -1769,18 +1774,25 @@ function paintMode() {
   retained.info.forEach((t, i) => putText(t, rows[i] || ""));
   putText(retained.info[2], MODE_ITEMS[modeSelect.index].hint);
   putText(retained.foot, "上下选 确认进入 返回关掉");
+  // Text 内容变化不一定会让宿主重绘这一块，显式 invalidate 一次。
+  try {
+    retained.info.forEach((t) => { if (t && t.invalidate) t.invalidate(); });
+    if (retained.foot && retained.foot.invalidate) retained.foot.invalidate();
+  } catch (e) { /* optional */ }
 }
 
 function navMode(act) {
   if (!modeSelect) return;
   if (act === "left" || act === "up") {
     modeSelect.index = (modeSelect.index - 1 + MODE_ITEMS.length) % MODE_ITEMS.length;
-    paintMode();
+    retained.info.forEach((x) => { x.__text = undefined; });
+    lastPaintAt = 0;
     return;
   }
   if (act === "right" || act === "down") {
     modeSelect.index = (modeSelect.index + 1) % MODE_ITEMS.length;
-    paintMode();
+    retained.info.forEach((x) => { x.__text = undefined; });
+    lastPaintAt = 0;
     return;
   }
   if (act === "back") { closeMode(); return; }
