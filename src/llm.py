@@ -509,13 +509,16 @@ def recommend(transcript, person_name, profile, items, system_prompt=""):
     return {"summary": "", "next": _fallback_next(items), "degraded": True, "fallback": True}
 
 
-MEETING_QA_PROMPT = """下面是一段线下会议对话，请完成以下要求：
-1. 从对话中提取出核心问题；
-2. 针对问题给出分点式的精简回答要点；
-3. 语言简洁，避免长段落，适配小屏幕阅读。
-4. 回答过长时，先给一句结论 + 3 个关键词 + 最多 4 条短要点。
+MEETING_QA_PROMPT = """用户可能会问两类问题：
+A. 与会议内容相关：结合会议上下文回答；
+B. 与会议内容无关的通用知识（算法、概念、常识、原理等）：直接回答，不要被会议上下文限制。
+要求：
+1. 直接回答用户的问题，不要复述问题；
+2. 先给明确结论/答案，再给 2–4 条必要说明；
+3. 语言精简、分点，适合 AR 小屏阅读；
+4. 不要输出会议总结；会议上下文只是参考，没有答案就如实说，不要编造会议里没有的具体事实。
 
-对话上下文：
+会议上下文（可能相关，也可能无关）：
 {context}"""
 
 MEETING_ANSWER_SCHEMA = """只输出 JSON，不要解释、不要代码块：
@@ -575,22 +578,26 @@ def _meeting_brief(summary, keywords, points, answer):
             "answer": answer or "（没有内容）"}
 
 
-def answer_meeting(context, question="", system_prompt=""):
-    """多人会议的一键 AI 应答。
+def answer_meeting(context, question="", system_prompt="", web_results=""):
+    """多人会议的一键 AI 应答（也支持通用知识问题）。
 
-    返回 {summary, keywords, points, answer}；小屏只显示 summary/keywords/points，
-    answer 留在控制台历史里。没配 Key 时抛 LLMUnavailable，由服务层兜底。
+    返回 {summary, keywords, points, answer}；没配 Key 时抛 LLMUnavailable，
+    由服务层兜底。web_results 是可选联网搜索结果，会议上下文只作参考。
     """
     context = (context or "").strip()
     if not context and not (question or "").strip():
         raise LLMUnavailable("还没有会议上下文")
     question = (question or "").strip()
     custom = (system_prompt or "").strip()
-    user = MEETING_QA_PROMPT.format(context=context[-5000:])
+    user = MEETING_QA_PROMPT.format(context=context[-4000:] or "（无）")
+    if web_results:
+        user += "\n\n网络搜索结果（可能相关，需甄别；不要编造来源）：\n" + web_results[:2500]
     if question:
         user += "\n\n用户这次的问题：" + question[:300]
+    # 用户可编辑提示词只作为风格补充；默认的“商务助理”提示词不能压过回答任务。
     if custom:
-        user = "系统提示词（用户可编辑，优先遵守）：\n" + custom[:2000] + "\n\n" + user
+        user += ("\n\n风格偏好（只影响措辞，不得改变回答任务；冲突时以回答任务为准）：\n"
+                 + custom[:1200])
     if STUB:
         return _meeting_brief("王姐下周三前发报价单，明天下午3点三楼开会",
                               ["报价单", "下周三", "三楼会议室"],
@@ -607,8 +614,9 @@ def answer_meeting(context, question="", system_prompt=""):
     except ValueError:
         answer_max = int(default_max)
     out = _chat_plain(
-        "你是线下会议的 AI 助手。回答必须精简、分点、适合 AR 小屏阅读；"
-        "只根据给出的会议上下文，不要编造没出现的信息。"
+        "你是会议中的 AI 助手。回答必须精简、分点、适合 AR 小屏阅读；"
+        "会议上下文只作参考，通用知识可直接回答；不要输出会议总结，"
+        "不要编造会议里没有的具体事实。"
         + MEETING_ANSWER_SCHEMA,
         user,
         max_tokens=answer_max,

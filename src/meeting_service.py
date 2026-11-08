@@ -33,6 +33,7 @@ import meeting_db as db
 import meeting_store
 import settings as settings_store
 import voice
+import web_search
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 AUDIO_DIR = os.environ.get("AR_AUDIO_DIR", os.path.join(ROOT, "audio_storage"))
@@ -410,7 +411,10 @@ def _fallback_brief(session: str, question: str = "") -> dict:
             "answer": answer}
 
 
-_ASK_RE = re.compile(r"[?？]|吗|什么|怎么|如何|谁|哪|几点|多少|多久|为什么|是否|能不能|要不要|请问")
+_ASK_RE = re.compile(
+    r"[?？]|吗|什么|怎么|如何|谁|哪|几|多少|多久|为什么|是否|能不能|要不要|"
+    r"请问|介绍|解释|分析|说说|讲讲|列举|区别|原理|定义|是什么|有什么"
+)
 
 
 def _find_latest_question(session: str) -> str:
@@ -435,8 +439,12 @@ def ask(session: str, question: str = "") -> dict:
         auto_question = bool(question)
     system_prompt = (settings_store.get_settings().get("system_prompt") or "")
     context = _retrieve_context(session, question)
+    web = ""
+    if question and (os.environ.get("AR_WEB_SEARCH", "1") or "1").strip() != "0":
+        web = web_search.context(question, 4)
     try:
-        brief = llm.answer_meeting(context, question=question, system_prompt=system_prompt)
+        brief = llm.answer_meeting(context, question=question,
+                                   system_prompt=system_prompt, web_results=web)
         degraded = False
     except llm.LLMUnavailable:
         brief = _fallback_brief(session, question)
@@ -452,6 +460,7 @@ def ask(session: str, question: str = "") -> dict:
         "points": brief.get("points") or [],
         "question": question,
         "auto_question": auto_question,
+        "web_used": bool(web),
         "context_snapshot": context,
         "create_time": created,
         "id": rec.get("id"),

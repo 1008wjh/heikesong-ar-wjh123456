@@ -555,17 +555,21 @@ function wrapMeetingText(text, budget) {
 }
 
 function setMeetingPopup(brief, degraded) {
-  // 小屏只显示：结论 + 关键词 + 最多 3 条短要点；回答过长不滚动，直接截断。
+  // 小屏优先显示完整回答（算法名/结论/步骤），而不是摘要三件套。
   const raw = [];
-  if (brief && brief.summary) raw.push("回答：" + brief.summary);
-  if (brief && Array.isArray(brief.keywords) && brief.keywords.length) {
-    raw.push("关键词：" + brief.keywords.slice(0, 4).join(" / "));
+  const answer = String((brief && brief.answer) || "").trim();
+  if (answer) {
+    answer.split(/\n+/).map((x) => x.trim()).filter(Boolean).slice(0, 4)
+      .forEach((line) => raw.push(line));
+  } else {
+    if (brief && brief.summary) raw.push("回答：" + brief.summary);
+    if (brief && Array.isArray(brief.keywords) && brief.keywords.length) {
+      raw.push("关键词：" + brief.keywords.slice(0, 4).join(" / "));
+    }
+    (brief && Array.isArray(brief.points) ? brief.points : []).slice(0, 3)
+      .forEach((p, i) => raw.push((i + 1) + ". " + p));
   }
-  (brief && Array.isArray(brief.points) ? brief.points : []).slice(0, 3)
-    .forEach((p, i) => raw.push((i + 1) + ". " + p));
-  if (!raw.length) {
-    raw.push(String((brief && brief.answer) || "（没有内容）").slice(0, 28));
-  }
+  if (!raw.length) raw.push("（没有内容）");
   if (degraded) raw.push("· 本地兜底（补 Key 后升级）");
   const lines = [];
   for (const line of raw) lines.push(...wrapMeetingText(line, 30));
