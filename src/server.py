@@ -492,7 +492,11 @@ class Handler(BaseHTTPRequestHandler):
             "degraded": bool(view.get("degraded")),
         }
         payload = {"ok": True, "session": session, "view": view, "ms": view.get("ms", 0),
-                   "faces": [card], "kind": "agent"}
+                   "faces": [card], "kind": "agent", "stale": bool(view.get("stale"))}
+        if view.get("stale"):
+            # 旧请求的结果：不写 _LAST，免得把眼镜上最新的卡片顶掉
+            payload["rev"] = _LAST["rev"]
+            return self._json(payload)
         with _LAST_LOCK:
             _LAST["rev"] += 1
             _LAST["faces"] = [card]

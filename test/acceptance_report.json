@@ -1,0 +1,334 @@
+{
+  "base": "http://127.0.0.1:8765",
+  "at": "2026-11-08 08:03:04",
+  "passed": 24,
+  "failed": 0,
+  "results": [
+    {
+      "case": "1 新需求",
+      "name": "输入被处理并生成 ARUI",
+      "passed": true,
+      "expected": "state + 非空 rows",
+      "actual": {
+        "state": "完成",
+        "rows": [
+          "下周三几点出发？",
+          "报价单我周三前发你",
+          "电脑和报价单我都带上"
+        ]
+      },
+      "evidence": "acc1-d7d424",
+      "injected": false
+    },
+    {
+      "case": "1 新需求",
+      "name": "新需求里的人和要点都出来了",
+      "passed": true,
+      "expected": "person=王姐 且 rows>=2",
+      "actual": {
+        "person": "王姐",
+        "rows": [
+          "下周三几点出发？",
+          "报价单我周三前发你",
+          "电脑和报价单我都带上"
+        ]
+      },
+      "evidence": "acc1-d7d424",
+      "injected": false
+    },
+    {
+      "case": "2 内容修改",
+      "name": "只保留待办 -> focus 且只剩待办类",
+      "passed": true,
+      "expected": "layout=focus, keys⊆待办类",
+      "actual": {
+        "layout": "focus",
+        "rows": [
+          "日期: 明天下午3点在三楼会议室开会",
+          "跟进: 记得带电脑和充电器"
+        ]
+      },
+      "evidence": "acc2-efb813",
+      "injected": false
+    },
+    {
+      "case": "2 内容修改",
+      "name": "换条件（只保留日期）结果随之变化",
+      "passed": true,
+      "expected": "keys 全是 日期",
+      "actual": {
+        "rows": [
+          "日期: 明天下午3点在三楼会议室开会"
+        ]
+      },
+      "evidence": "acc2-efb813",
+      "injected": false
+    },
+    {
+      "case": "2 内容修改",
+      "name": "显示全部 -> 回到完整卡片",
+      "passed": true,
+      "expected": "恢复人物卡",
+      "actual": {
+        "person": "王姐",
+        "rows": [
+          "身份: 产品经理 · 前同事",
+          "信息1: 答应下周给报价单",
+          "信息2: 养了一只叫豆豆的猫"
+        ]
+      },
+      "evidence": "acc2-efb813",
+      "injected": false
+    },
+    {
+      "case": "3 重点与布局",
+      "name": "优先日期 -> 日期排第一且 layout=focus",
+      "passed": true,
+      "expected": "rows[0]=日期, layout=focus",
+      "actual": {
+        "layout": "focus",
+        "rows": [
+          "日期: 明天下午3点在三楼会议室开会",
+          "跟进: 需带电脑和充电器"
+        ]
+      },
+      "evidence": "acc3-c963a2",
+      "injected": false
+    },
+    {
+      "case": "3 重点与布局",
+      "name": "精简后行数变少（内容确实变化）",
+      "passed": true,
+      "expected": "只保留待办 的行数 < 显示全部 的行数",
+      "actual": {
+        "full": 3,
+        "todo": 2
+      },
+      "evidence": "acc3-c963a2",
+      "injected": false
+    },
+    {
+      "case": "4 跨方式",
+      "name": "语音认出王姐后，文本改成 Lena",
+      "passed": true,
+      "expected": "person=Lena, matched_by=text",
+      "actual": {
+        "person": "Lena",
+        "matched_by": "text"
+      },
+      "evidence": "acc4-693128",
+      "injected": false
+    },
+    {
+      "case": "4 跨方式",
+      "name": "纠正后，语音片仍按 Lena（上下文保持、旧 id 不生效）",
+      "passed": true,
+      "expected": "person=Lena",
+      "actual": {
+        "person": "Lena",
+        "sent_person_id": "p_8264d6"
+      },
+      "evidence": "acc4-693128",
+      "injected": false
+    },
+    {
+      "case": "4 跨方式",
+      "name": "换回文本后上下文还在（人不变）",
+      "passed": true,
+      "expected": "person=Lena",
+      "actual": {
+        "person": "Lena",
+        "rows": [
+          "日期: 明天下午3点在三楼会议室开会",
+          "跟进: 记得带上电脑和充电器"
+        ]
+      },
+      "evidence": "acc4-693128",
+      "injected": false
+    },
+    {
+      "case": "5 歧义与确认",
+      "name": "名字有歧义 -> 待确认，列出候选",
+      "passed": true,
+      "expected": "state=待确认 且 rows 提到多个",
+      "actual": {
+        "state": "待确认",
+        "rows": [
+          "匹配到多个人",
+          "王姐 / 王兴 / 王石"
+        ]
+      },
+      "evidence": "acc5-075cb2",
+      "injected": false
+    },
+    {
+      "case": "5 歧义与确认",
+      "name": "歧义时没有擅自改人",
+      "passed": true,
+      "expected": "person 仍是原来的人",
+      "actual": {
+        "person": "王姐"
+      },
+      "evidence": "acc5-075cb2",
+      "injected": false
+    },
+    {
+      "case": "5 歧义与确认",
+      "name": "说全名后确认到王姐",
+      "passed": true,
+      "expected": "person=王姐",
+      "actual": {
+        "person": "王姐"
+      },
+      "evidence": "acc5-075cb2",
+      "injected": false
+    },
+    {
+      "case": "5 歧义与确认",
+      "name": "否认 -> 待确认",
+      "passed": true,
+      "expected": "state=待确认",
+      "actual": {
+        "state": "待确认",
+        "rows": [
+          "不是他？",
+          "说「换成 名字」，或去控制台改"
+        ]
+      },
+      "evidence": "acc5-075cb2",
+      "injected": false
+    },
+    {
+      "case": "5 歧义与确认",
+      "name": "确认 -> 完成",
+      "passed": true,
+      "expected": "state=完成, person=王姐",
+      "actual": {
+        "state": "完成",
+        "person": "王姐"
+      },
+      "evidence": "acc5-075cb2",
+      "injected": false
+    },
+    {
+      "case": "6 服务失败",
+      "name": "静音音频 -> 明确反馈（没听清/没声音）",
+      "passed": true,
+      "expected": "state=异常 且提示没听清",
+      "actual": {
+        "state": "异常",
+        "rows": [
+          "没声音 · 检查麦克风",
+          "靠近一点再说"
+        ]
+      },
+      "evidence": "acc6-50c1ec",
+      "injected": false
+    },
+    {
+      "case": "6 服务失败",
+      "name": "模型 503 / 坏 JSON 的注入测试",
+      "passed": true,
+      "expected": "重试后兜底，界面不崩",
+      "actual": "见 test/llm_resilience_test.py（13 项全过）",
+      "evidence": "python test/llm_resilience_test.py",
+      "injected": true
+    },
+    {
+      "case": "7 连续请求",
+      "name": "后发的文本请求正常返回",
+      "passed": true,
+      "expected": "state=完成, layout=focus",
+      "actual": {
+        "state": "完成",
+        "layout": "focus"
+      },
+      "evidence": "acc7-edf330",
+      "injected": false
+    },
+    {
+      "case": "7 连续请求",
+      "name": "先发但慢的请求被判过期，不冒充最新",
+      "passed": true,
+      "expected": "stale=true 或 rows 含过期",
+      "actual": {
+        "state": "异常",
+        "rows": [
+          "这条结果已过期",
+          "以最新一次为准"
+        ],
+        "stale": true
+      },
+      "evidence": "acc7-edf330",
+      "injected": false
+    },
+    {
+      "case": "7 连续请求",
+      "name": "/api/latest 保留的是最新结果（待办筛选）",
+      "passed": true,
+      "expected": "latest 是筛选后的行",
+      "actual": {
+        "lines": [
+          "日期: 明天下午3点在三楼会议室开会",
+          "跟进: 需带电脑和充电器"
+        ]
+      },
+      "evidence": "acc7-edf330",
+      "injected": false
+    },
+    {
+      "case": "7 连续请求",
+      "name": "取消后结果作废（已取消/已过期，不是旧建议）",
+      "passed": true,
+      "expected": "rows 含取消/过期，或 stale",
+      "actual": {
+        "state": "异常",
+        "rows": [
+          "已取消",
+          "按一下重新问"
+        ],
+        "stale": null
+      },
+      "evidence": "acc7c-d2ccf5",
+      "injected": false
+    },
+    {
+      "case": "8 显示边界",
+      "name": "超长输入不会变成指令，且行数受控",
+      "passed": true,
+      "expected": "rows<=6 且每行<=52 字",
+      "actual": {
+        "rows": [
+          "你刚说的具体指什么",
+          "能举个例子吗",
+          "你那边现在怎么做的"
+        ]
+      },
+      "evidence": "acc8-045cf0",
+      "injected": false
+    },
+    {
+      "case": "8 显示边界",
+      "name": "详情页数据存在且行长度受控",
+      "passed": true,
+      "expected": "rows 非空，单行<=80 字",
+      "actual": {
+        "n": 5
+      },
+      "evidence": "GET /api/card/<id>/full",
+      "injected": false
+    },
+    {
+      "case": "8 显示边界",
+      "name": "过期结果不会写进 latest",
+      "passed": true,
+      "expected": "latest 没有 stale 标记",
+      "actual": {
+        "kind": "agent",
+        "faces": 1
+      },
+      "evidence": "GET /api/latest",
+      "injected": false
+    }
+  ]
+}

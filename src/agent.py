@@ -34,6 +34,25 @@ _CANCEL_LOCK = threading.Lock()
 _PIN = {}
 _PIN_LOCK = threading.Lock()
 
+# 同一个 session 的请求序号：新请求一到，旧请求的结果就作废（不能覆盖最新结果）
+_SEQ = {}
+_SEQ_LOCK = threading.Lock()
+
+
+def _bump(session: str) -> int:
+    with _SEQ_LOCK:
+        n = _SEQ.get(session, 0) + 1
+        _SEQ[session] = n
+        if len(_SEQ) > 500:
+            _SEQ.clear()
+            _SEQ[session] = n
+        return n
+
+
+def _is_current(session: str, n: int) -> bool:
+    with _SEQ_LOCK:
+        return _SEQ.get(session, 0) == n
+
 
 def cancel(session: str) -> bool:
     """作废某个会话正在跑的结果（interrupt）。"""
@@ -100,6 +119,8 @@ class AgentState(TypedDict, total=False):
     cancelled: bool      # 这次请求被 /api/agent/cancel 作废了
     cmd: str             # 文本指令：filter/focus/person/person_miss/reject/all/cancel/confirm
     cmd_arg: str         # 指令参数（"只留待办"里的 待办）
+    seq: int             # 这个 session 的请求序号：被更新的请求顶掉就作废
+    stale: bool          # 结果已过期（不要画、不要写档案）
 
 
 # ---------- 工具：匹配、抽取 ----------
@@ -268,6 +289,11 @@ def node_ingest(state: AgentState) -> dict:
                 peak = int(_np.abs(arr).max())
         except Exception:
             peak = -1
+    if not text and audio and 0 <= peak < voice.PEAK_MIN:
+        # 基本是静音：别送进转写（模型会在静音上编出字），直接给"没声音"
+        return {"text": "", "asr_src": "silent", "audio_sec": sec, "audio_peak": peak,
+                "notes": (state.get("notes") or []) + ["这段基本是静音，跳过转写"],
+                "slice_no": int(state.get("slice_no") or 0) + 1}
     if not text and audio:
         t0 = time.time()
         try:
@@ -481,6 +507,10 @@ def node_render(state: AgentState) -> dict:
         return {"view": {"state": "异常", "layout": "notice",
                          "rows": ["这段没听清", "再说一遍，或用手打"], "person": "",
                          "degraded": False}}
+    if state.get("asr_src") == "silent" and not (state.get("text") or "").strip():
+        return {"view": {"state": "异常", "layout": "notice",
+                         "rows": ["没声音 · 检查麦克风", "靠近一点再说"], "person": "",
+                         "degraded": False}}
     if preset == "todo":
         # 只留待办：内容变少 + 布局变 focus（对应评分里的"重点/布局变化"）
         keep = [it for it in items if str(it.get("key")) in ("答应的事", "跟进", "日期")]
@@ -587,6 +617,13 @@ def node_recommend(state: AgentState) -> dict:
         got = llm.recommend(dialog,
                             state.get("person_name") or "", profile, state.get("items") or [],
                             system_prompt=system_prompt)
+        # 模型跑完这段时间里用户点了「返回」或被新请求顶掉：结果作废
+        if _cancelled(state.get("session") or ""):
+            return {"cancelled": True, "next_actions": [],
+                    "notes": (state.get("notes") or []) + ["用户已取消，这版结果作废"]}
+        if state.get("seq") and not _is_current(state.get("session") or "", state["seq"]):
+            return {"stale": True, "next_actions": [],
+                    "notes": (state.get("notes") or []) + ["已被新请求顶掉，这版结果作废"]}
         if got.get("fallback"):
             # 模型重试两次仍不可用：用规则给三条，界面照常出卡，但标记降级
             return {"next_actions": got.get("next") or [],
@@ -605,6 +642,8 @@ def node_commit(state: AgentState) -> dict:
     """有主、有要点才写档案；多人或没认出人就只留在界面上。"""
     if state.get("cmd"):
         return {}          # 文本指令只改画面，不写档案
+    if state.get("seq") and not _is_current(state.get("session") or "", state["seq"]):
+        return {"notes": (state.get("notes") or []) + ["旧请求已过期，不写档案"]}
     pid = state.get("person_id")
     items = state.get("items") or []
     if pid and items and state.get("mode") != "meeting":
@@ -678,6 +717,7 @@ def run_feed(session: str, text: str = "", audio: str = "", auto_add: bool = Tru
         )
     t0 = time.time()
     _clear_cancel(session)          # 新请求开始，作废上一轮留下的取消标记
+    seq = _bump(session)            # 新请求一到，同 session 的旧请求就作废
     # 文本纠正过"是谁"的会话：以纠正为准。眼镜端每片还带它自己记的旧 person_id，
     # 不覆盖的话改完下一片又变回原来的人。
     with _PIN_LOCK:
@@ -688,7 +728,7 @@ def run_feed(session: str, text: str = "", audio: str = "", auto_add: bool = Tru
                          "auto_add": auto_add, "degraded": False, "notes": [],
                          "mode": (mode or "").lower(), "manual": bool(manual),
                          "preset": preset or "", "pinned": pinned, "cancelled": False,
-                         "cmd": "", "cmd_arg": ""}   # 每片重置：别让上一片的指令残留
+                         "cmd": "", "cmd_arg": "", "seq": seq, "stale": False}
     cfg = {"configurable": {"thread_id": session}}
     try:
         out = graph().invoke(state, cfg)
@@ -697,6 +737,11 @@ def run_feed(session: str, text: str = "", audio: str = "", auto_add: bool = Tru
                         "rows": ["智能体出错了", str(e)[:40]], "person": ""},
                "degraded": True}
     view = out.get("view") or {"state": "异常", "layout": "notice", "rows": ["没有结果"], "person": ""}
+    if not out.get("cancelled") and (out.get("stale") or not _is_current(session, seq)):
+        # 旧结果：不冒充最新，也不写档案（commit 里已经拦过一次）
+        view = {"state": "异常", "layout": "notice",
+                "rows": ["这条结果已过期", "以最新一次为准"], "person": "",
+                "degraded": False, "stale": True}
     view["rev"] = int(time.time() * 1000) % 1000000
     view["ms"] = int((time.time() - t0) * 1000)
     view["notes"] = out.get("notes") or []
@@ -708,7 +753,7 @@ def run_feed(session: str, text: str = "", audio: str = "", auto_add: bool = Tru
         kind="agent.feed", session=session, mode=out.get("mode") or "",
         slice_no=out.get("slice_no"), state=view.get("state"),
         person=view.get("person") or "", person_id=view.get("person_id") or "",
-        matched_by=out.get("matched_by") or "none",
+        matched_by=out.get("matched_by") or "none", stale=bool(view.get("stale")),
         similarity=view.get("similarity"), items=len(out.get("items") or []),
         degraded=bool(out.get("degraded")), rule_fallback=bool(out.get("rule_fallback")),
         skipped_short=bool(out.get("skipped_short")),
